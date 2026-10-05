@@ -23,8 +23,12 @@ namespace bllm::cache {
 //     within the reserve keeps the cache, and a deeper one empties it.
 //     Exactly: a query at position p reads keys at p - window + 1 .. p, its
 //     own position included, as llama.cpp and Hugging Face mask a sliding
-//     layer. After `length` tokens a layer holds positions length - slots ..
-//     length - 1, or all of them while length <= slots. Truncating to t keeps
+//     layer. What a ring holds is set by how far it has been written, not by
+//     the length: a rollback leaves the entries past it in their slots until
+//     new tokens overwrite them, and they had already overwritten older ones.
+//     So the cache keeps a high-water mark, the most tokens written since it
+//     was last emptied, and a layer holds positions mark - slots .. mark - 1,
+//     or all of them while mark <= slots. Truncating to t keeps
 //     the cache when, in every layer, every earlier position the next query
 //     at t reads — t - window + 1 .. t - 1 — is still held; the entries from
 //     t on are overwritten in place as the new tokens are written. A
@@ -85,6 +89,10 @@ private:
     };
 
     std::vector<Layer> layers_;
+    // The most tokens written since the cache was last emptied: what bounds
+    // what each ring still holds, which length alone does not after a
+    // rollback.
+    std::uint32_t written_ = 0;
     std::uint32_t length_ = 0;
     std::uint32_t capacity_;
     policy::CachePrecision precision_;

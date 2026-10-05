@@ -119,3 +119,55 @@ TEST_CASE("truncation agrees with a slot-by-slot simulation of every ring, lengt
         }
     }
 }
+
+TEST_CASE("a second rollback is judged by what the ring was written to, not by the length the first left") {
+    // Window 4, ring of 10. After 25 tokens the ring holds 15 .. 24, and
+    // rolling back to 18 keeps it. Rolling back again to 12 needs 9 .. 11,
+    // overwritten when 19 .. 21 were written: the length is 18, but the ring
+    // was written to 25.
+    const Fixture f = make({{4, 10}});
+    KvCache cache(f.model, f.plan, policy::CachePrecision::F16, 100);
+    cache.advance(25);
+    REQUIRE(cache.truncate(18) == 18);
+    CHECK(cache.truncate(12) == 0);
+    CHECK(cache.length() == 0);
+}
+
+TEST_CASE("any history of steps and rollbacks agrees with a slot-by-slot simulation of the ring") {
+    // Random histories against the ring itself: a slot holds the last
+    // position written to it, and a rollback keeps the cache exactly when
+    // every earlier position the next query reads is still in its slot.
+    std::uint32_t state = 0x6C8E9CF5u;
+    const auto next = [&](std::uint32_t below) {
+        state = state * 1664525u + 1013904223u;
+        return (state >> 8) % below;
+    };
+    for (const LayerShape shape : {LayerShape{2, 2}, LayerShape{4, 10}, LayerShape{7, 9}, LayerShape{3, 20}}) {
+        for (int history = 0; history < 200; ++history) {
+            const Fixture f = make({shape});
+            KvCache cache(f.model, f.plan, policy::CachePrecision::F16, 100000);
+            std::vector<std::int64_t> slot(shape.slots, -1);
+            std::uint32_t length = 0;
+            for (int op = 0; op < 40; ++op) {
+                if (next(2) == 0) {
+                    const std::uint32_t tokens = 1 + next(2 * shape.slots);
+                    for (std::uint32_t p = length; p < length + tokens; ++p) slot[p % shape.slots] = p;
+                    length += tokens;
+                    cache.advance(tokens);
+                } else {
+                    const std::uint32_t t = next(length + 1);
+                    const std::uint32_t first = t >= shape.window ? t - shape.window + 1 : 0;
+                    bool held = true;
+                    for (std::uint32_t p = first; p < t; ++p) held = held && slot[p % shape.slots] == p;
+                    length = held ? t : 0;
+                    CAPTURE(shape.window);
+                    CAPTURE(shape.slots);
+                    CAPTURE(history);
+                    CAPTURE(op);
+                    REQUIRE(cache.truncate(t) == length);
+                }
+                REQUIRE(cache.length() == length);
+            }
+        }
+    }
+}
