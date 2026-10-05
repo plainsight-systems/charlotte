@@ -49,6 +49,7 @@ add_library(charlotte_core STATIC
     src/core/tokenizer/utf8_stream.cpp
     src/core/tokenizer/vocabulary.cpp
     src/core/residency/plan.cpp
+    src/core/cache/prefix.cpp
     src/core/formats/q6_k/q6_k_repack.cpp
     src/core/residency/piece_writer.cpp
     src/core/residency/routes.cpp
