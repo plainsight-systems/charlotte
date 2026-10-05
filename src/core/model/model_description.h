@@ -53,7 +53,8 @@ struct LayerDescription {
     std::uint32_t head_dimension;
     std::uint32_t feed_forward_width;
     // Tokens this layer attends back over: the context length for a
-    // full-attention layer, the window for a sliding-window layer.
+    // full-attention layer, the window for a sliding-window layer. A query at
+    // position p reads keys at p - attention_window + 1 .. p.
     std::uint32_t attention_window;
     float rope_base;
     // The tensor filling each role. Empty where this layer has no such weight.
