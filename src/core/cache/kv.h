@@ -44,10 +44,10 @@ namespace bllm::cache {
 //     runtime then advances the cache by the step's token count.
 //
 // What it costs: truncate visits each layer once, once per turn — 28 for
-// Qwen3 — and advance and layer are constant time, once per step. Nothing is
-// allocated after construction, which copies the plan's layers once at load,
-// so the per-token path allocates nothing (MEM.9); no key or value moves on
-// the CPU.
+// Qwen3, reading two counts from each, a few hundred bytes — and advance and
+// layer are constant time, once per step. Nothing is allocated after
+// construction, which copies the plan's layers once at load, so the
+// per-token path allocates nothing (MEM.9); no key or value moves on the CPU.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -57,8 +57,9 @@ namespace bllm::cache {
 //            checked, as elsewhere in the core.
 //   C++ performance guidelines
 //     MEM.9  Allocate at init, not in steady state — the layers, at load.
-//     GDSA.6 Account the bytes a stage moves — none: the cache's bookkeeping
-//            is counters; its bytes move on the GPU, in attention.
+//     GDSA.6 Account the bytes a stage moves — a few hundred bytes of
+//            counts a turn; the cache's own bytes move on the GPU, in
+//            attention.
 
 class KvCache {
 public:

@@ -30,17 +30,21 @@ namespace bllm::cache {
 //
 // What it costs, once per turn: one pass over at most the shorter sequence,
 // comparing 4-byte identifiers — at most the context offered, 40,960 for
-// Qwen3, 160 KiB read from each side: at one comparison a cycle, about 15 µs.
-// A prefill pass it saves reads every weight of the model. Both sequences
-// already live in the module's memory: the page sends text, the module
-// tokenizes it, and no token crosses the JavaScript boundary (WASM.2).
+// Qwen3, 160 KiB read from each side. At one comparison a cycle that is about
+// 15 µs, an estimate, not a measurement. What it saves grows with the tokens
+// it reuses: each reused token is a row that every layer's projections,
+// attention and feed-forward no longer compute, about 1.2 GFLOP for Qwen3,
+// and each 512 reused tokens a prefill pass that no longer reads the
+// weights. Both sequences already live in the module's memory: the page sends
+// text, the module tokenizes it, and no token crosses the JavaScript boundary
+// (WASM.2).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
 //     ES.1   Prefer the standard library to handcrafted code — std::mismatch.
-//     Per.2  Don't optimize prematurely — the count above puts the diff four
-//            orders of magnitude under the pass it saves, so it is a plain
-//            comparison, not a vectorized or hashed one.
+//     Per.2  Don't optimize prematurely — the diff's 8 bytes a compared
+//            token are far below the work one reused token saves, so it is a
+//            plain comparison, not a vectorized or hashed one.
 //   C++ performance guidelines
 //     GDSA.6 Account the bytes a stage moves — the count above.
 //     WASM.2 Batch work across the JS boundary — the sequences never cross it.
