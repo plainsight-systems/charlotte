@@ -159,9 +159,10 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
 // The working buffers one layer's step needs, shared by every layer.
 PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimits& limits,
                          ResidencyPlan& out) {
-    std::uint64_t query = 0, key_value = 0, feed_forward = 0;
+    std::uint64_t query = 0, key_value = 0, feed_forward = 0, query_heads = 0;
     for (const model::LayerDescription& l : model.layers) {
         query = std::max<std::uint64_t>(query, std::uint64_t{l.query_heads} * l.head_dimension);
+        query_heads = std::max<std::uint64_t>(query_heads, l.query_heads);
         key_value = std::max<std::uint64_t>(key_value, std::uint64_t{l.key_value_heads} * l.head_dimension);
         feed_forward = std::max<std::uint64_t>(feed_forward, l.feed_forward_width);
     }
@@ -177,6 +178,10 @@ PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimit
         Need{"key", kPrefillBlock, key_value},
         Need{"value", kPrefillBlock, key_value},
         Need{"attention", kPrefillBlock, query},
+        // A split step's unnormalized outputs and their maxima and sums,
+        // 512 query rows (kernels/attention/attention.h).
+        Need{"partials", kPrefillBlock, query},
+        Need{"partial_stats", kPrefillBlock, 2 * query_heads},
         // A block's last matmul writes its result here; the norm after it
         // adds it into hidden (kernels/norm/norm.h).
         Need{"output", kPrefillBlock, model.embedding_width},

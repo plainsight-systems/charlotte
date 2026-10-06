@@ -315,3 +315,18 @@ TEST_CASE("an output head stored as a copy of the embedding gets buffers of its 
         CHECK_FALSE(plan.tensors[i].candidate_duplicate_of.has_value());
     }
 }
+
+TEST_CASE("attention's partial buffers hold 512 query rows of outputs and of maxima and sums") {
+    const auto p = describe("tiny_qwen3");   // 2 query heads of 32
+    ResidencyPlan plan;
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    const auto length = [&](std::string_view purpose) -> std::uint64_t {
+        for (const auto& s : plan.scratch) {
+            if (s.purpose == purpose) return s.range.length;
+        }
+        FAIL("no working buffer " << purpose);
+        return 0;
+    };
+    CHECK(length("partials") == 512 * 2 * 32 * 4);
+    CHECK(length("partial_stats") == 512 * 2 * 2 * 4);
+}
