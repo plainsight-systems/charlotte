@@ -175,8 +175,10 @@ void Build::next() {
     }
 }
 
-// A distinct pipeline: the kernel, the format it unpacks, its workgroup size.
-using Key = std::tuple<const char*, const formats::Format*, std::uint32_t>;
+// A distinct pipeline: the kernel's text, the format it unpacks, its
+// workgroup size. The text is compared, not its address: an embedded string
+// may lie at a different address in each translation unit that names it.
+using Key = std::tuple<std::string_view, const formats::Format*, std::uint32_t>;
 
 }  // namespace
 
@@ -250,7 +252,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
 
     std::map<Key, std::size_t> distinct;
     for (const Launch& launch : build->launches) {
-        const Key key{launch.kernel.data(), launch.format, launch.workgroup_size};
+        const Key key{launch.kernel, launch.format, launch.workgroup_size};
         const auto [it, added] = distinct.try_emplace(key, distinct.size());
         build->pipeline_of.push_back(it->second);
     }
@@ -263,7 +265,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     };
     for (const auto& [key, index] : distinct) {
         const Launch& launch = *std::find_if(build->launches.begin(), build->launches.end(), [&](const Launch& l) {
-            return Key{l.kernel.data(), l.format, l.workgroup_size} == key;
+            return Key{l.kernel, l.format, l.workgroup_size} == key;
         });
         // Optimization (practice): each distinct kernel is composed and
         // compiled once, whatever its launches, and every pipeline is asked

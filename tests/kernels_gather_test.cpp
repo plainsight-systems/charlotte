@@ -49,7 +49,7 @@ TEST_CASE("the gather launches once a piece, each binding its piece then the hid
     for (std::size_t i = 0; i < launches.size(); ++i) {
         CAPTURE(i);
         const kernels::Launch& l = launches[i];
-        CHECK(l.kernel.data() == shaders::gather.data());
+        CHECK(l.kernel == shaders::gather);
         CHECK(l.format == capability::find_format(gguf::TensorType::Q6_K));
         const Constants c = constants_of(l);
         CHECK(c.first_row == first[i]);
