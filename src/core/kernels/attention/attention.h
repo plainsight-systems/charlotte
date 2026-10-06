@@ -15,7 +15,11 @@ namespace bllm::kernels {
 // Attention: scores, the causal and window mask, softmax and the weighted
 // sum of values, never writing the scores out (docs/architecture/
 // kernel-fusions.md). Between rope, which wrote this step's keys and values
-// into the cache and its queries in place, and the output projection.
+// into the KV cache and its queries in place, and the output projection.
+//
+// "KV cache" below is always the stored keys and values (cache/kv.h); the
+// GPU's own caches, the hardware between its cores and device memory, are
+// always "the GPU's caches".
 //
 // For a query q at position p, of a head whose key-value head holds keys
 // k_j and values v_j at positions j:
@@ -24,7 +28,7 @@ namespace bllm::kernels {
 //   out  = Σ_j softmax(s)_j × v_j
 //
 // scale is the model's (model/model_description.h): 1 / sqrt(d) for every
-// listed model. Every key is read from the cache, the step's own included,
+// listed model. Every key is read from the KV cache, the step's own included,
 // rounded as stored (kernels/rope/rope.h).
 //
 // The shape of the computation: FlashAttention-2's online softmax. Keys and
@@ -66,7 +70,7 @@ namespace bllm::kernels {
 //   - Tiles. A workgroup is 64 invocations and holds, in workgroup memory, a
 //     tile of M = 1,024 / d query vectors — R = M / G consecutive rows of
 //     the step, for the G query heads sharing one key-value head — at f32,
-//     4 KiB; and a tile of B = 2,048 / d keys and their values as the cache
+//     4 KiB; and a tile of B = 2,048 / d keys and their values as the KV cache
 //     stores them, 4 KiB each:
 //
 //                      M query vectors   R rows × G heads   B keys a tile
@@ -74,7 +78,7 @@ namespace bllm::kernels {
 //       Llama 3.2, d 64      16               4 × 4              32
 //       Gemma 3, d 256        4               1 × 4               8
 //
-//     Each key and value is read from the cache once for the whole group:
+//     Each key and value is read from the KV cache once for the whole group:
 //     grouped-query attention reads its shared keys once, not once a head.
 //     A step's workgroups: ceil(tokens / R) × H_kv × splits. A decode
 //     step's tile holds one row, its other query slots idle; its keys and
@@ -106,7 +110,7 @@ namespace bllm::kernels {
 //   - Constants (binding 1): struct Attention { slots: u32, window: u32,
 //     scale_log2e: f32 }, the layer's.
 //   - Bindings: 2 the query buffer, 3 the layer's keys and 4 its values in
-//     the cache, read-only; 5 the attention buffer, 6 the partial values and
+//     the KV cache, read-only; 5 the attention buffer, 6 the partial values and
 //     7 the partial statistics, written. The combine binds 6 and 7
 //     read-only and writes 5. Six storage buffers, under WebGPU's default 8.
 //
@@ -122,7 +126,7 @@ namespace bllm::kernels {
 //   - residency/plan.h: two working buffers — partial values, 512 rows of
 //     H_q × d floats, and partial statistics, 512 rows of H_q × 2 — each a
 //     buffer of its own.
-//   - formats/format.h: the cache format's WGSL gains pack's inverse, fn
+//   - formats/format.h: the KV cache format's WGSL gains pack's inverse, fn
 //     unpack4(words: vec2<u32>) -> vec4<f32>, reading no binding; F16's is
 //     two unpack2x16float.
 //   - model/model_description.h: the model's attention scale.
@@ -135,7 +139,7 @@ namespace bllm::kernels {
 // whose tiles and order differ.
 //
 // Accuracy, against the same computation in f64 from the same queries and
-// the cache's stored keys and values: the scores' rounding dominates. A
+// the KV cache's stored keys and values: the scores' rounding dominates. A
 // d-term f32 dot product errs by up to d × 2⁻²⁴ × Σ_j |q_j k_j| × scale, in
 // log2 units once scaled, and moves the key's weight by that much,
 // relatively, through exp2; exp2's own 3 + 2|x| units and the f32 sums of at
@@ -160,15 +164,16 @@ namespace bllm::kernels {
 //     30 × 10⁹ a step, about 2 ms at the M3 Max's roughly 14 f32 TFLOPS
 //     (third-party figure) if the arithmetic ran at peak. A row tile streams
 //     the keys up to its last row, half a layer's 2 MiB of keys and values
-//     on average, so about 128 MiB a layer passes through the cache
-//     hierarchy; from device memory, about the 2 MiB once.
+//     on average: about 128 MiB of KV cache reads a layer, nearly all of
+//     them served by the GPU's caches, since a layer's 2 MiB fits them;
+//     from device memory, about the 2 MiB once.
 //   - Barriers: four a tile, 64 a chunk for Qwen3, 32 for Llama 3.2, 128
 //     for Gemma 3; the merge at each chunk's end needs none.
 // Optimization (practice): the softmax is online and tiled, so the
 // T × L scores are never written — FlashAttention-2 (GDSA.16).
 // Optimization (practice): a decode step is split across the context in
 // fixed chunks and combined, so 128 workgroups at 4,096 tokens read the
-// cache where one a key-value head would be 8 — Flash-Decoding, vLLM's
+// KV cache where one a key-value head would be 8 — Flash-Decoding, vLLM's
 // PagedAttention V2 (GDSA.8).
 // Optimization (practice): chunks fixed by position and folded in order,
 // so a split does not change a result — the fixed split size Thinking
@@ -180,9 +185,10 @@ namespace bllm::kernels {
 //   - Workgroup memory is 16 KiB at WebGPU's defaults, which the harness
 //     keeps for cross-browser compatibility (gpu/device_requirements.h). A
 //     tile is therefore M = 1,024 / d query vectors — 4 rows for Qwen3 —
-//     where FlashAttention-2 takes 64 to 128 rows; prefill streams each
-//     layer's keys and values through the cache 128 times rather than 4 to
-//     8. Their device-memory traffic is about the same; the cache's is not.
+//     where FlashAttention-2 takes 64 to 128 rows; prefill reads each
+//     layer's KV cache 128 times rather than 4 to 8. Nearly all the extra
+//     reads are served by the GPU's caches, so device-memory traffic is
+//     about the same; the GPU's caches carry 16 to 32 times more.
 //   - Subgroup operations are optional, for the same reason: each score is
 //     one invocation's whole dot product, and the softmax's per-tile maxima
 //     and sums are one invocation's loop over B, where llama.cpp's Metal
@@ -193,7 +199,7 @@ namespace bllm::kernels {
 //   - WGSL may assume no infinities: masks are flags, not −∞.
 //   - WGSL zero-fills workgroup memory: 12.7 KiB for Qwen3, stored once a
 //     workgroup — about 10% of the 128 KiB of keys and values the workgroup
-//     reads from the cache for a chunk, though into on-chip memory: about
+//     reads from the KV cache for a chunk, though into on-chip memory: about
 //     51 stores an invocation, against about 8,000 multiply-adds an
 //     invocation a chunk.
 //
@@ -209,7 +215,7 @@ namespace bllm::kernels {
 //     raised.
 //
 // Verification the implementation is held to, on the GPU against f64 from
-// the same cache contents: each listed shape, prefill steps of 1, 3, 4 and
+// the same KV cache contents: each listed shape, prefill steps of 1, 3, 4 and
 // 512 rows and decode steps, at positions 0, near 256's boundaries and deep
 // into the context; Gemma 3's window over a ring that has wrapped; a step
 // split and unsplit, and the same query prefilled and decoded, giving the
