@@ -17,7 +17,9 @@ struct Gather {
     scale: f32,
 }
 
-override workgroup_size: u32;
+// The program sets workgroup_size from the launcher (gather.cpp, 64); the
+// default only lets a tool that reads this file alone size what uses it.
+override workgroup_size: u32 = 64;
 
 @group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> gather: Gather;
