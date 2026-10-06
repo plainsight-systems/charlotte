@@ -32,7 +32,11 @@ namespace bllm::kernels {
 //     cover every listed model (Llama 3.2 1B's 2,048 is the widest).
 //   - The sum of squares is reduced in workgroup memory, in a fixed tree:
 //     each invocation's own vec4s in order, then halving across the
-//     workgroup, 8 levels. No atomics (GDSA.5).
+//     workgroup, 8 levels. No atomics (GDSA.5). A barrier where one
+//     invocation reads what another wrote, and nowhere else: one before the
+//     tree and one after each level, 9 a reduction; one more only between
+//     the post-norm's reduction and the next, which rewrites the partial sum
+//     the first was read from (GPU.8).
 //   - Determinism (GDSA.2): run to run, and independent of the step's other
 //     rows and its token count, since one workgroup reduces one row in one
 //     fixed order — so a token's normed row, and the key and value computed
@@ -100,6 +104,8 @@ namespace bllm::kernels {
 //     GPU.5  Use workgroup memory where reuse or reordering pays — the
 //            reduction's partial sums, 1 KiB.
 //     GPU.6  Batch tiny GPU work — the add and the gain fused in.
+//     GPU.8  Make barriers describe real hazards — none after the last
+//            reduction, where nothing writes the partial sums again.
 
 // One norm of the graph.
 struct NormLaunch {

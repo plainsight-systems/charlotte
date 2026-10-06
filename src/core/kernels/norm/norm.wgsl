@@ -47,7 +47,9 @@ const kMaxVec4s = 4u;
 var<workgroup> partial: array<f32, workgroup_size>;
 
 // The workgroup's sum of `value`, in a fixed order: halving the workgroup at
-// each level. Every invocation returns the same total.
+// each level. Every invocation returns the same total. A caller that reduces
+// again must first barrier, so every invocation has read partial[0] before
+// it is written.
 fn reduce(index: u32, value: f32) -> f32 {
     partial[index] = value;
     workgroupBarrier();
@@ -57,9 +59,7 @@ fn reduce(index: u32, value: f32) -> f32 {
         }
         workgroupBarrier();
     }
-    let total = partial[0];
-    workgroupBarrier();   // before partial is written again
-    return total;
+    return partial[0];
 }
 
 @compute @workgroup_size(workgroup_size)
@@ -104,6 +104,7 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
                 }
             }
             let r = inverseSqrt(reduce(index, squares) / n + norm.epsilon);
+            workgroupBarrier();   // partial[0] read before Step 3 reduces again
             for (var k = 0u; k < kMaxVec4s; k++) {
                 let i = index + k * workgroup_size;
                 if (i < vec4s) {
