@@ -229,6 +229,9 @@ Four rules hold for every contract:
      weights packed in file order into as few buffers as the limits allow; the
      cache, keys and values per layer; and one set of working buffers every
      layer reuses, sized for a 512-token prefill block at f32.
+   - Each working buffer is a buffer of its own: WebGPU refuses one buffer
+     bound both writable and read-only in a dispatch, and a kernel reads one
+     working buffer while writing another.
    - A weight larger than one binding is split by whole rows; every offset is
      aligned to WebGPU's storage-offset alignment.
    - A kernel over a split weight dispatches once per piece and binds one

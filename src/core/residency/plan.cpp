@@ -22,7 +22,7 @@
 //      as the limits allow. A tensor larger than one binding is cut between
 //      rows, never inside one, so no quantization block is split.
 //   2. place_scratch. The working buffers one layer's step reads and writes,
-//      shared by every layer.
+//      shared by every layer, each in a buffer of its own.
 //   3. place_cache. The KV cache takes whatever the budget has left. The
 //      context offered is the largest whose cache fits, found by bisection
 //      because the cost only grows with the context. A sliding-window layer
@@ -191,7 +191,9 @@ PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimit
         if (!checked_mul(need.rows * need.width, kF32Bytes, bytes)) return failure(PlanError::Overflow, std::string(need.purpose));
         if (bytes > range_limit(limits)) return failure(PlanError::ScratchExceedsBinding, std::string(need.purpose));
         BufferRange range{};
-        if (!packer.place(bytes, false, range)) return failure(PlanError::Overflow, std::string(need.purpose));
+        // Alone: a kernel binds one working buffer read-only and another
+        // writable, which WebGPU refuses within one buffer (plan.h).
+        if (!packer.place(bytes, true, range)) return failure(PlanError::Overflow, std::string(need.purpose));
         out.scratch.push_back({need.purpose, range});
     }
     return {};

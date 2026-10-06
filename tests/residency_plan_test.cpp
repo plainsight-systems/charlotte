@@ -63,7 +63,15 @@ void check_invariants(const ResidencyPlan& plan, const DeviceLimits& limits) {
         check_range(layer.keys, Pool::Cache);
         check_range(layer.values, Pool::Cache);
     }
-    for (const auto& s : plan.scratch) check_range(s.range, Pool::Scratch);
+    for (const auto& s : plan.scratch) {
+        check_range(s.range, Pool::Scratch);
+        // Each working buffer alone in its buffer: WebGPU refuses one buffer
+        // bound writable and read-only in a dispatch, which a kernel reading
+        // one working buffer and writing another would otherwise do.
+        CHECK(s.range.offset == 0);
+        CHECK(std::count_if(plan.scratch.begin(), plan.scratch.end(),
+                            [&](const auto& other) { return other.range.buffer == s.range.buffer; }) == 1);
+    }
     CHECK(plan.total_bytes == plan.weight_bytes + plan.cache_bytes + plan.scratch_bytes);
 }
 

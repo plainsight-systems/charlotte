@@ -25,8 +25,16 @@ namespace bllm::residency {
 //     (GPU.9): the weights, packed in file order into as few buffers as the
 //     limits allow; the KV cache, keys and values per layer at the context
 //     offered; and one set of working buffers that every layer reuses.
-//     Optimization (practice): a few large buffers, suballocated, rather than
-//     one allocation per tensor (GPU.9).
+//     Optimization (practice): weights and cache in a few large buffers,
+//     suballocated, rather than one allocation per tensor (GPU.9).
+//   - Each working buffer is a buffer of its own. WebGPU tracks a dispatch's
+//     use of a buffer across the whole buffer, not by range, and refuses a
+//     buffer bound both writable and read-only in one dispatch; a kernel
+//     reads one working buffer and writes another — the norm reads `output`
+//     and writes `hidden` — so two working buffers in one buffer could not be
+//     bound together. Weights are only read, and no dispatch both reads and
+//     writes the cache, so those pools stay suballocated. Ten buffers instead
+//     of one costs ten allocations at load and nothing a step.
 //   - Limits are the ones the device granted, never the adapter's advertised
 //     maxima (WASM.10). Packing works at WebGPU's default limits.
 //   - A weight larger than one storage binding is split by rows. Every offset
