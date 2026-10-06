@@ -172,10 +172,10 @@ namespace bllm::kernels {
 //     × T × d / 2 pairs a step for B distinct bases and factors — 32,768 for
 //     Qwen3's 512 rows, 168 times fewer than the workgroups compute. It
 //     saves the estimate above, about 0.06 ms and by that estimate under
-//     0.25 ms, in a step whose matrix products — 2 × 0.6 × 10⁹ × 512 f32
-//     operations, about 44 ms at about 14 TFLOPS — take over a hundred times
-//     longer. It costs a second form of every rope launch and a launch list
-//     for each regime, which the program does not have.
+//     0.25 ms, in a step whose matrix products — 2 × 440 × 10⁶ × 512 f32
+//     operations, about 32 ms at about 14 TFLOPS (kernels/matmul/matmul.h)
+//     — take over a hundred times longer. It costs a launch of its own and
+//     a second form of every rope launch, one for each regime.
 //   - A cos and sin table by position, as vLLM's RotaryEmbedding keeps: no
 //     sin or cos in the kernel, for a table of context × d / 2 pairs — 20
 //     MiB for Qwen3, 64 MiB for Gemma 3's two bases — taken from the cache's
