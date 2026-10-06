@@ -134,6 +134,23 @@ DescribeResult read_hyperparameters(const gguf::TensorIndex& index, std::string_
     }
     if (out.head_dimension == 0) return failure(DescribeError::InvalidValue, key_of(arch, "attention.key_length"));
 
+    // The rope kernel rotates every dimension of a head, at unscaled
+    // positions (kernels/rope/rope.h). A file that rotates part of each head
+    // or scales its positions would run with every position wrong, so it is
+    // refused by name.
+    std::uint32_t rotated = 0;
+    if (auto r = read_u32_or(index, arch, "rope.dimension_count", out.head_dimension, rotated); !r.ok()) return r;
+    if (rotated != out.head_dimension) {
+        return failure(DescribeError::UnsupportedValue, key_of(arch, "rope.dimension_count"));
+    }
+    const std::string scaling_key = key_of(arch, "rope.scaling.type");
+    std::string_view scaling;
+    if (const auto e = index.read_string(scaling_key, scaling); e == gguf::MetadataError::Ok) {
+        if (scaling != "none") return failure(DescribeError::UnsupportedValue, scaling_key);
+    } else if (e != gguf::MetadataError::MissingKey) {
+        return from_metadata(e, scaling_key);
+    }
+
     // The description has one head dimension; a model whose values are a
     // different width from its keys is valid, and not one this reads.
     std::uint32_t value_length = 0;
@@ -151,7 +168,8 @@ DescribeResult read_hyperparameters(const gguf::TensorIndex& index, std::string_
 }
 
 DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparameters& hp,
-                               std::span<const RoleName> roles, model::ModelDescription& out) {
+                               std::span<const RoleName> roles, model::RotaryPairing pairing,
+                               model::ModelDescription& out) {
     gguf::ArrayLocation tokens{};
     if (const auto e = index.read_array("tokenizer.ggml.tokens", tokens); e != gguf::MetadataError::Ok) {
         return from_metadata(e, "tokenizer.ggml.tokens");
@@ -170,6 +188,17 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
     out.output_norm = *found;
     // Absent when the output head reads the token embedding.
     if (auto r = find_tensor(index, "output.weight", 2, e, vocab, false, out.output_head); !r.ok()) return r;
+
+    out.rotary_pairing = pairing;
+    // Llama 3's frequency factors, one a pair; the rope kernel binds them as
+    // f32.
+    if (auto r = find_tensor(index, "rope_freqs.weight", 1, hp.head_dimension / 2, 0, false, out.rotary_factors);
+        !r.ok()) {
+        return r;
+    }
+    if (out.rotary_factors && index.tensor(*out.rotary_factors).type != gguf::TensorType::F32) {
+        return failure(DescribeError::UnsupportedValue, "rope_freqs.weight");
+    }
 
     out.layers.assign(hp.block_count, model::LayerDescription{
         hp.head_count, hp.head_count_kv, hp.head_dimension, hp.feed_forward_length,

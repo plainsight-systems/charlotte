@@ -10,7 +10,8 @@ namespace {
 using model::Role;
 
 // The plain transformer layer. Llama 3's long-context rotary scaling is the
-// file's rope_freqs.weight, which the graph reads; it is not a layer weight.
+// file's rope_freqs.weight, which describe_layers finds; it is not a layer
+// weight.
 constexpr std::array kRoles{
     RoleName{Role::AttentionNorm, "attn_norm.weight"},
     RoleName{Role::Query, "attn_q.weight"},
@@ -26,7 +27,9 @@ constexpr std::array kRoles{
 DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription& out) {
     Hyperparameters hp{};
     if (auto r = read_hyperparameters(index, "llama", hp); !r.ok()) return r;
-    return describe_layers(index, hp, kRoles, out);
+    // NORM pairing, as llama.cpp's llama_model_rope_type gives Llama: its
+    // converter permuted Q and K into that order.
+    return describe_layers(index, hp, kRoles, model::RotaryPairing::Adjacent, out);
 }
 
 }  // namespace

@@ -386,6 +386,23 @@ CASES = {
         kv(b"gemma3.attention.sliding_window", U32, struct.pack("<I", 16)),
         kv(b"gemma3.attention.sliding_window_pattern", ARRAY,
            struct.pack("<IQ", BOOL, 7) + bytes([1, 1, 1, 1, 1, 0, 1]))]),
+    # Llama 3's rotary frequency factors: one F32 a pair; then a wrong width,
+    # and a type the rope kernel does not bind.
+    "tiny_llama_rope_freqs": lambda: tiny_model("llama", extra_tensors=[
+        (b"rope_freqs.weight", [D // 2], T_F32, f32_zeros([D // 2]))]),
+    "tiny_llama_rope_freqs_wrong_shape": lambda: tiny_model("llama", extra_tensors=[
+        (b"rope_freqs.weight", [D], T_F32, f32_zeros([D]))]),
+    "tiny_llama_rope_freqs_f16": lambda: tiny_model("llama", extra_tensors=[
+        (b"rope_freqs.weight", [D // 2], T_F16, b"\0" * D)]),
+    # Rotary keys a file may declare: whole heads and no scaling run; part of
+    # each head, or scaled positions, are refused.
+    "tiny_qwen3_rope_declared": lambda: tiny_model("qwen3", extra=[
+        kv(b"qwen3.rope.dimension_count", U32, struct.pack("<I", D)),
+        kv(b"qwen3.rope.scaling.type", STRING, gstr(b"none"))]),
+    "tiny_qwen3_partial_rotation": lambda: tiny_model("qwen3", extra=[
+        kv(b"qwen3.rope.dimension_count", U32, struct.pack("<I", D // 2))]),
+    "tiny_qwen3_rope_scaling": lambda: tiny_model("qwen3", extra=[
+        kv(b"qwen3.rope.scaling.type", STRING, gstr(b"linear"))]),
     "tiny_qwen3_missing_key": lambda: tiny_model("qwen3", omit_key="attention.head_count_kv"),
     "tiny_qwen3_missing_tensor": lambda: tiny_model("qwen3", omit_tensor="blk.1.ffn_up.weight"),
     "tiny_qwen3_wrong_shape": lambda: tiny_model("qwen3", reshape=("blk.1.attn_k.weight", [E, 2 * D])),

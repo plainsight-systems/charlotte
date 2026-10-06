@@ -68,7 +68,8 @@ DescribeResult apply_sliding_window(const gguf::TensorIndex& index, model::Model
 DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription& out) {
     Hyperparameters hp{};
     if (auto r = read_hyperparameters(index, "gemma3", hp); !r.ok()) return r;
-    if (auto r = describe_layers(index, hp, kRoles, out); !r.ok()) return r;
+    // NEOX pairing, as llama.cpp's llama_model_rope_type gives Gemma 3.
+    if (auto r = describe_layers(index, hp, kRoles, model::RotaryPairing::Halves, out); !r.ok()) return r;
     return apply_sliding_window(index, out);
 }
 

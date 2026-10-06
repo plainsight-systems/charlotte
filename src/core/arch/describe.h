@@ -51,14 +51,15 @@ struct RoleName {
 
 // Fills `out` from the hyperparameters and the file's tensors: the vocabulary,
 // the global weights — rope_freqs.weight among them where the file has it,
-// F32 of head dimension / 2 — and every layer's weights by role, each checked
-// against the shape its role requires, with the architecture's rotary
-// pairing. Every layer attends over the full context with
+// F32 of head dimension / 2, any other type refused — and every layer's
+// weights by role, each checked against the shape its role requires, and the
+// architecture's rotary pairing. Every layer attends over the full context with
 // the file's rotary base; an architecture whose layers differ adjusts them
 // afterwards.
 [[nodiscard]] DescribeResult describe_layers(const gguf::TensorIndex& index,
                                              const Hyperparameters& hp,
                                              std::span<const RoleName> roles,
+                                             model::RotaryPairing pairing,
                                              model::ModelDescription& out);
 
 // Reads an optional "<arch>.<key>": `fallback` when the file omits it, an

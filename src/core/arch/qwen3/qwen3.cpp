@@ -28,7 +28,8 @@ constexpr std::array kRoles{
 DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription& out) {
     Hyperparameters hp{};
     if (auto r = read_hyperparameters(index, "qwen3", hp); !r.ok()) return r;
-    return describe_layers(index, hp, kRoles, out);
+    // NEOX pairing, as llama.cpp's llama_model_rope_type gives Qwen3.
+    return describe_layers(index, hp, kRoles, model::RotaryPairing::Halves, out);
 }
 
 }  // namespace

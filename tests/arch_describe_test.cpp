@@ -8,6 +8,7 @@
 #include "core/gguf/reader.h"
 #include "core/preflight/preflight.h"
 #include "support/gguf_fixture.h"
+#include "support/model_headers.h"
 
 // The tiny fixtures are complete transformers in the shape a real converter
 // writes (tools/make_fixture_gguf.py: embedding 8, 2 query heads and 1
@@ -104,6 +105,55 @@ TEST_CASE("Gemma 3 attends over a window on five layers in six, with their own r
     }
 }
 
+TEST_CASE("each architecture rotates the pairs llama.cpp gives it") {
+    struct Case {
+        const char* fixture;
+        model::RotaryPairing pairing;
+    };
+    for (const Case& c : {Case{"tiny_qwen3", model::RotaryPairing::Halves},
+                          Case{"tiny_llama", model::RotaryPairing::Adjacent},
+                          Case{"tiny_gemma3", model::RotaryPairing::Halves}}) {
+        CAPTURE(c.fixture);
+        const auto d = describe_fixture(c.fixture);
+        REQUIRE(d.result.ok());
+        CHECK(d.model.rotary_pairing == c.pairing);
+        CHECK_FALSE(d.model.rotary_factors.has_value());
+    }
+}
+
+TEST_CASE("Llama 3's frequency factors are found, one a pair") {
+    const auto d = describe_fixture("tiny_llama_rope_freqs");
+    REQUIRE(d.result.ok());
+    REQUIRE(d.model.rotary_factors.has_value());
+}
+
+TEST_CASE("the listed models describe, with their pairing and Llama's factors") {
+    struct Case {
+        const char* model;
+        model::RotaryPairing pairing;
+        bool factors;
+    };
+    for (const Case& c : {Case{"qwen3-0.6b-q4_0", model::RotaryPairing::Halves, false},
+                          Case{"llama-3.2-1b-instruct-q4_0", model::RotaryPairing::Adjacent, true},
+                          Case{"gemma-3-1b-it-q4_0", model::RotaryPairing::Halves, false}}) {
+        CAPTURE(c.model);
+        const testing::ReadHeader header = testing::read_model_header(c.model);
+        std::string_view architecture;
+        REQUIRE(header.index.read_string("general.architecture", architecture) == gguf::MetadataError::Ok);
+        model::ModelDescription description;
+        const auto result = capability::find_architecture(architecture)->describe(header.index, description);
+        REQUIRE_MESSAGE(result.ok(), result.subject);
+        CHECK(description.rotary_pairing == c.pairing);
+        CHECK(description.rotary_factors.has_value() == c.factors);
+    }
+}
+
+TEST_CASE("rotary keys declaring whole heads and no scaling describe as if absent") {
+    const auto d = describe_fixture("tiny_qwen3_rope_declared");
+    REQUIRE(d.result.ok());
+    CHECK(d.model.layers[0].head_dimension == 32);
+}
+
 TEST_CASE("a file that breaks what describe needs says what and where") {
     struct Case {
         const char* fixture;
@@ -118,6 +168,11 @@ TEST_CASE("a file that breaks what describe needs says what and where") {
              Case{"tiny_qwen3_too_many_layers", DescribeError::InvalidValue, "qwen3.block_count"},
              Case{"tiny_gemma3_pattern_per_layer", DescribeError::UnsupportedValue,
                   "gemma3.attention.sliding_window_pattern"},
+             // Rotary forms the rope kernel does not implement.
+             Case{"tiny_qwen3_partial_rotation", DescribeError::UnsupportedValue, "qwen3.rope.dimension_count"},
+             Case{"tiny_qwen3_rope_scaling", DescribeError::UnsupportedValue, "qwen3.rope.scaling.type"},
+             Case{"tiny_llama_rope_freqs_wrong_shape", DescribeError::ShapeMismatch, "rope_freqs.weight"},
+             Case{"tiny_llama_rope_freqs_f16", DescribeError::UnsupportedValue, "rope_freqs.weight"},
          }) {
         CAPTURE(c.fixture);
         const auto d = describe_fixture(c.fixture);
