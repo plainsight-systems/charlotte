@@ -41,9 +41,20 @@ namespace bllm::kernels {
 //     registers and no value crosses between invocations. A token's heads
 //     are its query heads, its key heads, then its value heads: (H_q + 2
 //     H_kv) × d / 8 invocations a row — 512 for Qwen3, 384 for Llama 3.2,
-//     192 for Gemma 3. Workgroups of 64, so 512 / d heads a workgroup.
-//     Head dimensions 64, 128 and 256, the listed models': d / 8 must divide
-//     the workgroup, and the frequencies fill at most the constants below.
+//     192 for Gemma 3. Workgroups of 64, so 512 / d heads a workgroup, and a
+//     row is a whole number of workgroups — 8, 6 and 3 — so every invocation
+//     of a workgroup works on one token. Head dimensions 64, 128 and 256,
+//     the listed models': d / 8 must divide the workgroup, and the
+//     frequencies fill at most the constants below.
+//   - Angles depend on the position and the pair, not the head. So each
+//     workgroup that rotates — any whose heads include a query or key head —
+//     first computes its token's d / 2 cosines and sines once, its 64
+//     invocations sharing them out — one pair each for Qwen3, two for Gemma
+//     3, half of them one for Llama 3.2 — into workgroup memory, d / 2 ×
+//     8 bytes, 1 KiB at most; the barrier before the norm's tree publishes
+//     them, and without QK-norm one barrier of their own does. Every head of
+//     the workgroup then reads its pairs' cos and sin there. A workgroup of
+//     value heads alone computes none.
 //   - The norm reduces each head in workgroup memory: an invocation's own 8
 //     squares, then a tree across its head's d / 8 invocations, every head
 //     of the workgroup at once — log2(d / 8) levels, 4 for Qwen3, 5 for
@@ -110,8 +121,14 @@ namespace bllm::kernels {
 // are read by every head and cached. A 512-row prefill step of Qwen3 moves
 // 28 layers × 512 × 28 KiB, 392 MiB, about 1.0 ms at 400 GB/s; a decode
 // step, 784 KiB, about 2 µs, far below its 28 launches. Arithmetic: a sin
-// and a cos a pair, (H_q + H_kv) × d / 2 pairs — 1,536 a token and a layer
-// for Qwen3 — against 28 KiB moved. Unfused — two norms, two rotations and
+// and a cos for each pair of each rotating workgroup — for Qwen3 6
+// workgroups a token, 384 pairs a token and a layer, where a head at a time
+// would compute 1,536; 160 against 1,280 for Llama 3.2, 384 against 640 for
+// Gemma 3. A 512-row prefill step of Qwen3 takes 5.5 million pairs, 11
+// million sin and cos at tens of instructions each — about 0.4 × 10⁹
+// instructions, about 0.05 ms for a GPU of about 14 f32 TFLOPS, as
+// third-party measurement puts the 40-core M3 Max — under its bytes' 1.0 ms,
+// and overlapped with them. So the bytes bound it. Unfused — two norms, two rotations and
 // two cache writes, each reading and writing its own pass — Qwen3 would move
 // 60 KiB a token and a layer, in six launches a layer, 140 more a pass.
 // Optimization (practice): the norms, both rotations and the cache append
@@ -120,6 +137,9 @@ namespace bllm::kernels {
 // Optimization (practice): every invocation holds both values of each pair
 // it rotates, so the rotation exchanges nothing between invocations, and
 // adjacent invocations read and write adjacent vec4s (GPU.2).
+// Optimization (practice): a workgroup's angles computed once and shared
+// through workgroup memory by its heads — 4 for Qwen3, 8 for Llama 3.2 — not
+// once a head, as llama.cpp's kernel does (GPU.5).
 //
 // Where WebGPU limits it, and what each limit costs here:
 //   - WGSL bounds pow only to 3 + 2 |y log2 x| units in the last place —
@@ -137,6 +157,13 @@ namespace bllm::kernels {
 //     memory adds a store and a barrier a workgroup.
 //
 // Levers not taken:
+//   - The step's angles computed once, by a launch of their own, into a
+//     working buffer the rope launches read: B × T × d / 2 pairs a step for
+//     B distinct bases and factors — 32,768 for Qwen3's 512 rows, 168 times
+//     fewer than the workgroups compute. It saves at most the 0.05 ms above
+//     in a prefill step, where the bytes take 1.0 ms anyway, and costs every
+//     decode step a launch, 1.5 µs, to save 10,752 pairs spread one to an
+//     invocation over 168 workgroups.
 //   - A cos and sin table by position, as vLLM's RotaryEmbedding keeps: no
 //     sin or cos in the kernel, for a table of context × d / 2 pairs — 20
 //     MiB for Qwen3, 64 MiB for Gemma 3's two bases — taken from the cache's
@@ -169,7 +196,7 @@ namespace bllm::kernels {
 //            unfused count against them.
 //     GPU.2  Shape data for coalesced lane access — the vec4 mapping above.
 //     GPU.5  Use workgroup memory where reuse or reordering pays — each
-//            head's partial sums.
+//            head's partial sums, and the workgroup's angles.
 //     GPU.6  Batch tiny GPU work — six steps, one launch.
 
 // One layer's rope launch.
@@ -188,7 +215,8 @@ struct RopeLaunch {
 };
 
 // The launch for one layer. Preconditions: the head dimension is 64, 128 or
-// 256; the views are F32 of the widths stated; `cache_format` has a pack and
+// 256, and (query heads + 2 × key-value heads) × head dimension / 8 a
+// multiple of 64; the views are F32 of the widths stated; `cache_format` has a pack and
 // is the format the plan sized `cache` in.
 [[nodiscard]] Launch rope_launch(const RopeLaunch& rope);
 
