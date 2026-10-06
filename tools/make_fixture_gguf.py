@@ -125,12 +125,18 @@ def _one_tensor_with(*metadata):
 # embedding 8, 2 query heads and 1 key/value head of width 4, feed-forward 16,
 # a 6-token vocabulary. Enough for describe to check every key, name and shape.
 E, H, KV, D, F, VOCAB = 32, 2, 1, 32, 64, 6
-ROLE_SHAPES = {
-    "attn_norm": [E], "attn_q": [E, H * D], "attn_k": [E, KV * D], "attn_v": [E, KV * D],
-    "attn_q_norm": [D], "attn_k_norm": [D], "attn_output": [H * D, E],
-    "post_attention_norm": [E], "ffn_norm": [E], "ffn_gate": [E, F], "ffn_up": [E, F],
-    "ffn_down": [F, E], "post_ffw_norm": [E],
-}
+def role_shapes(e=E, d=D, f=F, kv=KV):
+    """Each role's dimensions for embedding width e, head width d and
+    feed-forward width f, with H query heads and kv key-value heads."""
+    return {
+        "attn_norm": [e], "attn_q": [e, H * d], "attn_k": [e, kv * d], "attn_v": [e, kv * d],
+        "attn_q_norm": [d], "attn_k_norm": [d], "attn_output": [H * d, e],
+        "post_attention_norm": [e], "ffn_norm": [e], "ffn_gate": [e, f], "ffn_up": [e, f],
+        "ffn_down": [f, e], "post_ffw_norm": [e],
+    }
+
+
+ROLE_SHAPES = role_shapes()
 ARCH_ROLES = {
     "qwen3": ["attn_norm", "attn_q", "attn_k", "attn_v", "attn_q_norm", "attn_k_norm",
               "attn_output", "ffn_norm", "ffn_gate", "ffn_up", "ffn_down"],
@@ -249,18 +255,22 @@ def rope_rows(rows=4, seed=0x1B873593):
 
 
 def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, reshape=None,
-               head_count_kv=KV, output_copy=False, context=64, extra_tensors=(), f16=(), key_length=D):
+               head_count_kv=KV, output_copy=False, context=64, extra_tensors=(), f16=(), key_length=None,
+               embedding=E, head=D, ffn=F):
     """A tiny `arch` model. `reshape` is (tensor name, dims) to break a shape;
-    tensors named in `f16` are stored as F16 rather than F32."""
+    tensors named in `f16` are stored as F16 rather than F32. `embedding`,
+    `head` and `ffn` shrink a model with many layers."""
+    key_length = head if key_length is None else key_length
+    shapes_of = role_shapes(embedding, head, ffn)
     keys = {
         "block_count": (U32, struct.pack("<I", layers)),
         "context_length": (U32, struct.pack("<I", context)),
-        "embedding_length": (U32, struct.pack("<I", E)),
-        "feed_forward_length": (U32, struct.pack("<I", F)),
+        "embedding_length": (U32, struct.pack("<I", embedding)),
+        "feed_forward_length": (U32, struct.pack("<I", ffn)),
         "attention.head_count": (U32, struct.pack("<I", H)),
         "attention.head_count_kv": (U32, struct.pack("<I", head_count_kv)),
         "attention.key_length": (U32, struct.pack("<I", key_length)),
-        "attention.value_length": (U32, struct.pack("<I", D)),
+        "attention.value_length": (U32, struct.pack("<I", head)),
         "attention.layer_norm_rms_epsilon": (F32, struct.pack("<f", 1e-6)),
         "rope.freq_base": (F32, struct.pack("<f", 1e6)),
     }
@@ -272,12 +282,12 @@ def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, res
     metadata.append(kv(b"tokenizer.ggml.tokens", ARRAY, struct.pack("<IQ", STRING, VOCAB) + tokens))
     metadata.extend(extra)
 
-    shapes = {"token_embd.weight": [E, VOCAB], "output_norm.weight": [E]}
+    shapes = {"token_embd.weight": [embedding, VOCAB], "output_norm.weight": [embedding]}
     if output_copy:
-        shapes["output.weight"] = [E, VOCAB]
+        shapes["output.weight"] = [embedding, VOCAB]
     for layer in range(layers):
         for role in ARCH_ROLES[arch]:
-            shapes[f"blk.{layer}.{role}.weight"] = ROLE_SHAPES[role]
+            shapes[f"blk.{layer}.{role}.weight"] = shapes_of[role]
     if reshape is not None:
         shapes[reshape[0]] = reshape[1]
     tensors = [(name.encode(), dims, T_F16, f32_zeros(dims)[: len(f32_zeros(dims)) // 2])
@@ -425,6 +435,9 @@ CASES = {
     "tiny_gemma3_long_all_window": lambda: tiny_model("gemma3", layers=7, context=8192, extra=[
         kv(b"gemma3.attention.sliding_window", U32, struct.pack("<I", 16)),
         kv(b"gemma3.attention.sliding_window_pattern", U32, struct.pack("<I", 8))]),
+    # 62 layers: llama.cpp's Gemma 3 27B, whose attention scale is the
+    # embedding width over the heads rather than the head dimension.
+    "tiny_gemma3_62_layers": lambda: tiny_model("gemma3", layers=62, embedding=16, head=4, ffn=8),
     "tiny_gemma3_pattern_per_layer": lambda: tiny_model("gemma3", layers=7, extra=[
         kv(b"gemma3.attention.sliding_window", U32, struct.pack("<I", 16)),
         kv(b"gemma3.attention.sliding_window_pattern", ARRAY,

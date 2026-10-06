@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 #include "core/arch/architecture.h"
@@ -121,6 +122,19 @@ TEST_CASE("each architecture rotates the pairs llama.cpp gives it") {
     }
 }
 
+TEST_CASE("attention is scaled by 1 / sqrt(head dimension), but Gemma 3 27B's by the width over the heads") {
+    for (const char* name : {"tiny_qwen3", "tiny_llama", "tiny_gemma3"}) {
+        CAPTURE(name);
+        const auto d = describe_fixture(name);
+        REQUIRE(d.result.ok());
+        CHECK(d.model.attention_scale == 1.0f / std::sqrt(32.0f));
+    }
+    const auto large = describe_fixture("tiny_gemma3_62_layers");
+    REQUIRE(large.result.ok());
+    // Embedding 16 over 2 query heads, not the head dimension's 4.
+    CHECK(large.model.attention_scale == 1.0f / std::sqrt(8.0f));
+}
+
 TEST_CASE("Llama 3's frequency factors are found, one a pair") {
     const auto d = describe_fixture("tiny_llama_rope_freqs");
     REQUIRE(d.result.ok());
@@ -145,6 +159,8 @@ TEST_CASE("the listed models describe, with their pairing and Llama's factors") 
         REQUIRE_MESSAGE(result.ok(), result.subject);
         CHECK(description.rotary_pairing == c.pairing);
         CHECK(description.rotary_factors.has_value() == c.factors);
+        CHECK(description.attention_scale ==
+              1.0f / std::sqrt(static_cast<float>(description.layers[0].head_dimension)));
     }
 }
 

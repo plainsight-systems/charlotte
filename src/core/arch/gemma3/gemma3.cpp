@@ -1,6 +1,7 @@
 #include "core/arch/gemma3/gemma3.h"
 
 #include <array>
+#include <cmath>
 
 #include "core/arch/describe.h"
 
@@ -65,11 +66,20 @@ DescribeResult apply_sliding_window(const gguf::TensorIndex& index, model::Model
     return {};
 }
 
+// Gemma 3 27B scales attention by 1 / sqrt(embedding width / query heads),
+// not by the head dimension. No GGUF key states it; llama.cpp infers the
+// 27B from its 62 layers, after Google's gemma_pytorch configuration, and so
+// does this.
+constexpr std::uint32_t k27BLayers = 62;
+
 DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription& out) {
     Hyperparameters hp{};
     if (auto r = read_hyperparameters(index, "gemma3", hp); !r.ok()) return r;
     // NEOX pairing, as llama.cpp's llama_model_rope_type gives Gemma 3.
     if (auto r = describe_layers(index, hp, kRoles, model::RotaryPairing::Halves, out); !r.ok()) return r;
+    if (hp.block_count == k27BLayers) {
+        out.attention_scale = 1.0f / std::sqrt(static_cast<float>(hp.embedding_length / hp.head_count));
+    }
     return apply_sliding_window(index, out);
 }
 

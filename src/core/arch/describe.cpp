@@ -1,6 +1,7 @@
 #include "core/arch/describe.h"
 
 #include <array>
+#include <cmath>
 #include <string>
 
 namespace bllm::arch {
@@ -215,6 +216,7 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
     if (auto r = find_tensor(index, "output.weight", 2, e, vocab, false, out.output_head); !r.ok()) return r;
 
     out.rotary_pairing = pairing;
+    out.attention_scale = 1.0f / std::sqrt(static_cast<float>(hp.head_dimension));
     // Llama 3's frequency factors, one a pair; the rope kernel binds them as
     // f32.
     if (auto r = find_tensor(index, "rope_freqs.weight", 1, hp.head_dimension / 2, 0, false, out.rotary_factors);
