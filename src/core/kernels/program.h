@@ -21,7 +21,8 @@ namespace bllm::kernels {
 // descriptions name, as upload holds the buffers the plan names.
 //
 //   - Build, at load: each distinct kernel — its WGSL, the unpack of the
-//     format it reads, its workgroup size — is composed and compiled once,
+//     format it reads, its workgroup size and override constants — is
+//     composed and compiled once,
 //     with createComputePipelineAsync, every pipeline requested at once so
 //     the browser compiles them together; a bind group is made for every
 //     launch; every launch's constants are packed into one uniform buffer,

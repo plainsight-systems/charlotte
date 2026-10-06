@@ -1,0 +1,106 @@
+#pragma once
+
+#include "core/kernels/interface.h"
+#include "core/residency/plan.h"
+#include "core/residency/weight_view.h"
+
+namespace bllm::kernels {
+
+// Axis E: changes with a new or optimized kernel.
+//
+// RMSNorm, with the residual add before it fused in (docs/architecture/
+// kernel-fusions.md). One kernel for the attention, feed-forward and final
+// norms of every architecture here, and for both regimes: a row's norm needs
+// only that row.
+//
+// For each row it covers:
+//   1. Where the launch adds: y, the last block's output, is added into X,
+//      the hidden row, and X written back. Where the architecture normalizes
+//      a block's output before adding it — Gemma 3's post-attention and
+//      post-feed-forward norms — y is first normalized with its own gain.
+//   2. normed = (X × r) × g, where r = 1 / sqrt(mean(X²) + ε) and g is the
+//      norm's gain: llama.cpp's RMS_NORM then MUL, in that order. ε is the
+//      file's (model description). Gemma 3's gains need no special case:
+//      llama.cpp's converter stored them as 1 + w (arch/architecture.h).
+// The first layer's attention norm does not add — the embedding wrote X —
+// and the final norm covers only the step's last token, row tokens - 1,
+// which is all the output head reads (interface.h).
+//
+//   - One workgroup of 256 invocations per row. Invocation i takes the row's
+//     vec4s i, i + 256, …, holding them in registers, so X is read from
+//     memory once; rows up to 4,096 wide, at most 4 vec4s an invocation,
+//     cover every listed model (Llama 3.2 1B's 2,048 is the widest).
+//   - The sum of squares is reduced in workgroup memory, in a fixed tree:
+//     each invocation's own vec4s in order, then halving across the
+//     workgroup, 8 levels. No atomics (GDSA.5).
+//   - Determinism (GDSA.2): run to run, and independent of the step's other
+//     rows and its token count, since one workgroup reduces one row in one
+//     fixed order — so a token's normed row, and the key and value computed
+//     from it, are the same whether the token was prefilled or decoded. Not
+//     bit for bit with llama.cpp or across GPUs, which sum in other orders.
+//   - Accuracy: each output within 2⁻¹⁸ of the same computation in f64,
+//     measured against the largest output of its row — the bound for a
+//     4,096-wide row's sum (16 sequential adds an invocation, then 8 tree
+//     levels, each a rounding of at most 2⁻²⁴), the inverse square root's 2
+//     units, and the multiplies. Against the row, not the element: adding y
+//     into X can cancel, and an element near zero carries its row's error.
+//   - Variants are override constants, so one source serves all three:
+//     `add`, and `post_norm` (which requires `add`). Every binding is
+//     declared in every variant, so a launch that does not add still binds
+//     the output buffer and, without a post-norm, binds its gain twice: both
+//     read-only, so neither aliases a buffer the kernel writes.
+//   - Constants (binding 1), as WGSL lays them out:
+//       struct Norm { width: u32, epsilon: f32 }
+//     Bindings: 2 the gain, 3 the post-norm's gain, 4 the block's output y,
+//     read-only; 5 the hidden buffer X; 6 the normed buffer.
+//   - Gains are F32 and one piece: a norm's weight is one row of the hidden
+//     width, far under a binding (format.h's F32).
+//   - It reads the plan's `output` working buffer: a block's last matmul
+//     writes its result there, kPrefillBlock rows of the hidden width, and
+//     the norm after it adds it into X (residency/plan.h).
+//
+// What it costs, counted. Launches: two a layer and the final norm — 57 a
+// pass for Qwen3 0.6B, about 86 µs of dispatch at 1.5 µs (interface.h).
+// Bytes, a row, for Qwen3's 1,024 width: X read and written, y read, the
+// gain read, normed written — 4 KiB each, 20 KiB; Gemma 3's post-norm adds
+// its gain, 4.5 KiB at its 1,152. A 512-row prefill step moves about 10 MiB,
+// about 25 µs at 400 GB/s; a decode step's norm is one workgroup and its
+// launch. The reduction's 8 barriers bound a row's latency, not its bytes.
+// Optimization (practice): the residual add and the gain ride in the norm's
+// launch, as vLLM's fused_add_rms_norm and llama.cpp's RMS_NORM + MUL + ADD
+// do, rather than in launches of their own (GPU.6).
+// Optimization (browser): reduced in workgroup memory, not with subgroup
+// operations, which are an optional WebGPU feature.
+//
+// Verification the implementation is held to, on the GPU against an f64
+// reference: every variant, at the widths of the listed models; rows of
+// large and of tiny magnitude; a step of many rows and of one, each row's
+// result identical in both; and the final norm touching only the last row.
+//
+// Guidelines, by corpus:
+//   C++ performance guidelines
+//     GDSA.2 Declare each floating-point reduction's determinism level — as
+//            above.
+//     GDSA.5 Aggregate within the workgroup before touching global memory —
+//            no atomics; one write a row.
+//     GPU.5  Use workgroup memory where reuse or reordering pays — the
+//            reduction's partial sums, 1 KiB.
+//     GPU.6  Batch tiny GPU work — the add and the gain fused in.
+
+// One norm of the graph.
+struct NormLaunch {
+    const residency::WeightView& gain;            // F32, one row of the hidden width
+    const residency::WeightView* post_gain;       // Gemma 3's post-norm of y, or null
+    bool add;                                     // add y into X first; required by a post-norm
+    residency::BufferRange output;                // y: the block's output
+    residency::BufferRange hidden;                // X
+    residency::BufferRange normed;
+    float epsilon;
+    Rows rows;                                    // LastToken for the final norm
+};
+
+// The launch for one norm. Preconditions: the gains are F32 views of the
+// hidden width, at most 4,096; a post-norm only where the launch adds.
+[[nodiscard]] Launch norm_launch(const NormLaunch& norm);
+
+}  // namespace bllm::kernels

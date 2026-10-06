@@ -37,12 +37,18 @@ namespace bllm::kernels {
 //   - A kernel that reads a weight composes with that weight's format's
 //     unpack, which reads the binding named `weights` (format.h); a launch
 //     binds one piece of a weight, so a split weight is one launch per piece.
-//   - Geometry: a launch runs a fixed number of invocations for each token
-//     row of the step, in workgroups of a size the launcher chooses and gives
-//     the kernel as an override constant, so the size is stated once. The
-//     program works out each step's workgroups from its token count with
-//     core/gpu/dispatch_math. Workgroup size belongs to each kernel: the right
-//     value differs per kernel, and a shared constant would couple them.
+//   - Geometry: a launch runs a fixed number of invocations for each row it
+//     covers — every token of the step, or only its last, which is all the
+//     final norm and the output head need — in workgroups of a size the
+//     launcher chooses and gives the kernel as an override constant, so the
+//     size is stated once. The program works out each step's workgroups from
+//     its token count with core/gpu/dispatch_math. Workgroup size belongs to
+//     each kernel: the right value differs per kernel, and a shared constant
+//     would couple them. A kernel that covers only the last token works on
+//     row tokens - 1 of each buffer.
+//   - Variants: a kernel's other override constants select among its forms —
+//     the norm with or without the residual add — so one WGSL source serves
+//     them, and each distinct set compiles once.
 //   - The regime is chosen per step from its token count.
 //   - The step's token identifiers are below the vocabulary: the runtime
 //     checks them before it writes a step, since a kernel cannot tell an
@@ -125,6 +131,19 @@ struct Binding {
     std::uint64_t size;
 };
 
+// The rows a launch covers.
+enum class Rows {
+    EveryToken,
+    LastToken,
+};
+
+// A WGSL override constant and its value.
+struct Override {
+    std::string_view name;
+    double value;
+    friend bool operator==(const Override&, const Override&) = default;
+};
+
 // One launch, as a kernel launcher describes it.
 struct Launch {
     // The kernel's WGSL entry point and helpers, embedded at build time.
@@ -139,6 +158,9 @@ struct Launch {
     std::vector<Binding> bindings;
     std::uint32_t invocations_per_row;
     std::uint32_t workgroup_size;
+    Rows rows = Rows::EveryToken;
+    // Override constants beyond workgroup_size, which every kernel declares.
+    std::vector<Override> overrides;
 };
 
 }  // namespace bllm::kernels
