@@ -169,6 +169,7 @@ TEST_CASE("a file that breaks what describe needs says what and where") {
              Case{"tiny_gemma3_pattern_per_layer", DescribeError::UnsupportedValue,
                   "gemma3.attention.sliding_window_pattern"},
              // Rotary forms the rope kernel does not implement.
+             Case{"tiny_qwen3_odd_head", DescribeError::UnsupportedValue, "qwen3.attention.key_length"},
              Case{"tiny_qwen3_partial_rotation", DescribeError::UnsupportedValue, "qwen3.rope.dimension_count"},
              Case{"tiny_qwen3_rope_scaling", DescribeError::UnsupportedValue, "qwen3.rope.scaling.type"},
              Case{"tiny_llama_rope_freqs_wrong_shape", DescribeError::ShapeMismatch, "rope_freqs.weight"},

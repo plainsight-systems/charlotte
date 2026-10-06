@@ -41,7 +41,8 @@ struct RoleName {
 // Reads "<arch>.<key>" for every hyperparameter. The head dimension is
 // <arch>.attention.key_length, or the embedding width over the head count when
 // the file does not say. Fails on a value no architecture could run with, and,
-// as UnsupportedValue, on two rotary forms the rope kernel does not implement:
+// as UnsupportedValue, on an odd head dimension, whose last dimension RoPE
+// cannot pair, and on two rotary forms the rope kernel does not implement:
 // <arch>.rope.dimension_count other than the head dimension — part of each
 // head rotated — and <arch>.rope.scaling.type other than "none" — linear or
 // YaRN scaling of positions. A file declaring either would otherwise run with

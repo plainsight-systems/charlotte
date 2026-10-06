@@ -249,7 +249,7 @@ def rope_rows(rows=4, seed=0x1B873593):
 
 
 def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, reshape=None,
-               head_count_kv=KV, output_copy=False, context=64, extra_tensors=(), f16=()):
+               head_count_kv=KV, output_copy=False, context=64, extra_tensors=(), f16=(), key_length=D):
     """A tiny `arch` model. `reshape` is (tensor name, dims) to break a shape;
     tensors named in `f16` are stored as F16 rather than F32."""
     keys = {
@@ -259,7 +259,7 @@ def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, res
         "feed_forward_length": (U32, struct.pack("<I", F)),
         "attention.head_count": (U32, struct.pack("<I", H)),
         "attention.head_count_kv": (U32, struct.pack("<I", head_count_kv)),
-        "attention.key_length": (U32, struct.pack("<I", D)),
+        "attention.key_length": (U32, struct.pack("<I", key_length)),
         "attention.value_length": (U32, struct.pack("<I", D)),
         "attention.layer_norm_rms_epsilon": (F32, struct.pack("<f", 1e-6)),
         "rope.freq_base": (F32, struct.pack("<f", 1e6)),
@@ -442,6 +442,8 @@ CASES = {
     "tiny_qwen3_rope_declared": lambda: tiny_model("qwen3", extra=[
         kv(b"qwen3.rope.dimension_count", U32, struct.pack("<I", D)),
         kv(b"qwen3.rope.scaling.type", STRING, gstr(b"none"))]),
+    "tiny_qwen3_odd_head": lambda: tiny_model("qwen3", extra=[
+        kv(b"qwen3.rope.dimension_count", U32, struct.pack("<I", 33))], key_length=33),
     "tiny_qwen3_partial_rotation": lambda: tiny_model("qwen3", extra=[
         kv(b"qwen3.rope.dimension_count", U32, struct.pack("<I", D // 2))]),
     "tiny_qwen3_rope_scaling": lambda: tiny_model("qwen3", extra=[

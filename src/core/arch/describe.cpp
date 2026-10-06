@@ -158,7 +158,10 @@ DescribeResult read_hyperparameters(const gguf::TensorIndex& index, std::string_
     // The rope kernel rotates every dimension of a head, at unscaled
     // positions (kernels/rope/rope.h). A file that rotates part of each head
     // or scales its positions would run with every position wrong, so it is
-    // refused by name.
+    // refused by name; so is an odd head, whose last dimension has no pair.
+    if (out.head_dimension % 2 != 0) {
+        return failure(DescribeError::UnsupportedValue, key_of(arch, "attention.key_length"));
+    }
     std::uint32_t rotated = 0;
     if (auto r = read_u32_or(index, arch, "rope.dimension_count", out.head_dimension, rotated); !r.ok()) return r;
     if (rotated != out.head_dimension) {
