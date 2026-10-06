@@ -22,7 +22,6 @@ struct Step {
 }
 
 struct Norm {
-    width: u32,
     epsilon: f32,
 }
 
@@ -32,6 +31,9 @@ override workgroup_size: u32 = 256;
 override last_token: bool = false;
 override add: bool = false;
 override post_norm: bool = false;
+// The row's width, set by the program from the launcher; with no default, a
+// pipeline that is not given it fails to build.
+override width: u32;
 
 @group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> norm: Norm;
@@ -69,14 +71,18 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     if (row >= step.tokens) {
         return;
     }
-    let vec4s = norm.width / 4u;
+    let vec4s = width / 4u;
     let base = row * vec4s;
-    let n = f32(norm.width);
+    let n = f32(width);
+    // The vec4s each invocation takes, a constant once the pipeline is built:
+    // 1 for Qwen3, 2 for Llama 3.2 and Gemma 3. Every loop below runs that
+    // many times, not kMaxVec4s.
+    let per_invocation = (vec4s + workgroup_size - 1u) / workgroup_size;
 
     // Step 1: read the row into registers, vec4s index, index + 256, … — read
     // once, used by every step below.
     var x: array<vec4<f32>, kMaxVec4s>;
-    for (var k = 0u; k < kMaxVec4s; k++) {
+    for (var k = 0u; k < per_invocation; k++) {
         let i = index + k * workgroup_size;
         if (i < vec4s) {
             x[k] = hidden[base + i];
@@ -87,7 +93,7 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     // written back as the new hidden row.
     if (add) {
         var y: array<vec4<f32>, kMaxVec4s>;
-        for (var k = 0u; k < kMaxVec4s; k++) {
+        for (var k = 0u; k < per_invocation; k++) {
             let i = index + k * workgroup_size;
             if (i < vec4s) {
                 y[k] = output[base + i];
@@ -98,21 +104,21 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
         // on y.
         if (post_norm) {
             var squares = 0.0;
-            for (var k = 0u; k < kMaxVec4s; k++) {
+            for (var k = 0u; k < per_invocation; k++) {
                 if (index + k * workgroup_size < vec4s) {
                     squares = squares + dot(y[k], y[k]);
                 }
             }
             let r = inverseSqrt(reduce(index, squares) / n + norm.epsilon);
             workgroupBarrier();   // partial[0] read before Step 3 reduces again
-            for (var k = 0u; k < kMaxVec4s; k++) {
+            for (var k = 0u; k < per_invocation; k++) {
                 let i = index + k * workgroup_size;
                 if (i < vec4s) {
                     y[k] = (y[k] * r) * post_gain[i];
                 }
             }
         }
-        for (var k = 0u; k < kMaxVec4s; k++) {
+        for (var k = 0u; k < per_invocation; k++) {
             let i = index + k * workgroup_size;
             if (i < vec4s) {
                 x[k] = x[k] + y[k];
@@ -124,7 +130,7 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     // Step 3: the sum of squares. Each invocation sums its own vec4s' squares,
     // then reduce sums the 256 partial sums across the workgroup.
     var squares = 0.0;
-    for (var k = 0u; k < kMaxVec4s; k++) {
+    for (var k = 0u; k < per_invocation; k++) {
         if (index + k * workgroup_size < vec4s) {
             squares = squares + dot(x[k], x[k]);
         }
@@ -133,7 +139,7 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     // the same total, so every one computes the same r.
     let r = inverseSqrt(reduce(index, squares) / n + norm.epsilon);
     // Step 5: normed = (x × r) × g, written once.
-    for (var k = 0u; k < kMaxVec4s; k++) {
+    for (var k = 0u; k < per_invocation; k++) {
         let i = index + k * workgroup_size;
         if (i < vec4s) {
             normed[base + i] = (x[k] * r) * gain[i];

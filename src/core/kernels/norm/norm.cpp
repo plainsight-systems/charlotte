@@ -10,7 +10,6 @@ namespace {
 
 // Binding 1, as norm.wgsl's Norm lays it out.
 struct Constants {
-    std::uint32_t width;
     float epsilon;
 };
 
@@ -26,7 +25,7 @@ Binding whole(const residency::BufferRange& range) { return {range.buffer, range
 }  // namespace
 
 Launch norm_launch(const NormLaunch& n) {
-    const Constants constants{static_cast<std::uint32_t>(n.gain.shape().dimensions[0]), n.epsilon};
+    const Constants constants{n.epsilon};
     std::vector<std::byte> bytes(sizeof constants);
     std::memcpy(bytes.data(), &constants, sizeof constants);
     const bool post = n.post_gain != nullptr;
@@ -40,7 +39,9 @@ Launch norm_launch(const NormLaunch& n) {
         kWorkgroupSize,
         kWorkgroupSize,
         n.rows,
-        {{"add", n.add ? 1.0 : 0.0}, {"post_norm", post ? 1.0 : 0.0}},
+        {{"add", n.add ? 1.0 : 0.0},
+         {"post_norm", post ? 1.0 : 0.0},
+         {"width", static_cast<double>(n.gain.shape().dimensions[0])}},
     };
 }
 

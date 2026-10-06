@@ -29,7 +29,12 @@ namespace bllm::kernels {
 //   - One workgroup of 256 invocations per row. Invocation i takes the row's
 //     vec4s i, i + 256, …, holding them in registers, so X is read from
 //     memory once; rows up to 4,096 wide, at most 4 vec4s an invocation,
-//     cover every listed model (Llama 3.2 1B's 2,048 is the widest).
+//     cover every listed model (Llama 3.2 1B's 2,048 is the widest). The
+//     width is an override constant, so each invocation's loops run
+//     ceil(W / 1,024) times, fixed when the pipeline is built — once for
+//     Qwen3, twice for Llama 3.2 and Gemma 3 — and the bounds check folds
+//     away where 1,024 divides the width. A model has one width, so this
+//     adds no pipelines.
 //   - The sum of squares is reduced in workgroup memory, in a fixed tree:
 //     each invocation's own vec4s in order, then halving across the
 //     workgroup, 8 levels. No atomics (GDSA.5). A barrier where one
@@ -55,12 +60,12 @@ namespace bllm::kernels {
 //     overflow f32 — about 10¹⁹ — is outside it; no listed model's
 //     activations come near.
 //   - Variants are override constants, so one source serves all three:
-//     `add`, and `post_norm` (which requires `add`). Every binding is
+//     `add`, and `post_norm` (which requires `add`); `width` is one too. Every binding is
 //     declared in every variant, so a launch that does not add still binds
 //     the output buffer and, without a post-norm, binds its gain twice: both
 //     read-only, so neither aliases a buffer the kernel writes.
 //   - Constants (binding 1), as WGSL lays them out:
-//       struct Norm { width: u32, epsilon: f32 }
+//       struct Norm { epsilon: f32 }
 //     Bindings: 2 the gain, 3 the post-norm's gain, 4 the block's output y,
 //     read-only; 5 the hidden buffer X; 6 the normed buffer.
 //   - Gains are F32 and one piece: a norm's weight is one row of the hidden
@@ -87,6 +92,11 @@ namespace bllm::kernels {
 // Optimization (practice): the residual add and the gain ride in the norm's
 // launch, as vLLM's fused_add_rms_norm and llama.cpp's RMS_NORM + MUL + ADD
 // do, rather than in launches of their own (GPU.6).
+// Optimization (practice): the width fixed at pipeline creation, not read
+// from a uniform, so the loops run as many times as the row needs, not 4
+// (GDSA.6's whole-tile accounting: an inactive iteration still costs its
+// instructions). Gemma 3's 288 vec4s still leave 224 invocations idle in
+// the second.
 // Optimization (browser): reduced in workgroup memory, not with subgroup
 // operations, which are an optional WebGPU feature.
 //
@@ -101,6 +111,8 @@ namespace bllm::kernels {
 //            above.
 //     GDSA.5 Aggregate within the workgroup before touching global memory —
 //            no atomics; one write a row.
+//     GDSA.6 Count passes over global memory — the bytes above; and no
+//            loop iterations beyond the row's.
 //     GPU.5  Use workgroup memory where reuse or reordering pays — the
 //            reduction's partial sums, 1 KiB.
 //     GPU.6  Batch tiny GPU work — the add and the gain fused in.

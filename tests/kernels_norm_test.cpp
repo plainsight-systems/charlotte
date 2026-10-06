@@ -46,11 +46,10 @@ TEST_CASE("a norm launch binds both gains, the output, hidden and normed, and se
     CHECK(with_post.bindings[4].buffer == normed.buffer);
     CHECK(override_of(with_post, "add") == 1.0);
     CHECK(override_of(with_post, "post_norm") == 1.0);
-    std::uint32_t width = 0;
+    CHECK(override_of(with_post, "width") == 1152.0);
+    REQUIRE(with_post.constants.size() == 4);
     float epsilon = 0;
-    std::memcpy(&width, with_post.constants.data(), 4);
-    std::memcpy(&epsilon, with_post.constants.data() + 4, 4);
-    CHECK(width == 1152);
+    std::memcpy(&epsilon, with_post.constants.data(), 4);
     CHECK(epsilon == 1e-6f);
     CHECK(with_post.invocations_per_row == 256);   // one workgroup a row
     CHECK(with_post.workgroup_size == 256);
