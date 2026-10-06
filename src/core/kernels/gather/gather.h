@@ -2,7 +2,6 @@
 
 #include <vector>
 
-#include "core/formats/format.h"
 #include "core/kernels/interface.h"
 #include "core/residency/plan.h"
 #include "core/residency/weight_view.h"
@@ -53,10 +52,17 @@ namespace bllm::kernels {
 // contiguously and adjacent invocations take adjacent groups, so a
 // workgroup's writes are one contiguous run (GPU.2).
 //
-// Tested on the GPU against the format's CPU reference (tests/support):
-// every row of a step, for each listed format, bit for bit within format.h's
-// contract; a table forced into several pieces, with identifiers on either
-// side of each boundary; and a scale other than 1.
+// Verification the implementation is held to, on the GPU against the
+// format's CPU reference (tests/support): every row of a step, for each
+// listed format, bit for bit within format.h's contract; a table forced into
+// several pieces, with identifiers on either side of each boundary; and a
+// scale other than 1.
+//
+// Pieces are not bound together. One launch could bind every piece and pick
+// one by identifier, saving 1.7 µs a step for Llama 3.2 and 3.4 µs for
+// Gemma 3, about a tenth to a third of a percent of a decode step; it would
+// need an unpack for each binding, where every format's unpack reads the one
+// binding named `weights` (format.h).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -70,10 +76,13 @@ namespace bllm::kernels {
 //     GPU.6  Batch tiny GPU work — one launch a piece, counted above.
 
 // The launches that embed a step's tokens: one for each piece of `table`,
-// in order, writing rows of `hidden`, each weight multiplied by `scale`.
-// Preconditions: `table` is the token embedding, in `format`, with rows a
-// whole number of 32-weight groups; `hidden` is the plan's hidden buffer.
-[[nodiscard]] std::vector<Launch> gather_launches(const residency::WeightView& table, const formats::Format& format,
+// in order, writing rows of `hidden`, each weight multiplied by `scale`. The
+// unpack is the one the capability table lists for the view's own format,
+// so a view cannot be read with another format's. Preconditions: `table` is
+// the token embedding, in a format the capability table lists — routes
+// refused any other — with rows a whole number of 32-weight groups; `hidden`
+// is the plan's hidden buffer.
+[[nodiscard]] std::vector<Launch> gather_launches(const residency::WeightView& table,
                                                   const residency::BufferRange& hidden, float scale);
 
 }  // namespace bllm::kernels

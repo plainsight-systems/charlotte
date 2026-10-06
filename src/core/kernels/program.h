@@ -34,11 +34,15 @@ namespace bllm::kernels {
 //     changes from the launch before, then one submit. Launches run in the
 //     order given, which is the graph's; WebGPU orders dispatches in a pass
 //     by their buffer use, so a launch sees what the one before it wrote.
-//   - Failure is visible, as upload's is. Build runs inside validation and
-//     internal error scopes, and a pipeline that fails to compile reports
-//     WebGPU's message; a step runs inside a validation scope popped with
-//     the step's completion, and either failing fails the step. A lost
-//     device fails whatever is in flight.
+//   - Failure is visible, as upload's is. Build runs inside out-of-memory,
+//     validation and internal error scopes, and a pipeline that fails to
+//     compile reports WebGPU's message; a step runs inside validation and
+//     internal scopes popped with the step's completion, and any of them
+//     failing fails the step. A step reported done is not proof the device
+//     ran it: a lost device resolves queued work as done and scopes clean
+//     (gpu/device.h). What a step computed is trusted only through a
+//     completed mapping, which a lost device refuses — the sampler's
+//     readback of the step's candidates, as upload's witness is its.
 //   - It borrows: the upload, and so its buffers, outlives the program
 //     (I.11). Callbacks keep their state alive on their own, as upload's do,
 //     so destroying a program with a step in flight reports Cancelled.
@@ -46,12 +50,14 @@ namespace bllm::kernels {
 // What a step costs, counted: calls into WebGPU are 1 writeBuffer of 16 +
 // 16 × ceil(tokens / 4) bytes, 1 createCommandEncoder, 1 beginComputePass,
 // for each launch 1 setBindGroup, 1 dispatchWorkgroups and 1 setPipeline
-// where the kernel changes, then end, finish, submit, the scope's push and
-// pop and onSubmittedWorkDone: 9 calls and 2 or 3 a launch. Measured on the
-// target (interface.h), encoding is 0.03 µs a launch and the GPU 1.7 µs a
-// dispatch, so the program adds nothing a step but the launches themselves.
-// Build costs a pipeline per distinct kernel — about a dozen for a model —
-// and a bind group per launch, once.
+// where the kernel changes, then end, finish, submit, two scopes' pushes and
+// pops and onSubmittedWorkDone: 11 calls, and 2 or 3 a launch. Three objects
+// are made a step, because WebGPU makes a command encoder, a pass encoder
+// and a command buffer single-use; everything else — buffers, pipelines,
+// bind groups — is made at load. Measured on the target (interface.h): the
+// GPU's 1.7 µs a dispatch, and about 0.9 ms from submit to done for a pass,
+// which a step pays once. Build costs a pipeline per distinct kernel — about
+// a dozen for a model — and a bind group per launch, once.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -63,14 +69,15 @@ namespace bllm::kernels {
 //     GPU.9  Suballocate — one constants buffer for every launch.
 //     WASM.2 Batch work across the JS boundary — one write a step.
 //     WASM.7 Budget startup — pipelines compile together, asynchronously.
-//     MEM.9  Allocate at init — nothing is created per step.
+//     MEM.9  Allocate at init — buffers, pipelines and bind groups at load;
+//            a step makes only the single-use encoders WebGPU requires.
 
 enum class ProgramError {
     Ok,
     // A pipeline failed to compile, or building the bind groups or buffers
     // failed validation. The message is WebGPU's.
     Build,
-    // A step failed validation or the device reported an internal error.
+    // A step failed validation, or the device reported an internal error.
     Step,
     DeviceLost,
     // The program was destroyed with work in flight.

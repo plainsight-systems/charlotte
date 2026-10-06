@@ -50,15 +50,18 @@ namespace bllm::kernels {
 //
 // What a launch costs, measured on the target (Chrome 152, Apple M3 Max,
 // Metal; 300 one-workgroup dispatches a pass, medians of 20 runs of 40
-// passes): encoding is about 0.03 µs a launch from JavaScript, pipeline
-// changes included; the GPU spends about 1.7 µs on every dispatch, whatever
-// its work and whether or not dispatches share a buffer; submitting one pass
-// and hearing it done takes about 0.9 ms. So a pass is launch-bound in GPU
-// time, not CPU time: 300 launches are about 0.5 ms, against the about 1.3 ms
-// that reading Qwen3 0.6B's 380 MB of weights takes at the M3 Max's 400 GB/s
-// (an inference from its published bandwidth). WebGPU has no captured
-// compute sequence to replay, so the lever is fusion: each kernel's header
-// states its launches a pass, and the graph keeps the total low (GPU.6).
+// passes): the GPU spends about 1.7 µs on every dispatch on top of its own
+// work, whether or not dispatches share a buffer; encoding from JavaScript
+// is about 0.03 µs a launch, pipeline changes included, a lower bound for
+// the module's path, which adds a wasm-to-browser crossing a call; and
+// submitting one pass and hearing it done takes about 0.9 ms. So a graph of
+// 300 launches pays about 0.5 ms a pass in dispatch overhead, about half the
+// 0.95 ms floor for reading Qwen3 0.6B's 380 MB of weights at the M3 Max's
+// 400 GB/s (its published bandwidth). That is not small, and WebGPU has no
+// captured compute sequence to replay, so the lever is fusion: each kernel's
+// header states its launches a pass, and the graph keeps the total low
+// (GPU.6). The module's own encoding cost, and where a real pass's time goes,
+// are measured once the program runs (GPU.10).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -66,7 +69,9 @@ namespace bllm::kernels {
 //            planned buffers through Binding, never a raw offset alone.
 //   C++ performance guidelines
 //     GPU.6  Batch tiny GPU work — the measurement above, and fusion as the
-//            response; the workload is recorded as launch-bound.
+//            response; each kernel records its launches.
+//     GPU.10 Profile before optimizing — the module's path is measured once
+//            it runs, not assumed from the JavaScript figure.
 //     GPU.9  Suballocate — every launch's constants in one buffer.
 //     WASM.2 Batch work across the JS boundary — the step's parameters and
 //            identifiers in one write; constants in one write, at load.
