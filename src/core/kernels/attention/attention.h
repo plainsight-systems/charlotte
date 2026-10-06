@@ -83,20 +83,26 @@ namespace bllm::kernels {
 //     A step's workgroups: ceil(tokens / R) × H_kv × splits. A decode
 //     step's tile holds one row, its other query slots idle; its keys and
 //     values are read once all the same, which is what decode is bound by.
-//   - Per tile, four phases, a barrier after each: load the tile's keys and
+//   - Per tile, four phases, a barrier before each: load the tile's keys and
 //     values, slot j mod slots (cache/kv.h), coalesced; scores, invocation
 //     (m, b) taking the dot product of query m and key b, d multiply-adds,
 //     key rows padded by a word so the invocations reading different keys
-//     at one column hit different banks (GPU.5); the online softmax, one
-//     invocation a query; and O = O × α + P · V, each invocation 16 of the
-//     M × d outputs, adjacent invocations adjacent words of each value row.
+//     at one column hit different banks (GPU.5); the online softmax, by
+//     each query's owner, the first of its invocations; and O = O × α + P ·
+//     V, each invocation 16 of the M × d outputs, adjacent invocations
+//     adjacent words of each value row. At a chunk's end every invocation
+//     folds its own outputs with the chunk's statistics, written before the
+//     last tile's third barrier, and keeps the query's running maximum and
+//     sum itself, so the fold needs no barrier.
 //   - Exponentials are base 2: queries are multiplied by scale × log2(e)
 //     as they are staged, so a score is already in log2 units and exp2
 //     replaces exp, FlashAttention-2's form.
 //   - Masks: a key is live for query p when j <= p and j >= p − W + 1. A
 //     masked score is never formed: its weight is set to 0 and it is left
-//     out of the maximum, with an explicit "live" flag in place of −∞,
-//     since WGSL lets an implementation assume no infinities. A tile with
+//     out of the maximum. Liveness is recomputed from positions wherever it
+//     is needed, never carried in a score: WGSL lets an implementation
+//     assume no infinities, and no finite sentinel lies below every finite
+//     score. A tile with
 //     no live key for a query leaves its state exactly as it was. Tiles
 //     past a workgroup's last row are not loaded: causal tiles above the
 //     diagonal are skipped.

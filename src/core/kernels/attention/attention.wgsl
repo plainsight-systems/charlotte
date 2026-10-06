@@ -41,9 +41,6 @@ override lanes_per_query: u32 = workgroup_size / queries_per_tile;     // 64 / M
 
 const kChunkKeys = 256u;
 const kPartialRows = 512u;
-// A masked score: below any live one, finite, since WGSL may assume no
-// infinities (GDSA.16).
-const kMasked = -1.0e30;
 
 @group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> attention: Attention;
@@ -65,7 +62,7 @@ const kMasked = -1.0e30;
 // main's workgroup memory: the tile of queries, f32, M × d = 1,024; the
 // tile of keys as stored, each row padded by a word against bank
 // conflicts; the tile of values as stored, B × d / 2 = 1,024 words; the
-// tile's scores, then weights; and each query's statistics.
+// tile's scores, then weights; and each query's chunk statistics.
 var<workgroup> q_tile: array<f32, 1024>;
 var<workgroup> k_tile: array<u32, keys_per_tile * (head_dimension / 2u + 1u)>;
 var<workgroup> v_tile: array<u32, 1024>;
@@ -74,11 +71,6 @@ var<workgroup> chunk_live: array<u32, queries_per_tile>;
 var<workgroup> chunk_m: array<f32, queries_per_tile>;
 var<workgroup> chunk_l: array<f32, queries_per_tile>;
 var<workgroup> alpha: array<f32, queries_per_tile>;
-var<workgroup> run_live: array<u32, queries_per_tile>;
-var<workgroup> run_m: array<f32, queries_per_tile>;
-var<workgroup> run_l: array<f32, queries_per_tile>;
-var<workgroup> fold_a: array<f32, queries_per_tile>;
-var<workgroup> fold_b: array<f32, queries_per_tile>;
 
 // The step's chunks for this layer, as kernels/interface.h's key_chunks:
 // x the first, y the count, z the splits.
@@ -94,6 +86,16 @@ fn key_chunks() -> vec3<u32> {
         splits = count;
     }
     return vec3<u32>(first, count, splits);
+}
+
+// Whether key position j is live for row r of the workgroup's tile, whose
+// first row is at p_first: within the step's rows and the tile's keys,
+// causal, and within the window. Recomputed wherever needed, so no score
+// carries it: WGSL may assume no infinities, and no finite sentinel is
+// below every score (GDSA.16).
+fn is_live(r: u32, rows: u32, j: u32, k_end: u32, p_first: u32) -> bool {
+    let p = p_first + r;
+    return r < rows && j < k_end && j <= p && j + attention.window > p;
 }
 
 // Folding a chunk's state into a query's: the result is a × state + b ×
@@ -145,7 +147,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
         earliest = p_first + 1u - attention.window;
     }
     // The chunks this workgroup computes: its split's, or every one its
-    // rows reach.
+    // rows reach — each of which then holds at least one tile.
     var c_begin = earliest / kChunkKeys;
     var c_end = p_last / kChunkKeys + 1u;
     if (chunks.z > 1u) {
@@ -156,39 +158,42 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
     // Stage the queries: query vector m is row m / G, head kv × G + m % G,
     // scaled into log2 units. Rows past the step are zeros, never live.
     for (var i = t; i < 256u; i += workgroup_size) {
-        let m = i / quads;
+        let qm = i / quads;
         let c = i % quads;
-        let r = m / group;
+        let r = qm / group;
         var q = vec4<f32>(0.0);
         if (r < rows) {
-            q = query[((row0 + r) * query_heads + kv * group + m % group) * quads + c] * attention.scale_log2e;
+            q = query[((row0 + r) * query_heads + kv * group + qm % group) * quads + c] * attention.scale_log2e;
         }
-        let at = m * d + 4u * c;
+        let at = qm * d + 4u * c;
         q_tile[at] = q.x;
         q_tile[at + 1u] = q.y;
         q_tile[at + 2u] = q.z;
         q_tile[at + 3u] = q.w;
     }
-    if (t < queries_per_tile) {
-        run_live[t] = 0u;
-        run_m[t] = 0.0;
-        run_l[t] = 0.0;
-    }
 
     // This invocation's part of the output: query m, word pairs lane, lane
-    // + 64 / M, … — four vec4s, 16 values.
+    // + 64 / M, … — four vec4s, 16 values. Query m's statistics belong to
+    // its lane 0, which alone writes them: the softmax's, then the split's.
     let m = t / lanes_per_query;
     let lane = t % lanes_per_query;
+    let owner = lane == 0u;
+    let r = m / group;
+    let head = kv * group + m % group;
     var o_run = array<vec4<f32>, 4>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
     var o_chunk = o_run;
+    // The fold so far, kept by every lane of the query alike, each folding
+    // with the same functions the combine does — so no lane waits on another.
+    var run_live = false;
+    var run_m = 0.0;
+    var run_l = 0.0;
+    if (owner) {
+        chunk_live[m] = 0u;
+        chunk_m[m] = 0.0;
+        chunk_l[m] = 0.0;
+    }
 
     for (var c = c_begin; c < c_end; c++) {
-        workgroupBarrier();   // the last chunk's statistics are read
-        if (t < queries_per_tile) {
-            chunk_live[t] = 0u;
-            chunk_m[t] = 0.0;
-            chunk_l[t] = 0.0;
-        }
         for (var k = 0u; k < 4u; k++) {
             o_chunk[k] = vec4<f32>(0.0);
         }
@@ -197,7 +202,14 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
         let k_begin = max(c * kChunkKeys, earliest / keys_per_tile * keys_per_tile);
         let k_end = min((c + 1u) * kChunkKeys, p_last + 1u);
         for (var j0 = k_begin; j0 < k_end; j0 += keys_per_tile) {
-            workgroupBarrier();   // the last tile is read
+            workgroupBarrier();   // the last tile's phases, and the last chunk's fold, are done
+            // A chunk's statistics start empty, after the barrier every lane
+            // of the last chunk's fold has passed.
+            if (owner && j0 == k_begin) {
+                chunk_live[m] = 0u;
+                chunk_m[m] = 0.0;
+                chunk_l[m] = 0.0;
+            }
 
             // Phase 1: the tile's keys and values from the KV cache, slot j
             // mod slots, a vec4 of words at a time.
@@ -230,63 +242,59 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
             for (var pair = t; pair < queries_per_tile * keys_per_tile; pair += workgroup_size) {
                 let qm = pair / keys_per_tile;
                 let b = pair % keys_per_tile;
-                let r = qm / group;
-                let j = j0 + b;
-                let p = p_first + r;
-                var s = kMasked;
-                if (r < rows && j < k_end && j <= p && j + attention.window > p) {
-                    var acc = 0.0;
+                var s = 0.0;
+                if (is_live(qm / group, rows, j0 + b, k_end, p_first)) {
                     for (var w = 0u; w < quads; w++) {
                         let ka = b * (words + 1u) + 2u * w;
                         let kk = unpack4(vec2<u32>(k_tile[ka], k_tile[ka + 1u]));
                         let qa = qm * d + 4u * w;
-                        acc += dot(vec4<f32>(q_tile[qa], q_tile[qa + 1u], q_tile[qa + 2u], q_tile[qa + 3u]), kk);
+                        s += dot(vec4<f32>(q_tile[qa], q_tile[qa + 1u], q_tile[qa + 2u], q_tile[qa + 3u]), kk);
                     }
-                    s = acc;
                 }
                 p_tile[pair] = s;
             }
             workgroupBarrier();
 
-            // Phase 3: the online softmax, one invocation a query. A tile
-            // with no live key leaves the query's state as it was.
-            if (t < queries_per_tile) {
-                var top_tile = kMasked;
+            // Phase 3: the online softmax, by each query's owner. Liveness is
+            // the mask's, recomputed from positions, never read from a
+            // score. A tile with no live key leaves the query's state as it
+            // was.
+            if (owner) {
+                var top_tile = 0.0;
                 var seen = false;
                 for (var b = 0u; b < keys_per_tile; b++) {
-                    let s = p_tile[t * keys_per_tile + b];
-                    if (s > kMasked) {
+                    if (is_live(r, rows, j0 + b, k_end, p_first)) {
+                        let s = p_tile[m * keys_per_tile + b];
+                        top_tile = select(s, max(top_tile, s), seen);
                         seen = true;
-                        top_tile = max(top_tile, s);
                     }
                 }
                 var a = 1.0;
                 if (seen) {
-                    var old = chunk_m[t];
-                    if (chunk_live[t] == 0u) {
+                    var old = chunk_m[m];
+                    if (chunk_live[m] == 0u) {
                         old = top_tile;
-                        chunk_live[t] = 1u;
+                        chunk_live[m] = 1u;
                     }
                     let top = max(old, top_tile);
                     a = select(exp2(old - top), 1.0, old == top);
                     var sum = 0.0;
                     for (var b = 0u; b < keys_per_tile; b++) {
-                        let s = p_tile[t * keys_per_tile + b];
                         var e = 0.0;
-                        if (s > kMasked) {
-                            e = exp2(s - top);
+                        if (is_live(r, rows, j0 + b, k_end, p_first)) {
+                            e = exp2(p_tile[m * keys_per_tile + b] - top);
                         }
-                        p_tile[t * keys_per_tile + b] = e;
+                        p_tile[m * keys_per_tile + b] = e;
                         sum += e;
                     }
-                    chunk_l[t] = chunk_l[t] * a + sum;
-                    chunk_m[t] = top;
+                    chunk_l[m] = chunk_l[m] * a + sum;
+                    chunk_m[m] = top;
                 } else {
                     for (var b = 0u; b < keys_per_tile; b++) {
-                        p_tile[t * keys_per_tile + b] = 0.0;
+                        p_tile[m * keys_per_tile + b] = 0.0;
                     }
                 }
-                alpha[t] = a;
+                alpha[m] = a;
             }
             workgroupBarrier();
 
@@ -302,50 +310,42 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
                 o_chunk[k] = acc;
             }
         }
-        workgroupBarrier();   // the chunk's statistics are final
-
-        let r = m / group;
-        let head = kv * group + m % group;
         if (chunks.z > 1u) {
-            // Split: the chunk's unnormalized state, for the combine.
+            // Split: the chunk's unnormalized state, for the combine. Only
+            // the owner reads the statistics, its own writes.
             if (r < rows) {
                 let at = (split * step.tokens + row0 + r) * query_heads + head;
                 for (var k = 0u; k < 4u; k++) {
                     partials[at * quads + lane + k * lanes_per_query] = o_chunk[k];
                 }
-                if (lane == 0u) {
+                if (owner) {
                     partial_stats[at] = vec2<f32>(chunk_m[m], select(0.0, chunk_l[m], chunk_live[m] == 1u));
                 }
             }
         } else {
             // Unsplit: folded here, in chunk order, as the combine folds.
-            if (t < queries_per_tile) {
-                let f = fold_factors(run_live[t] == 1u, run_m[t], chunk_live[t] == 1u, chunk_m[t]);
-                fold_a[t] = f.x;
-                fold_b[t] = f.y;
-                run_l[t] = fold_sum(run_l[t], f.x, chunk_l[t], f.y);
-                run_m[t] = f.z;
-                run_live[t] = run_live[t] | chunk_live[t];
-            }
-            workgroupBarrier();
+            // An unsplit chunk has a tile, so its statistics were written
+            // before that tile's third barrier and every lane reads them
+            // final, with no barrier of their own.
+            let live = chunk_live[m] == 1u;
+            let f = fold_factors(run_live, run_m, live, chunk_m[m]);
+            run_l = fold_sum(run_l, f.x, chunk_l[m], f.y);
             for (var k = 0u; k < 4u; k++) {
-                o_run[k] = fold(o_run[k], fold_a[m], o_chunk[k], fold_b[m]);
+                o_run[k] = fold(o_run[k], f.x, o_chunk[k], f.y);
             }
+            run_m = f.z;
+            run_live = run_live || live;
         }
     }
 
-    if (chunks.z == 1u) {
-        workgroupBarrier();   // the last fold's statistics are written
-        let r = m / group;
-        if (r < rows) {
-            let at = (row0 + r) * query_heads + kv * group + m % group;
-            for (var k = 0u; k < 4u; k++) {
-                var out = vec4<f32>(0.0);
-                if (run_live[m] == 1u) {
-                    out = finish(o_run[k], run_l[m]);
-                }
-                attended[at * quads + lane + k * lanes_per_query] = out;
+    if (chunks.z == 1u && r < rows) {
+        let at = (r + row0) * query_heads + head;
+        for (var k = 0u; k < 4u; k++) {
+            var out = vec4<f32>(0.0);
+            if (run_live) {
+                out = finish(o_run[k], run_l);
             }
+            attended[at * quads + lane + k * lanes_per_query] = out;
         }
     }
 }
