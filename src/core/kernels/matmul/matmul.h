@@ -26,7 +26,9 @@ namespace bllm::kernels {
 // weight is written out expanded (GDSA.18).
 //
 // Two forms, one per regime, each its own launch; a step runs one (the
-// launch contract's regime, below):
+// launch contract's regime, below). The head is the exception: it covers
+// the step's last token alone, in both regimes, so its one launch is the
+// decode form, run in every step.
 //   - Decode, one token: a matrix times a vector, bound by reading each
 //     weight once. Workgroups of 64 invocations take 8 rows, 8 invocations
 //     a row; invocation l of a row takes the row's groups l, l + 8, …, each
@@ -109,9 +111,13 @@ namespace bllm::kernels {
 // bytes far apart. So norm, rope and attention give a token the same bits
 // however a prefill is chunked, and decode and prefill agree to rounding.
 //
-// Accuracy: each output within K × 2⁻²⁴ × Σ_k |W[o][k] × x[k]| of the
-// same sum in f64 over the decoded weights — f32 adds in sequence, at most
-// 3,072 terms here. The weights decode as format.h states.
+// Accuracy: each output within γ(2K) × Σ_k |W[o][k] × x[k]| of the same
+// sum in f64 over the decoded weights, γ(n) = n u / (1 − n u) and u = 2⁻²⁴:
+// the standard bound for a sum of K products whose multiplies and adds
+// round separately, which a fused multiply-add only tightens — WGSL leaves
+// contraction to the compiler. K is at most 8,192, Llama 3.2's down
+// projection, so γ(2K) is at most 2⁻¹⁰ / (1 − 2⁻¹⁰), about 2⁻¹⁰. The weights decode as format.h states. As
+// the norm's, a bound the GPU test checks on the target.
 //
 // What it costs, counted, for Qwen3.
 //   - Decode. Weights read once: a layer's QKV 2.36 MB, output 1.18 MB,
@@ -220,7 +226,8 @@ struct MatmulLaunch {
 };
 
 // The product's launches: for each piece of the weight, a decode form and a
-// prefill form, or for the head, the decode form alone. Preconditions: K is
+// prefill form, each in its regime; or for the head, the decode form alone,
+// in every regime. Preconditions: K is
 // a whole number of 32-weight groups; a fused view's rows are the epilogue's.
 [[nodiscard]] std::vector<Launch> matmul_launches(const MatmulLaunch& matmul);
 
