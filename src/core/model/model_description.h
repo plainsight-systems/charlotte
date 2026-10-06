@@ -59,6 +59,14 @@ enum class RotaryPairing {
     Halves,
 };
 
+// The activation a gated feed-forward block applies to its gate before
+// multiplying by up: SiLU (SwiGLU) for Qwen3 and Llama, GELU in its tanh
+// form (GeGLU) for Gemma 3, as llama.cpp's graphs apply them.
+enum class FeedForwardActivation {
+    SiLU,
+    GeluTanh,
+};
+
 struct LayerDescription {
     std::uint32_t query_heads;
     std::uint32_t key_value_heads;

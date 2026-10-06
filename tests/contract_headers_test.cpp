@@ -12,6 +12,7 @@
 #include "core/gguf/index.h"
 #include "core/kernels/attention/attention.h"
 #include "core/kernels/gather/gather.h"
+#include "core/kernels/matmul/matmul.h"
 #include "core/kernels/interface.h"
 #include "core/kernels/norm/norm.h"
 #include "core/kernels/rope/rope.h"
