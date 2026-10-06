@@ -82,10 +82,11 @@ output head, both on the step's last token only.
 | Llama 3.2 1B | 16 | 2 | 128 | 2 | 132 | 0.20 ms |
 | Gemma 3 1B | 26 | 3 | 208 | 2 | 213 | 0.32 ms |
 
-A step split across the context — a decode step past 256 tokens of context,
-or any step whose rows times 256-token chunks fit the partial buffers — adds
-attention's combine in each layer: 28 more for Qwen3, 16 for Llama 3.2, 26
-for Gemma 3 (`core/kernels/attention/attention.h`).
+A layer split across the context — a step whose rows times the layer's
+256-token chunks of keys fit the partial buffers, as a decode step's do once
+its keys span two chunks — adds attention's combine in that layer: up to 28
+more for Qwen3, 16 for Llama 3.2, 26 for Gemma 3
+(`core/kernels/attention/attention.h`).
 
 Without these fusions Qwen3's pass would be over 300 launches: a norm, three
 projections, two QK-norms, RoPE, a cache write, attention, a projection and

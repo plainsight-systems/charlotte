@@ -43,19 +43,26 @@ namespace bllm::kernels {
 //     query's output depends on its position, its query and the cached keys
 //     and values in its window, and on nothing about the step: not its token
 //     count, not which workgroup took which chunk (CDSA.23).
+//   - Active chunks. A layer's step needs the chunks from the one holding
+//     its first row's earliest key to the one holding its last row:
+//       first = floor(max(0, position − W + 1) / 256)
+//       last  = floor((position + tokens − 1) / 256)
+//     W the layer's window — the trained context for a full-attention layer,
+//     so first is 0 — giving count = last − first + 1: every chunk for a
+//     full-attention layer, at most three for one of Gemma 3's 512-key
+//     window layers however long the context. Chunks outside are never
+//     scheduled; leaving out a chunk with no live key changes no result.
 //   - Splits. When a step has few rows, one workgroup a chunk: split s takes
-//     chunk s, writes its unnormalized (m, l, O) for each query to the
-//     partial buffers, and a combine launch folds them in chunk order and
-//     divides — Flash-Decoding's split, and vLLM's PagedAttention V2 over
-//     512-token partitions. When it has many, one workgroup folds every
-//     chunk itself, with the same merge. The step's splits are
-//       splits = chunks if tokens × chunks <= 512, else 1,
-//       chunks  = ceil((position + tokens) / 256)
-//     — key_splits below — so the partial buffers hold 512 query rows, the
-//     attention buffer's own size. A chunk wholly outside a workgroup's
-//     rows' windows writes an empty partial, which the combine skips: Gemma
-//     3's window layers, 512 keys wide, leave all but two or three of a long
-//     context's splits empty.
+//     chunk first + s, writes its unnormalized (m, l, O) for each query to
+//     the partial buffers, and a combine launch folds the count of them in
+//     chunk order and divides — Flash-Decoding's split, and vLLM's
+//     PagedAttention V2 over 512-token partitions. When it has many, one
+//     workgroup folds every active chunk itself, with the same merge. A
+//     layer's step splits when tokens × count <= 512, so the partial
+//     buffers hold 512 query rows, the attention buffer's own size
+//     (key_chunks below). A chunk holding no live key for some of a
+//     workgroup's rows writes empty partials for them, which the combine
+//     skips.
 //   - Tiles. A workgroup is 64 invocations and holds, in workgroup memory, a
 //     tile of M = 1,024 / d query vectors — R = M / G consecutive rows of
 //     the step, for the G query heads sharing one key-value head — at f32,
@@ -104,13 +111,14 @@ namespace bllm::kernels {
 //     read-only and writes 5. Six storage buffers, under WebGPU's default 8.
 //
 // What it asks of the other contracts:
-//   - kernels/interface.h and program.h: the step's splits are the
-//     program's to set — one of Step's padding words becomes `splits`,
-//     written with the step's one write from the rule a launch names
-//     (key_splits); a launch may cover whole tiles of rows, ceil(rows /
-//     rows_per_tile) of them, multiplied by the step's splits; and a launch
-//     may run only when the step is split, which the combine does, so an
-//     unsplit step pays no launch for it.
+//   - kernels/interface.h and program.h: a launch may cover whole tiles of
+//     rows, ceil(rows / rows_per_tile) of them; it may be split by key
+//     chunks, naming its layer's window, so the program multiplies its
+//     workgroups by key_chunks' split count for the step; and it may run
+//     only when the step splits, which the combine does, so an unsplit step
+//     pays no launch for it. The kernel computes the same first chunk and
+//     split from the step's position and token count and its window, in
+//     WGSL; the tests hold the two to agreement at every boundary.
 //   - residency/plan.h: two working buffers — partial values, 512 rows of
 //     H_q × d floats, and partial statistics, 512 rows of H_q × 2 — each a
 //     buffer of its own.
@@ -184,7 +192,10 @@ namespace bllm::kernels {
 //     shader cores.
 //   - WGSL may assume no infinities: masks are flags, not −∞.
 //   - WGSL zero-fills workgroup memory: 12.7 KiB for Qwen3, stored once a
-//     workgroup, about 1% of the bytes a chunk streams.
+//     workgroup — about 10% of the 128 KiB of keys and values the workgroup
+//     reads from the cache for a chunk, though into on-chip memory: about
+//     51 stores an invocation, against about 8,000 multiply-adds an
+//     invocation a chunk.
 //
 // Levers not taken:
 //   - Splits sized to fill the GPU rather than fixed by position: more
@@ -202,7 +213,7 @@ namespace bllm::kernels {
 // 512 rows and decode steps, at positions 0, near 256's boundaries and deep
 // into the context; Gemma 3's window over a ring that has wrapped; a step
 // split and unsplit, and the same query prefilled and decoded, giving the
-// same bits; and a chunk wholly masked for some rows. On the CPU: key_splits
+// same bits; and a chunk wholly masked for some rows. On the CPU: key_chunks
 // at its boundaries, and each launch's geometry, bindings and variant.
 //
 // Guidelines, by corpus:
@@ -242,10 +253,20 @@ struct AttentionLaunch {
 inline constexpr std::uint32_t kChunkKeys = 256;
 inline constexpr std::uint32_t kPartialRows = residency::kPrefillBlock;
 
-// The step's splits: its chunks, if every row's partials fit, else 1.
-[[nodiscard]] constexpr std::uint32_t key_splits(std::uint32_t position, std::uint32_t tokens) noexcept {
-    const std::uint32_t chunks = (position + tokens + kChunkKeys - 1) / kChunkKeys;
-    return tokens * chunks <= kPartialRows ? chunks : 1;
+// A layer's chunks for a step, and how it splits them.
+struct KeyChunks {
+    std::uint32_t first;    // the chunk holding the first row's earliest key
+    std::uint32_t count;    // through the chunk holding the last row
+    std::uint32_t splits;   // count, if every row's partials fit, else 1
+};
+
+// Preconditions: tokens >= 1 and window >= 1.
+[[nodiscard]] constexpr KeyChunks key_chunks(std::uint32_t position, std::uint32_t tokens,
+                                             std::uint32_t window) noexcept {
+    const std::uint32_t earliest = position + 1 > window ? position + 1 - window : 0;
+    const std::uint32_t first = earliest / kChunkKeys;
+    const std::uint32_t count = (position + tokens - 1) / kChunkKeys - first + 1;
+    return {first, count, tokens * count <= kPartialRows ? count : 1};
 }
 
 // The layer's attention launch and its combine, in that order.
