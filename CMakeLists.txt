@@ -54,6 +54,7 @@ add_library(charlotte_core STATIC
     src/core/formats/q6_k/q6_k_repack.cpp
     src/core/residency/piece_writer.cpp
     src/core/kernels/gather/gather.cpp
+    src/core/kernels/norm/norm.cpp
     src/core/residency/routes.cpp
     src/core/gpu/dispatch_math.cpp
 )
@@ -78,6 +79,7 @@ bllm_embed_shaders(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/formats/q6_k/q6_k.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/formats/q8_0/q8_0.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/gather/gather.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/norm/norm.wgsl"
 )
 
 # ---------------------------------------------------------------------------

@@ -180,6 +180,33 @@ def embedding(ggml_type, rows=7, width=256, seed=0x2545F491):
     return build([(b"token_embd.weight", [width, rows], ggml_type, data)])
 
 
+def norm_rows(widths=(1024, 1152, 2048), rows=4, seed=0x6C8E9CF5):
+    """For each width a listed model has — Qwen3 0.6B's, Gemma 3 1B's, Llama
+    3.2 1B's — a norm's gain and a post-norm's gain, and rows of a hidden
+    state x and a block's output y, of deterministic pseudo-random F32: rows
+    of ordinary size, of 10^4 and of 10^-4, so a norm is checked across
+    magnitudes. Activations, held as tensors so a test can upload them."""
+    state = seed
+
+    def unit():
+        nonlocal state
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        return ((state >> 8) % 2000001 - 1000000) / 1000000.0
+
+    def floats(values):
+        return b"".join(struct.pack("<f", v) for v in values)
+
+    scales = [1.0, 1e4, 1e-4, 3.0]
+    tensors = []
+    for w in widths:
+        tensors.append((f"gain_{w}".encode(), [w], T_F32, floats(1.0 + 0.5 * unit() for _ in range(w))))
+        tensors.append((f"post_{w}".encode(), [w], T_F32, floats(1.0 + 0.5 * unit() for _ in range(w))))
+        for name in ("x", "y"):
+            data = b"".join(floats(scales[r] * unit() for _ in range(w)) for r in range(rows))
+            tensors.append((f"{name}_{w}".encode(), [w, rows], T_F32, data))
+    return build(tensors)
+
+
 def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, reshape=None,
                head_count_kv=KV, output_copy=False, context=64, extra_tensors=()):
     """A tiny `arch` model. `reshape` is (tensor name, dims) to break a shape."""
@@ -382,6 +409,8 @@ CASES = {
     "embedding_q4_1": lambda: embedding(T_Q4_1),
     "embedding_q8_0": lambda: embedding(T_Q8_0),
     "embedding_q6_k": lambda: embedding(T_Q6_K),
+    # Norm gains and activation rows at each listed model's hidden width.
+    "norm_rows": lambda: norm_rows(),
     "nested_array": lambda: build(
         [], metadata=[kv(b"bad", ARRAY, struct.pack("<IQ", ARRAY, 1))]
     ),

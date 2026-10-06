@@ -27,6 +27,7 @@ struct Program::State {
         gpu::BindGroup group;
         std::uint32_t invocations_per_row;
         std::uint32_t workgroup_size;
+        Rows rows;
     };
     std::vector<Bound> launches;
     gpu::Buffer constants;   // UNIFORM | COPY_DST: every launch's, on kLaunchConstantsAlignment
@@ -123,10 +124,13 @@ struct Build : std::enable_shared_from_this<Build> {
     BuildCallback done;
     void* userdata;
 
+    // Every failure's message is kept, not only the first: a shader that
+    // fails to compile fails its pipeline too, and the pipeline's message,
+    // which may land first, only says the module was invalid.
     void settled(ProgramError e, std::string m) {
-        if (error == ProgramError::Ok && e != ProgramError::Ok) {
-            error = e;
-            message = std::move(m);
+        if (e != ProgramError::Ok) {
+            if (error == ProgramError::Ok) error = e;
+            if (!m.empty()) message += (message.empty() ? "" : "\n") + m;
         }
         if (--pending == 0) next();
     }
@@ -169,7 +173,7 @@ void Build::bind() {
         desc.entryCount = entries.size();
         desc.entries = entries.data();
         s.launches.push_back({p, gpu::BindGroup(wgpuDeviceCreateBindGroup(device, &desc)),
-                              launches[i].invocations_per_row, launches[i].workgroup_size});
+                              launches[i].invocations_per_row, launches[i].workgroup_size, launches[i].rows});
     }
     pop_scopes(device, kBuildScopes.size(), shared_from_this(), ProgramError::Build);
 }
@@ -184,10 +188,25 @@ void Build::next() {
     }
 }
 
+// A pipeline's override constants, in name order, the program's own among
+// them: workgroup_size always, last_token for a launch of the last token.
+using Constants = std::vector<std::pair<std::string_view, double>>;
+
+Constants constants_of(const Launch& launch) {
+    Constants c;
+    c.emplace_back("workgroup_size", launch.workgroup_size);
+    if (launch.rows == Rows::LastToken) c.emplace_back("last_token", 1.0);
+    for (const Override& o : launch.overrides) c.emplace_back(o.name, o.value);
+    std::sort(c.begin(), c.end());
+    return c;
+}
+
 // A distinct pipeline: the kernel's text, the format it unpacks, its
-// workgroup size. The text is compared, not its address: an embedded string
-// may lie at a different address in each translation unit that names it.
-using Key = std::tuple<std::string_view, const formats::Format*, std::uint32_t>;
+// constants. The text is compared, not its address: an embedded string may
+// lie at a different address in each translation unit that names it.
+using Key = std::tuple<std::string_view, const formats::Format*, Constants>;
+
+Key key_of(const Launch& launch) { return {launch.kernel, launch.format, constants_of(launch)}; }
 
 }  // namespace
 
@@ -211,6 +230,17 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         if (launch.workgroup_size == 0 || launch.invocations_per_row == 0) {
             done(nullptr, ProgramError::Build, at + "no invocations", userdata);
             return;
+        }
+        for (std::size_t o = 0; o < launch.overrides.size(); ++o) {
+            const std::string_view name = launch.overrides[o].name;
+            const bool repeated = std::any_of(launch.overrides.begin(), launch.overrides.begin() + o,
+                                              [&](const Override& earlier) { return earlier.name == name; });
+            if (name == "workgroup_size" || name == "last_token" || repeated) {
+                done(nullptr, ProgramError::Build,
+                     at + "override " + std::string(name) + (repeated ? " given twice" : " is the program's to set"),
+                     userdata);
+                return;
+            }
         }
         std::vector<Resolved> resolved;
         for (const Binding& b : launch.bindings) {
@@ -261,7 +291,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
 
     std::map<Key, std::size_t> distinct;
     for (const Launch& launch : build->launches) {
-        const Key key{launch.kernel, launch.format, launch.workgroup_size};
+        const Key key = key_of(launch);
         const auto [it, added] = distinct.try_emplace(key, distinct.size());
         build->pipeline_of.push_back(it->second);
     }
@@ -274,7 +304,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     };
     for (const auto& [key, index] : distinct) {
         const Launch& launch = *std::find_if(build->launches.begin(), build->launches.end(), [&](const Launch& l) {
-            return Key{l.kernel, l.format, l.workgroup_size} == key;
+            return key_of(l) == key;
         });
         // Optimization (practice): each distinct kernel is composed and
         // compiled once, whatever its launches, and every pipeline is asked
@@ -290,14 +320,18 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         module_desc.nextInChain = &wgsl.chain;
         const gpu::ShaderModule module(wgpuDeviceCreateShaderModule(device, &module_desc));
 
-        WGPUConstantEntry size = WGPU_CONSTANT_ENTRY_INIT;
-        size.key = view_of("workgroup_size");
-        size.value = launch.workgroup_size;
+        std::vector<WGPUConstantEntry> entries;
+        for (const auto& [name, value] : std::get<2>(key)) {
+            WGPUConstantEntry e = WGPU_CONSTANT_ENTRY_INIT;
+            e.key = view_of(name);
+            e.value = value;
+            entries.push_back(e);
+        }
         WGPUComputePipelineDescriptor pipeline_desc = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
         pipeline_desc.compute.module = module.get();
         pipeline_desc.compute.entryPoint = view_of("main");
-        pipeline_desc.compute.constantCount = 1;
-        pipeline_desc.compute.constants = &size;
+        pipeline_desc.compute.constantCount = entries.size();
+        pipeline_desc.compute.constants = entries.data();
 
         WGPUCreateComputePipelineAsyncCallbackInfo info = WGPU_CREATE_COMPUTE_PIPELINE_ASYNC_CALLBACK_INFO_INIT;
         info.mode = gpu::kCallbackMode;
@@ -359,8 +393,9 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
             const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), nullptr));
             std::size_t current = s.pipelines.size();
             for (const State::Bound& launch : s.launches) {
-                const gpu::DispatchResult d = gpu::dispatch_count(
-                    std::uint64_t{step.tokens} * launch.invocations_per_row, launch.workgroup_size, s.max_workgroups);
+                const std::uint64_t rows = launch.rows == Rows::LastToken ? 1 : step.tokens;
+                const gpu::DispatchResult d = gpu::dispatch_count(rows * launch.invocations_per_row,
+                                                                  launch.workgroup_size, s.max_workgroups);
                 if (d.status != gpu::DispatchStatus::Ok) {
                     fits = false;
                     break;

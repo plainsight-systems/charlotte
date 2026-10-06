@@ -175,6 +175,9 @@ PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimit
         Need{"key", kPrefillBlock, key_value},
         Need{"value", kPrefillBlock, key_value},
         Need{"attention", kPrefillBlock, query},
+        // A block's last matmul writes its result here; the norm after it
+        // adds it into hidden (kernels/norm/norm.h).
+        Need{"output", kPrefillBlock, model.embedding_width},
         Need{"gate", kPrefillBlock, feed_forward},
         Need{"up", kPrefillBlock, feed_forward},
         // Logits are computed for the last token of a step only.

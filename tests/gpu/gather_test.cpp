@@ -20,6 +20,7 @@
 #include "core/kernels/gather/gather.h"
 #include "core/kernels/program.h"
 #include "support/acquire.h"
+#include "support/program.h"
 #include "support/pump.h"
 #include "support/q4_0_reference.h"
 #include "support/q4_1_reference.h"
@@ -101,85 +102,17 @@ Uploaded upload_table(WGPUInstance instance, const gpu::Device& device, const st
     return u;
 }
 
-struct Built {
-    std::unique_ptr<Program> program;
-    ProgramError error = ProgramError::Build;
-    std::string message;
-    bool done = false;
-};
-
 std::unique_ptr<Program> build(WGPUInstance instance, const Uploaded& u, float scale) {
-    Built built;
-    Program::build(*u.upload, kernels::gather_launches(u.model.plan.tensors[0].view, u.hidden, scale),
-                   [](std::unique_ptr<Program> p, ProgramError e, std::string_view m, void* userdata) {
-                       auto& b = *static_cast<Built*>(userdata);
-                       b.program = std::move(p);
-                       b.error = e;
-                       b.message = m;
-                       b.done = true;
-                   },
-                   &built);
-    pump_until(instance, built.done, "the program");
-    REQUIRE_MESSAGE(built.error == ProgramError::Ok, built.message);
-    REQUIRE(built.program != nullptr);
-    return std::move(built.program);
+    return build_program(instance, *u.upload, kernels::gather_launches(u.model.plan.tensors[0].view, u.hidden, scale));
 }
 
 void run(WGPUInstance instance, Program& program, std::span<const std::uint32_t> ids) {
-    kernels::Step step{};
-    step.position = 0;
-    step.tokens = static_cast<std::uint32_t>(ids.size());
-    std::copy(ids.begin(), ids.end(), step.ids.begin());
-    struct Ran {
-        ProgramError error = ProgramError::Step;
-        int calls = 0;
-        bool done = false;
-    } ran;
-    program.run(step,
-                [](ProgramError e, void* userdata) {
-                    auto& r = *static_cast<Ran*>(userdata);
-                    r.error = e;
-                    ++r.calls;
-                    r.done = true;
-                },
-                &ran);
-    pump_until(instance, ran.done, "the step");
-    REQUIRE(ran.calls == 1);
-    REQUIRE(ran.error == ProgramError::Ok);
+    run_step(instance, program, static_cast<std::uint32_t>(ids.size()), ids);
 }
 
-// The first `rows` rows of the hidden buffer, read back through a mapping.
+// The first `rows` rows of the hidden buffer.
 std::vector<float> read_hidden(WGPUInstance instance, const gpu::Device& device, const Uploaded& u, std::size_t rows) {
-    const std::uint64_t bytes = rows * u.width * 4;
-    WGPUBufferDescriptor desc = WGPU_BUFFER_DESCRIPTOR_INIT;
-    desc.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
-    desc.size = bytes;
-    const gpu::Buffer readback(wgpuDeviceCreateBuffer(device.handle(), &desc));
-    const gpu::CommandEncoder encoder(wgpuDeviceCreateCommandEncoder(device.handle(), nullptr));
-    wgpuCommandEncoderCopyBufferToBuffer(encoder.get(), u.upload->buffer(u.hidden.buffer), u.hidden.offset,
-                                         readback.get(), 0, bytes);
-    const gpu::CommandBuffer commands(wgpuCommandEncoderFinish(encoder.get(), nullptr));
-    WGPUCommandBuffer raw = commands.get();
-    wgpuQueueSubmit(device.queue(), 1, &raw);
-    struct Mapped {
-        WGPUMapAsyncStatus status = WGPUMapAsyncStatus_Error;
-        bool done = false;
-    } mapped;
-    WGPUBufferMapCallbackInfo info = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-    info.mode = gpu::kCallbackMode;
-    info.userdata1 = &mapped;
-    info.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void* userdata, void*) {
-        auto& m = *static_cast<Mapped*>(userdata);
-        m.status = status;
-        m.done = true;
-    };
-    wgpuBufferMapAsync(readback.get(), WGPUMapMode_Read, 0, bytes, info);
-    pump_until(instance, mapped.done, "the hidden rows");
-    REQUIRE(mapped.status == WGPUMapAsyncStatus_Success);
-    std::vector<float> out(rows * u.width);
-    std::memcpy(out.data(), wgpuBufferGetConstMappedRange(readback.get(), 0, bytes), bytes);
-    wgpuBufferUnmap(readback.get());
-    return out;
+    return read_floats(instance, device, u.upload->buffer(u.hidden.buffer), u.hidden.offset, rows * u.width);
 }
 
 // What token `id`'s row should hold: the format's CPU reference applied to
