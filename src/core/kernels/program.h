@@ -70,7 +70,9 @@ namespace bllm::kernels {
 //     WASM.2 Batch work across the JS boundary — one write a step.
 //     WASM.7 Budget startup — pipelines compile together, asynchronously.
 //     MEM.9  Allocate at init — buffers, pipelines and bind groups at load;
-//            a step makes only the single-use encoders WebGPU requires.
+//            a step makes only the single-use encoders WebGPU requires, and
+//            its callbacks carry the program's own state, so it allocates
+//            nothing on the heap.
 
 enum class ProgramError {
     Ok,

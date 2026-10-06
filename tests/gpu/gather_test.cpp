@@ -298,3 +298,53 @@ TEST_CASE("the scale multiplies every weight, and a decode step writes its one r
     // Within 2 units in the last place of decode-then-scale (gather.h).
     check_rows(u, ids, read_hidden(instance.get(), *device, u, 2), scale, 2);
 }
+
+TEST_CASE("one program runs step after step, each writing its own rows") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_table(instance.get(), *device, "embedding_q8_0", {7});
+    const auto program = build(instance.get(), u, 1.0f);
+    const std::vector<std::vector<std::uint32_t>> steps = {{6, 5, 4}, {1}, {0, 2}};
+    for (const auto& ids : steps) {
+        run(instance.get(), *program, ids);
+        // Only the step's rows are compared: a longer earlier step's rows
+        // remain past them.
+        const auto got = read_hidden(instance.get(), *device, u, ids.size());
+        for (std::size_t r = 0; r < ids.size(); ++r) {
+            const Expected want = expected_row(u, ids[r], 1.0f);
+            for (std::size_t i = 0; i < u.width; ++i) {
+                if (!same_weight(got[r * u.width + i], want.primary[i])) {
+                    FAIL_CHECK("row " << r << " is not token " << ids[r] << "'s");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("destroying the program with a step in flight reports Cancelled, once") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_table(instance.get(), *device, "embedding_q4_0", {7});
+    auto program = build(instance.get(), u, 1.0f);
+    kernels::Step step{};
+    step.tokens = 1;
+    step.ids[0] = 3;
+    struct Ran {
+        ProgramError error = ProgramError::Ok;
+        int calls = 0;
+        bool done = false;
+    } ran;
+    program->run(step,
+                 [](ProgramError e, void* userdata) {
+                     auto& r = *static_cast<Ran*>(userdata);
+                     r.error = e;
+                     ++r.calls;
+                     r.done = true;
+                 },
+                 &ran);
+    program.reset();
+    pump_until(instance.get(), ran.done, "the cancelled step");
+    CHECK(ran.calls == 1);
+    CHECK(ran.error == ProgramError::Cancelled);
+}

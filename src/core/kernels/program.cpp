@@ -33,6 +33,15 @@ struct Program::State {
     gpu::Buffer step;        // UNIFORM | COPY_DST: sizeof(Step)
     std::uint32_t max_workgroups = 0;
     bool cancelled = false;
+
+    // The step in flight: at most one (program.h). Its callbacks carry this
+    // State itself as userdata, kept alive by `in_flight` until the last of
+    // them settles, so a step allocates nothing (MEM.9).
+    std::shared_ptr<State> in_flight;
+    std::size_t step_pending = 0;
+    ProgramError step_error = ProgramError::Ok;
+    StepCallback step_done = nullptr;
+    void* step_userdata = nullptr;
 };
 
 namespace {
@@ -314,19 +323,15 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
 
 namespace {
 
-// One step: its two scopes and its work done, settled in any order.
-struct Running {
-    std::shared_ptr<Program::State> state;
-    std::size_t pending;
-    ProgramError error = ProgramError::Ok;
-    StepCallback done;
-    void* userdata;
-
-    void settled(ProgramError e, const std::string& = {}) {
-        if (error == ProgramError::Ok && e != ProgramError::Ok) error = e;
-        if (--pending == 0) done(state->cancelled ? ProgramError::Cancelled : error, userdata);
-    }
-};
+// One of the step's callbacks has landed: its two scopes and its work done,
+// in any order. The last reports the step.
+void settle_step(Program::State& s, ProgramError e) {
+    if (s.step_error == ProgramError::Ok && e != ProgramError::Ok) s.step_error = e;
+    if (--s.step_pending > 0) return;
+    // Held until `done` returns, which may destroy the Program.
+    const std::shared_ptr<Program::State> keep = std::move(s.in_flight);
+    s.step_done(s.cancelled ? ProgramError::Cancelled : s.step_error, s.step_userdata);
+}
 
 }  // namespace
 
@@ -341,7 +346,12 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
     // it uses, in one write (interface.h).
     const std::size_t bytes = 16 + 16 * ((std::size_t{step.tokens} + 3) / 4);
     wgpuQueueWriteBuffer(s.queue.get(), s.step.get(), 0, &step, bytes);
-    auto running = std::make_shared<Running>(Running{state_, kStepScopes.size(), ProgramError::Ok, done, userdata});
+
+    s.in_flight = state_;
+    s.step_pending = kStepScopes.size();
+    s.step_error = ProgramError::Ok;
+    s.step_done = done;
+    s.step_userdata = userdata;
     bool fits = true;
     {
         const gpu::CommandEncoder encoder(wgpuDeviceCreateCommandEncoder(device, nullptr));
@@ -371,24 +381,29 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         }
     }
     if (fits) {
-        ++running->pending;
-        struct Done {
-            std::shared_ptr<Running> running;
-        };
+        ++s.step_pending;
         WGPUQueueWorkDoneCallbackInfo info = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
         info.mode = gpu::kCallbackMode;
         info.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView, void* userdata1, void*) {
-            const auto d = take_back<Done>(userdata1);
-            d->running->settled(from_work_done(status));
+            settle_step(*static_cast<State*>(userdata1), from_work_done(status));
         };
-        info.userdata1 = hand_off(std::make_unique<Done>(Done{running}));
+        info.userdata1 = &s;
         wgpuQueueOnSubmittedWorkDone(s.queue.get(), info);
     } else {
         // A step too large for one dispatch's workgroups: refused, not
         // truncated (gpu/dispatch_math.h).
-        running->error = ProgramError::Step;
+        s.step_error = ProgramError::Step;
     }
-    pop_scopes(device, kStepScopes.size(), running, ProgramError::Step);
+    for (std::size_t i = 0; i < kStepScopes.size(); ++i) {
+        WGPUPopErrorScopeCallbackInfo info = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
+        info.mode = gpu::kCallbackMode;
+        info.callback = [](WGPUPopErrorScopeStatus status, WGPUErrorType type, WGPUStringView, void* userdata1,
+                           void*) {
+            settle_step(*static_cast<State*>(userdata1), from_scope(status, type, ProgramError::Step));
+        };
+        info.userdata1 = &s;
+        wgpuDevicePopErrorScope(device, info);
+    }
 }
 
 Program::~Program() {
