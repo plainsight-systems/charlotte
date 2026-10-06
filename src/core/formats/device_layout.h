@@ -109,11 +109,13 @@ struct DeviceLayout {
 };
 
 // The layouts of the formats the listed models use: F32 for norms, Q4_0 and
-// Q4_1 for most weights, Q8_0 and Q6_K for embeddings. ggml's block structs
+// Q4_1 for most weights, Q8_0 and Q6_K for embeddings, F16 for the KV cache
+// and the weights some files store at half precision. ggml's block structs
 // (ggml-common.h) give each field's place in the stored block. Each format's
 // Format names its own, once it is implemented.
 namespace detail {
 inline constexpr Stream kF32[] = {{0, 4}};
+inline constexpr Stream kF16[] = {{0, 2}};
 inline constexpr Stream kQ4_0[] = {{2, 16}, {0, 2}};                     // qs, then d
 inline constexpr Stream kQ4_1[] = {{4, 16}, {0, 4}};                     // qs, then d and m
 inline constexpr Stream kQ8_0[] = {{2, 32}, {0, 2}};                     // qs, then d
@@ -124,6 +126,7 @@ void repack_q6_k(std::span<const std::byte> blocks, const std::array<std::byte*,
 }  // namespace detail
 
 inline constexpr DeviceLayout kF32Layout{gguf::TensorType::F32, 4, detail::kF32};
+inline constexpr DeviceLayout kF16Layout{gguf::TensorType::F16, 2, detail::kF16};
 inline constexpr DeviceLayout kQ4_0Layout{gguf::TensorType::Q4_0, 18, detail::kQ4_0};
 inline constexpr DeviceLayout kQ4_1Layout{gguf::TensorType::Q4_1, 20, detail::kQ4_1};
 inline constexpr DeviceLayout kQ8_0Layout{gguf::TensorType::Q8_0, 34, detail::kQ8_0};
@@ -154,7 +157,7 @@ inline constexpr DeviceLayout kQ6_KLayout{gguf::TensorType::Q6_K, 210, detail::k
     return covered == layout.block_bytes && stored_bytes == layout.block_bytes;
 }
 
-static_assert(keeps_its_promise(kF32Layout) && keeps_its_promise(kQ4_0Layout) &&
+static_assert(keeps_its_promise(kF32Layout) && keeps_its_promise(kF16Layout) && keeps_its_promise(kQ4_0Layout) &&
               keeps_its_promise(kQ4_1Layout) && keeps_its_promise(kQ8_0Layout) &&
               keeps_its_promise(kQ6_KLayout));
 

@@ -6,6 +6,7 @@
 #include "core/arch/gemma3/gemma3.h"
 #include "core/arch/llama/llama.h"
 #include "core/arch/qwen3/qwen3.h"
+#include "core/formats/f16/f16.h"
 #include "core/formats/f32/f32.h"
 #include "core/formats/format.h"
 #include "core/formats/q4_0/q4_0.h"
@@ -45,6 +46,7 @@ constexpr std::array kArchitectures{
 };
 constexpr std::array kFormats{
     Row<gguf::TensorType, formats::Format>{gguf::TensorType::F32, &formats::kF32},
+    Row<gguf::TensorType, formats::Format>{gguf::TensorType::F16, &formats::kF16},
     Row<gguf::TensorType, formats::Format>{gguf::TensorType::Q4_0, &formats::kQ4_0},
     Row<gguf::TensorType, formats::Format>{gguf::TensorType::Q4_1, &formats::kQ4_1},
     Row<gguf::TensorType, formats::Format>{gguf::TensorType::Q6_K, &formats::kQ6_K},
