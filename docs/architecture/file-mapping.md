@@ -73,7 +73,8 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/residency/upload` | D | creating planned buffers and carrying out the writes |
 | `src/core/gpu/` | D | device, handles, dispatch geometry |
 | `src/core/kernels/<kernel>/` | E | one WGSL file and its launcher per regime |
-| `src/core/kernels/interface` | contract | binding and parameter convention shared by every kernel |
+| `src/core/kernels/interface` | contract | binding and parameter convention shared by every kernel, and the launch a launcher describes |
+| `src/core/kernels/program` | D | carrying out the launches: pipelines and bind groups at load, one pass a step |
 | `src/core/cache/prefix` | G | longest common prefix |
 | `src/core/cache/kv` | G | per-layer buffers, capacity, window, storage precision |
 | `src/core/tokenizer/tokenizer.h` | contract | encoding and streaming decode, for every algorithm |
@@ -121,7 +122,8 @@ runs, in what order, with what parameters.
 | Block | Files, with axis |
 |---|---|
 | Order of every block below, per architecture | `core/arch/<arch>` A |
-| Step parameters: position and token count | `core/kernels/interface` contract · `core/runtime` M |
+| Step parameters: position, token count and the tokens' identifiers | `core/kernels/interface` contract · `core/runtime` M |
+| Launching every block, a step | `core/kernels/program` D |
 | Working buffers: hidden, normed, query, key, value, attention, gate, up, logits | `core/residency/plan` D |
 | **Embed** | `core/kernels/gather` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
 | **Norms**: attention, QK, feed-forward, final | `core/kernels/norm` E · `core/formats/f32` B |

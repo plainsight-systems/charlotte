@@ -35,8 +35,9 @@ namespace bllm::formats {
 //
 // Unpack is one WGSL function, the same for every format:
 //
-//   // declared by the kernel, under this name:
-//   @group(0) @binding(0) var<storage, read> weights: array<u32>;
+//   // declared by the kernel, under this name, at the binding
+//   // kernels/interface.h gives the weight a launch reads:
+//   @group(0) @binding(2) var<storage, read> weights: array<u32>;
 //   // supplied by the format, in formats/<format>/<format>.wgsl:
 //   fn unpack(blocks_in_piece: u32, group: u32) -> array<vec4<f32>, 8>
 //
