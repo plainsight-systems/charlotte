@@ -138,11 +138,13 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
         }
     }
 
-    // Step 3, with QK-norm: r = 1 / sqrt(mean of the head's squares +
-    // epsilon), then (x × r) × g. Value heads reach the barriers, as WGSL
-    // requires, and keep their values. The tree's first barrier publishes
-    // Step 1's table; without QK-norm a barrier of its own does.
-    if (qk_norm) {
+    // Step 3, with QK-norm, in a workgroup that rotates: r = 1 / sqrt(mean
+    // of the head's squares + epsilon), then (x × r) × g. Value heads sharing
+    // such a workgroup reach the barriers, as WGSL requires, and keep their
+    // values; a workgroup of value heads alone reduces nothing. The tree's
+    // first barrier publishes Step 1's table; without QK-norm a barrier of
+    // its own does.
+    if (qk_norm && rotates) {
         let total = reduce_head(local, lane, lanes, dot(a, a) + dot(b, b));
         if (!is_value) {
             let r = inverseSqrt(total / f32(head_dimension) + rope.epsilon);

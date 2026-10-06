@@ -62,9 +62,11 @@ namespace bllm::kernels {
 //   - The norm reduces each head in workgroup memory: an invocation's own 8
 //     squares, then a tree across its head's d / 8 invocations, every head
 //     of the workgroup at once — log2(d / 8) levels, 4 for Qwen3, 5 for
-//     Gemma 3, a barrier before the tree and after each level. Value heads
-//     take part in the barriers, which WGSL requires every invocation reach,
-//     and discard their sum. Without QK-norm — Llama — no reduction runs.
+//     Gemma 3, a barrier before the tree and after each level, in each
+//     workgroup that rotates. Value heads sharing one take part in the
+//     barriers, which WGSL requires every invocation reach, and discard their
+//     sum; a workgroup of value heads alone — Qwen3's last two a token —
+//     reduces nothing. Without QK-norm — Llama — no reduction runs.
 //   - Frequencies: the launcher computes each pair's θ_k / 2π in f64,
 //     rounded once to f32 — turns a position — into the launch's constants.
 //     The kernel forms t = p × turns_k (÷ factor_k), keeps its fraction r = t
