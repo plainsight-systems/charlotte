@@ -109,8 +109,9 @@ public:
                       void* userdata);
 
     // Runs one step. `done` is called once, when the queue has finished it
-    // or it has failed. Preconditions: 1 <= step.tokens <= kPrefillBlock,
-    // every identifier below the vocabulary, and no other step in flight.
+    // or it has failed; a step past kMaxPositions fails without running.
+    // Preconditions: 1 <= step.tokens <= kPrefillBlock, every identifier
+    // below the vocabulary, and no other step in flight.
     void run(const Step& step, StepCallback done, void* userdata);
 
     ~Program();

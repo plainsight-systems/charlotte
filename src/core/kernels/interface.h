@@ -152,6 +152,14 @@ enum class Rows {
     LastToken,
 };
 
+// The positions a step may reach: position + tokens <= 2^24. Rope forms a
+// position as an f32, exact only below 2^24 (kernels/rope/rope.h), and
+// below it every intermediate of the chunk arithmetic — position + 1,
+// tokens × count, at most 512 × 65,537 — stays far below 2^32. Every listed
+// model's context, at most 131,072, is well inside. The program refuses a
+// step past it.
+inline constexpr std::uint32_t kMaxPositions = 1u << 24;
+
 // Keys a chunk holds, fixed by position: chunk c is positions 256c ..
 // 256c + 255 (kernels/attention/attention.h). And the query rows a split
 // step's partial buffers hold, the prefill block's.
@@ -169,7 +177,8 @@ struct KeyChunks {
     std::uint32_t splits;   // count, or 1
 };
 
-// Preconditions: tokens >= 1 and window >= 1.
+// Preconditions: tokens >= 1, window >= 1, position + tokens <=
+// kMaxPositions.
 [[nodiscard]] constexpr KeyChunks key_chunks(std::uint32_t position, std::uint32_t tokens,
                                              std::uint32_t window) noexcept {
     const std::uint32_t earliest = position + 1 > window ? position + 1 - window : 0;
@@ -201,7 +210,7 @@ struct Geometry {
 // from `position`; 0 when it does not run. A split runs its rows' or
 // tiles' workgroups once for each chunk, each a whole number of
 // workgroups. Preconditions: tokens >= 1; workgroup_size >= 1; a key
-// split's window >= 1.
+// split's window >= 1; position + tokens <= kMaxPositions.
 [[nodiscard]] constexpr std::uint64_t workgroups_for(const Geometry& g, std::uint32_t workgroup_size,
                                                      std::uint32_t position, std::uint32_t tokens) noexcept {
     const std::uint64_t rows = g.rows == Rows::LastToken ? 1 : tokens;

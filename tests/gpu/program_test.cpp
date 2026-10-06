@@ -206,3 +206,20 @@ TEST_CASE("launches run their tiles and key splits, a combine only when split, e
     run_step(instance.get(), *program, 5, {}, 100);
     CHECK(read() == std::array<std::uint32_t, 3>{8 + 16, 16000 + 5000, 1});
 }
+
+TEST_CASE("a step past position 2^24 is refused, saying so") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Model m = load("tiny_qwen3");
+    const auto upload = begin(*device, m);
+    REQUIRE(stream(instance.get(), *upload, m) == residency::UploadError::Ok);
+    REQUIRE(finish(instance.get(), *upload) == residency::UploadError::Ok);
+    const residency::BufferRange counts = scratch(m, "hidden");
+    kernels::Launch launch{kCounts, nullptr, std::vector<std::byte>(4), {{counts.buffer, counts.offset, counts.length}},
+                           64, 64};
+    const auto program = build_program(instance.get(), *upload, {launch});
+    run_step(instance.get(), *program, 1, {}, kernels::kMaxPositions - 1);   // the last position allowed
+    const StepOutcome past = try_step(instance.get(), *program, 2, {}, kernels::kMaxPositions - 1);
+    CHECK(past.error == kernels::ProgramError::Step);
+    CHECK_MESSAGE(past.message.find("2^24") != std::string::npos, past.message);
+}

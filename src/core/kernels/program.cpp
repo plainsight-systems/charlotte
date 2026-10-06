@@ -451,8 +451,11 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
     s.step_message.clear();
     s.step_done = done;
     s.step_userdata = userdata;
-    bool fits = true;
-    {
+    // Past kMaxPositions a position is not exact as an f32 and the chunk
+    // arithmetic may wrap (interface.h): refused, before any launch.
+    bool fits = std::uint64_t{step.position} + step.tokens <= kMaxPositions;
+    if (!fits) s.step_message.assign("a step past position 2^24");
+    if (fits) {
         const gpu::CommandEncoder encoder(wgpuDeviceCreateCommandEncoder(device, nullptr));
         {
             const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), nullptr));
@@ -490,10 +493,10 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         info.userdata1 = &s;
         wgpuQueueOnSubmittedWorkDone(s.queue.get(), info);
     } else {
-        // A step too large for one dispatch's workgroups: refused, not
-        // truncated.
+        // A step past kMaxPositions, or too large for one dispatch's
+        // workgroups: refused, not truncated.
         s.step_error = ProgramError::Step;
-        s.step_message.assign("a launch needs more workgroups than one dispatch allows");
+        if (s.step_message.empty()) s.step_message.assign("a launch needs more workgroups than one dispatch allows");
     }
     for (std::size_t i = 0; i < kStepScopes.size(); ++i) {
         WGPUPopErrorScopeCallbackInfo info = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
