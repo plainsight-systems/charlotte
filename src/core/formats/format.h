@@ -103,7 +103,11 @@ namespace bllm::formats {
 //     scale is its 32 values' largest, a reduction across invocations. So Q8_0
 //     has no pack, BF16 has no format, and the graph refuses a cache
 //     precision whose format has no pack, naming it, rather than run.
-//   - Reading the cache back is attention's, and attention states how.
+//   - Its inverse is in the same WGSL, also reading no binding:
+//       fn unpack4(words: vec2<u32>) -> vec4<f32>
+//     the four values two words store, exact; attention reads the cache
+//     with it (kernels/attention/attention.h). F16's is two
+//     unpack2x16float.
 //
 // Block sizes belong to the file format and are read from core/gguf; a format
 // does not restate them. There is no CPU dequantizer: production never

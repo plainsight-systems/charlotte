@@ -54,9 +54,11 @@ struct RoleName {
 // the global weights — rope_freqs.weight among them where the file has it,
 // F32 of head dimension / 2, any other type refused — and every layer's
 // weights by role, each checked against the shape its role requires, and the
-// architecture's rotary pairing. Norm gains, the output norm's among them,
-// must be F32: the kernels bind them as f32 and read no format, so another
-// type is refused by name rather than read as the wrong bits. Every layer attends over the full context with
+// architecture's rotary pairing, and an attention scale of 1 / sqrt(head
+// dimension), which an architecture may override (gemma3/gemma3.cpp). Norm
+// gains, the output norm's among them, must be F32: the kernels bind them as
+// f32 and read no format, so another type is refused by name rather than
+// read as the wrong bits. Every layer attends over the full context with
 // the file's rotary base; an architecture whose layers differ adjusts them
 // afterwards.
 [[nodiscard]] DescribeResult describe_layers(const gguf::TensorIndex& index,

@@ -66,7 +66,7 @@ For one layer, in order:
 | 1 | norm | the last block's output added into X; Gemma 3's post-norm of it first; the attention norm and its gain |
 | 2 | matmul | the Q, K and V projections |
 | 3 | rope | QK-norm where the file has it; RoPE on queries and keys; the keys and values appended to the cache |
-| 4 | attention | scores, causal mask, softmax and the weighted sum, never writing the scores out |
+| 4 | attention | scores, causal and window mask, softmax and the weighted sum, never writing the scores out; where a step is split across the context, a combine launch after it folds the splits |
 | 5 | matmul | the output projection, writing the block's output |
 | 6 | norm | that output added into X; Gemma 3's post-norm of it first; the feed-forward norm and its gain |
 | 7 | matmul | the gate and up projections, and the activation of their product |
@@ -81,6 +81,11 @@ output head, both on the step's last token only.
 | Qwen3 0.6B | 28 | 1 | 224 | 2 | 227 | 0.34 ms |
 | Llama 3.2 1B | 16 | 2 | 128 | 2 | 132 | 0.20 ms |
 | Gemma 3 1B | 26 | 3 | 208 | 2 | 213 | 0.32 ms |
+
+A step split across the context — a decode step past 256 tokens of context,
+or any step whose rows times 256-token chunks fit the partial buffers — adds
+attention's combine in each layer: 28 more for Qwen3, 16 for Llama 3.2, 26
+for Gemma 3 (`core/kernels/attention/attention.h`).
 
 Without these fusions Qwen3's pass would be over 300 launches: a norm, three
 projections, two QK-norms, RoPE, a cache write, attention, a projection and

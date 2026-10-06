@@ -84,6 +84,11 @@ struct ModelDescription {
     std::optional<gguf::TensorId> output_head;
     // The architecture's, set by its describe.
     RotaryPairing rotary_pairing;
+    // What attention multiplies q · k by: 1 / sqrt(head dimension), but for
+    // Gemma 3 27B's 1 / sqrt(embedding width / query heads), which no GGUF
+    // key states and llama.cpp infers from its 62 layers, after Google's
+    // gemma_pytorch configuration. Set by describe.
+    float attention_scale;
     // Llama 3's long-context scaling, rope_freqs.weight: F32, one factor a
     // pair, each pair's frequency divided by its own, in every layer. Empty
     // where the file has none. Every head is rotated whole: describe refuses
