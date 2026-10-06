@@ -249,8 +249,9 @@ def rope_rows(rows=4, seed=0x1B873593):
 
 
 def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, reshape=None,
-               head_count_kv=KV, output_copy=False, context=64, extra_tensors=()):
-    """A tiny `arch` model. `reshape` is (tensor name, dims) to break a shape."""
+               head_count_kv=KV, output_copy=False, context=64, extra_tensors=(), f16=()):
+    """A tiny `arch` model. `reshape` is (tensor name, dims) to break a shape;
+    tensors named in `f16` are stored as F16 rather than F32."""
     keys = {
         "block_count": (U32, struct.pack("<I", layers)),
         "context_length": (U32, struct.pack("<I", context)),
@@ -279,7 +280,8 @@ def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, res
             shapes[f"blk.{layer}.{role}.weight"] = ROLE_SHAPES[role]
     if reshape is not None:
         shapes[reshape[0]] = reshape[1]
-    tensors = [(name.encode(), dims, T_F32, f32_zeros(dims))
+    tensors = [(name.encode(), dims, T_F16, f32_zeros(dims)[: len(f32_zeros(dims)) // 2])
+               if name in f16 else (name.encode(), dims, T_F32, f32_zeros(dims))
                for name, dims in shapes.items() if name != omit_tensor]
     return build(list(extra_tensors) + tensors, metadata=metadata)
 
@@ -444,6 +446,10 @@ CASES = {
         kv(b"qwen3.rope.dimension_count", U32, struct.pack("<I", D // 2))]),
     "tiny_qwen3_rope_scaling": lambda: tiny_model("qwen3", extra=[
         kv(b"qwen3.rope.scaling.type", STRING, gstr(b"linear"))]),
+    # A norm gain stored as F16: a supported format, but not one the norm
+    # kernel reads.
+    "tiny_qwen3_f16_norm": lambda: tiny_model("qwen3", f16=("blk.1.attn_k_norm.weight",)),
+    "tiny_qwen3_f16_output_norm": lambda: tiny_model("qwen3", f16=("output_norm.weight",)),
     "tiny_qwen3_missing_key": lambda: tiny_model("qwen3", omit_key="attention.head_count_kv"),
     "tiny_qwen3_missing_tensor": lambda: tiny_model("qwen3", omit_tensor="blk.1.ffn_up.weight"),
     "tiny_qwen3_wrong_shape": lambda: tiny_model("qwen3", reshape=("blk.1.attn_k.weight", [E, 2 * D])),

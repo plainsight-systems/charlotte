@@ -173,6 +173,9 @@ TEST_CASE("a file that breaks what describe needs says what and where") {
              Case{"tiny_qwen3_rope_scaling", DescribeError::UnsupportedValue, "qwen3.rope.scaling.type"},
              Case{"tiny_llama_rope_freqs_wrong_shape", DescribeError::ShapeMismatch, "rope_freqs.weight"},
              Case{"tiny_llama_rope_freqs_f16", DescribeError::UnsupportedValue, "rope_freqs.weight"},
+             // Gains the kernels read as f32, in a format they do not.
+             Case{"tiny_qwen3_f16_norm", DescribeError::UnsupportedValue, "blk.1.attn_k_norm.weight"},
+             Case{"tiny_qwen3_f16_output_norm", DescribeError::UnsupportedValue, "output_norm.weight"},
          }) {
         CAPTURE(c.fixture);
         const auto d = describe_fixture(c.fixture);

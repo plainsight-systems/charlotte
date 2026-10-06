@@ -64,6 +64,27 @@ Shape shape_of(model::Role role, const Hyperparameters& hp) {
     return {0, {0, 0}};
 }
 
+// Norm gains: the norm and rope kernels bind them as f32 and read no format
+// (kernels/norm/norm.h, kernels/rope/rope.h), so they must be stored as F32.
+bool is_gain(model::Role role) {
+    using model::Role;
+    switch (role) {
+        case Role::AttentionNorm: case Role::QueryNorm: case Role::KeyNorm: case Role::PostAttentionNorm:
+        case Role::FeedForwardNorm: case Role::PostFeedForwardNorm: return true;
+        default: return false;
+    }
+}
+
+// A tensor a kernel binds as f32 must be F32; any other format, however well
+// supported, would be read as the wrong bits.
+DescribeResult require_f32(const gguf::TensorIndex& index, const std::optional<gguf::TensorId>& tensor,
+                           const std::string& name) {
+    if (tensor && index.tensor(*tensor).type != gguf::TensorType::F32) {
+        return failure(DescribeError::UnsupportedValue, name);
+    }
+    return {};
+}
+
 bool has_shape(const gguf::TensorEntry& t, std::uint32_t dimension_count,
                std::uint64_t d0, std::uint64_t d1) {
     if (t.dimension_count != dimension_count || t.dimensions[0] != d0) return false;
@@ -185,6 +206,7 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
     if (auto r = find_tensor(index, "token_embd.weight", 2, e, vocab, true, found); !r.ok()) return r;
     out.token_embedding = *found;
     if (auto r = find_tensor(index, "output_norm.weight", 1, e, 0, true, found); !r.ok()) return r;
+    if (auto r = require_f32(index, found, "output_norm.weight"); !r.ok()) return r;
     out.output_norm = *found;
     // Absent when the output head reads the token embedding.
     if (auto r = find_tensor(index, "output.weight", 2, e, vocab, false, out.output_head); !r.ok()) return r;
@@ -196,9 +218,7 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
         !r.ok()) {
         return r;
     }
-    if (out.rotary_factors && index.tensor(*out.rotary_factors).type != gguf::TensorType::F32) {
-        return failure(DescribeError::UnsupportedValue, "rope_freqs.weight");
-    }
+    if (auto r = require_f32(index, out.rotary_factors, "rope_freqs.weight"); !r.ok()) return r;
 
     out.layers.assign(hp.block_count, model::LayerDescription{
         hp.head_count, hp.head_count_kv, hp.head_dimension, hp.feed_forward_length,
@@ -208,10 +228,14 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
         for (const RoleName& rn : roles) {
             const Shape shape = shape_of(rn.role, hp);
             auto& slot = out.layers[layer].tensors[static_cast<std::size_t>(rn.role)];
-            if (auto r = find_tensor(index, prefix + std::string(rn.suffix), shape.dimension_count,
-                                     shape.dimensions[0], shape.dimensions[1], true, slot);
+            const std::string name = prefix + std::string(rn.suffix);
+            if (auto r = find_tensor(index, name, shape.dimension_count, shape.dimensions[0], shape.dimensions[1],
+                                     true, slot);
                 !r.ok()) {
                 return r;
+            }
+            if (is_gain(rn.role)) {
+                if (auto r = require_f32(index, slot, name); !r.ok()) return r;
             }
         }
     }
