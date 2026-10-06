@@ -92,6 +92,7 @@ struct ModelDescription {
     std::optional<gguf::TensorId> output_head;
     // The architecture's, set by its describe.
     RotaryPairing rotary_pairing;
+    FeedForwardActivation activation;
     // What attention multiplies q · k by: 1 / sqrt(head dimension), but for
     // Gemma 3 27B's 1 / sqrt(embedding width / query heads), which no GGUF
     // key states and llama.cpp infers from its 62 layers, after Google's

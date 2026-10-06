@@ -193,7 +193,7 @@ DescribeResult read_hyperparameters(const gguf::TensorIndex& index, std::string_
 }
 
 DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparameters& hp,
-                               std::span<const RoleName> roles, model::RotaryPairing pairing,
+                               std::span<const RoleName> roles, Conventions conventions,
                                model::ModelDescription& out) {
     gguf::ArrayLocation tokens{};
     if (const auto e = index.read_array("tokenizer.ggml.tokens", tokens); e != gguf::MetadataError::Ok) {
@@ -215,7 +215,8 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
     // Absent when the output head reads the token embedding.
     if (auto r = find_tensor(index, "output.weight", 2, e, vocab, false, out.output_head); !r.ok()) return r;
 
-    out.rotary_pairing = pairing;
+    out.rotary_pairing = conventions.pairing;
+    out.activation = conventions.activation;
     out.attention_scale = 1.0f / std::sqrt(static_cast<float>(hp.head_dimension));
     // Llama 3's frequency factors, one a pair; the rope kernel binds them as
     // f32.

@@ -75,8 +75,14 @@ constexpr std::uint32_t k27BLayers = 62;
 DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription& out) {
     Hyperparameters hp{};
     if (auto r = read_hyperparameters(index, "gemma3", hp); !r.ok()) return r;
-    // NEOX pairing, as llama.cpp's llama_model_rope_type gives Gemma 3.
-    if (auto r = describe_layers(index, hp, kRoles, model::RotaryPairing::Halves, out); !r.ok()) return r;
+    // NEOX pairing, as llama.cpp's llama_model_rope_type gives Gemma 3, and
+    // GeGLU with GELU's tanh form, its graph's feed-forward and Hugging
+    // Face's gelu_pytorch_tanh.
+    if (auto r = describe_layers(index, hp, kRoles,
+                                 {model::RotaryPairing::Halves, model::FeedForwardActivation::GeluTanh}, out);
+        !r.ok()) {
+        return r;
+    }
     if (hp.block_count == k27BLayers) {
         out.attention_scale = 1.0f / std::sqrt(static_cast<float>(hp.embedding_length / hp.head_count));
     }

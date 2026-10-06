@@ -106,18 +106,20 @@ TEST_CASE("Gemma 3 attends over a window on five layers in six, with their own r
     }
 }
 
-TEST_CASE("each architecture rotates the pairs llama.cpp gives it") {
+TEST_CASE("each architecture rotates the pairs and applies the activation llama.cpp gives it") {
     struct Case {
         const char* fixture;
         model::RotaryPairing pairing;
+        model::FeedForwardActivation activation;
     };
-    for (const Case& c : {Case{"tiny_qwen3", model::RotaryPairing::Halves},
-                          Case{"tiny_llama", model::RotaryPairing::Adjacent},
-                          Case{"tiny_gemma3", model::RotaryPairing::Halves}}) {
+    for (const Case& c : {Case{"tiny_qwen3", model::RotaryPairing::Halves, model::FeedForwardActivation::SiLU},
+                          Case{"tiny_llama", model::RotaryPairing::Adjacent, model::FeedForwardActivation::SiLU},
+                          Case{"tiny_gemma3", model::RotaryPairing::Halves, model::FeedForwardActivation::GeluTanh}}) {
         CAPTURE(c.fixture);
         const auto d = describe_fixture(c.fixture);
         REQUIRE(d.result.ok());
         CHECK(d.model.rotary_pairing == c.pairing);
+        CHECK(d.model.activation == c.activation);
         CHECK_FALSE(d.model.rotary_factors.has_value());
     }
 }

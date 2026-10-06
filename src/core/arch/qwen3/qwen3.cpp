@@ -28,8 +28,10 @@ constexpr std::array kRoles{
 DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription& out) {
     Hyperparameters hp{};
     if (auto r = read_hyperparameters(index, "qwen3", hp); !r.ok()) return r;
-    // NEOX pairing, as llama.cpp's llama_model_rope_type gives Qwen3.
-    return describe_layers(index, hp, kRoles, model::RotaryPairing::Halves, out);
+    // NEOX pairing, as llama.cpp's llama_model_rope_type gives Qwen3, and
+    // SwiGLU, its graph's feed-forward.
+    return describe_layers(index, hp, kRoles, {model::RotaryPairing::Halves, model::FeedForwardActivation::SiLU},
+                           out);
 }
 
 }  // namespace

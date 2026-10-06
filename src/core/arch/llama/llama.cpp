@@ -29,7 +29,9 @@ DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription&
     if (auto r = read_hyperparameters(index, "llama", hp); !r.ok()) return r;
     // NORM pairing, as llama.cpp's llama_model_rope_type gives Llama: its
     // converter permuted Q and K into that order.
-    return describe_layers(index, hp, kRoles, model::RotaryPairing::Adjacent, out);
+    // SwiGLU, its graph's feed-forward.
+    return describe_layers(index, hp, kRoles, {model::RotaryPairing::Adjacent, model::FeedForwardActivation::SiLU},
+                           out);
 }
 
 }  // namespace

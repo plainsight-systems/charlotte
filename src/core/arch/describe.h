@@ -54,17 +54,25 @@ struct RoleName {
 // the global weights — rope_freqs.weight among them where the file has it,
 // F32 of head dimension / 2, any other type refused — and every layer's
 // weights by role, each checked against the shape its role requires, and the
-// architecture's rotary pairing, and an attention scale of 1 / sqrt(head
+// architecture's conventions, and an attention scale of 1 / sqrt(head
 // dimension), which an architecture may override (gemma3/gemma3.cpp). Norm
 // gains, the output norm's among them, must be F32: the kernels bind them as
 // f32 and read no format, so another type is refused by name rather than
 // read as the wrong bits. Every layer attends over the full context with
 // the file's rotary base; an architecture whose layers differ adjusts them
 // afterwards.
+// What an architecture does that its file does not say: which dimensions
+// RoPE pairs and which activation its feed-forward block applies, each as
+// llama.cpp's graph for it does.
+struct Conventions {
+    model::RotaryPairing pairing;
+    model::FeedForwardActivation activation;
+};
+
 [[nodiscard]] DescribeResult describe_layers(const gguf::TensorIndex& index,
                                              const Hyperparameters& hp,
                                              std::span<const RoleName> roles,
-                                             model::RotaryPairing pairing,
+                                             Conventions conventions,
                                              model::ModelDescription& out);
 
 // Reads an optional "<arch>.<key>": `fallback` when the file omits it, an
