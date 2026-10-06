@@ -13,6 +13,7 @@
 #include "core/kernels/gather/gather.h"
 #include "core/kernels/interface.h"
 #include "core/kernels/norm/norm.h"
+#include "core/kernels/rope/rope.h"
 #include "core/model/model_description.h"
 #include "core/policy/policy.h"
 #include "core/preflight/preflight.h"

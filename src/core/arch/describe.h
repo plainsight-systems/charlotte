@@ -40,13 +40,20 @@ struct RoleName {
 
 // Reads "<arch>.<key>" for every hyperparameter. The head dimension is
 // <arch>.attention.key_length, or the embedding width over the head count when
-// the file does not say. Fails on a value no architecture could run with.
+// the file does not say. Fails on a value no architecture could run with, and,
+// as UnsupportedValue, on two rotary forms the rope kernel does not implement:
+// <arch>.rope.dimension_count other than the head dimension — part of each
+// head rotated — and <arch>.rope.scaling.type other than "none" — linear or
+// YaRN scaling of positions. A file declaring either would otherwise run with
+// every position wrong.
 [[nodiscard]] DescribeResult read_hyperparameters(const gguf::TensorIndex& index,
                                                   std::string_view arch, Hyperparameters& out);
 
 // Fills `out` from the hyperparameters and the file's tensors: the vocabulary,
-// the global weights, and every layer's weights by role, each checked against
-// the shape its role requires. Every layer attends over the full context with
+// the global weights — rope_freqs.weight among them where the file has it,
+// F32 of head dimension / 2 — and every layer's weights by role, each checked
+// against the shape its role requires, with the architecture's rotary
+// pairing. Every layer attends over the full context with
 // the file's rotary base; an architecture whose layers differ adjusts them
 // afterwards.
 [[nodiscard]] DescribeResult describe_layers(const gguf::TensorIndex& index,

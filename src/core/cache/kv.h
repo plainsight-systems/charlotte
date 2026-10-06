@@ -40,8 +40,9 @@ namespace bllm::cache {
 //   - Storage is planned by the residency plan and created by upload. The
 //     cache names its buffers by plan index and holds no GPU object, so its
 //     bookkeeping is tested without a device.
-//   - Attention reads a layer's window and writes the step's new entries; the
-//     runtime then advances the cache by the step's token count.
+//   - The rope kernel writes the step's new entries (kernels/rope/rope.h),
+//     and attention reads the layer's window; the runtime then advances the
+//     cache by the step's token count.
 //
 // What it costs: truncate visits each layer once, once per turn — 28 for
 // Qwen3, reading two counts from each, a few hundred bytes — and advance and

@@ -17,7 +17,7 @@ namespace bllm::formats {
 //   - unpack, as WGSL a kernel composes with. No kernel knows a format; adding
 //     one adds a file here and a row in the capability table, and touches no
 //     kernel.
-//   - pack, as WGSL, for a format the KV cache stores in. Packing and
+//   - pack, as WGSL, for a format the KV cache stores in (below). Packing and
 //     unpacking are one piece of knowledge, whether the data is a weight or a
 //     cached key.
 //   - its device layout: how its blocks' fields lie on the device, as streams
@@ -83,6 +83,27 @@ namespace bllm::formats {
 // on those backends; WGSL leaves rounding and reassociation to each, so one
 // that decodes otherwise fails the tests visibly. NaN and infinity are not
 // inputs: no file this harness lists stores them.
+//
+// Pack is one WGSL function, for a format the KV cache stores in. It reads and
+// writes no binding, so a kernel composes it whatever it binds, and writes
+// the words it returns itself (kernels/rope/rope.h):
+//
+//   // supplied by the format, in formats/<format>/<format>_pack.wgsl:
+//   fn pack(values: vec4<f32>) -> vec2<u32>
+//
+//   - It returns the two words that store four consecutive values, so a
+//     cache format stores each value in 16 bits, on its own. F16 is that
+//     format (formats/f16): each value saturated to ±65,504, then
+//     pack2x16float. WGSL leaves converting a value outside f16's range
+//     indeterminate, and the saturation makes it the nearest finite value,
+//     where llama.cpp's conversion gives infinity; WGSL lets the conversion
+//     round to either neighbour, and the tests require nearest-even, as for
+//     unpack's scales above.
+//   - A block-scaled format cannot pack four values on their own: Q8_0's
+//     scale is its 32 values' largest, a reduction across invocations. So Q8_0
+//     has no pack, BF16 has no format, and the graph refuses a cache
+//     precision whose format has no pack, naming it, rather than run.
+//   - Reading the cache back is attention's, and attention states how.
 //
 // Block sizes belong to the file format and are read from core/gguf; a format
 // does not restate them. There is no CPU dequantizer: production never
