@@ -192,14 +192,15 @@ Result run_rope(WGPUInstance instance, const gpu::Device& device, const Uploaded
 // then rotated by the launcher's turns. `t_of` is each pair's t, for the
 // bound.
 struct Head {
-    std::vector<double> values;
+    std::vector<double> values;       // normalized and rotated: what the kernel should write
+    std::vector<double> normalized;   // before rotation: the pair the bound is stated in
     std::vector<double> t_of_pair;
     double largest;   // the normalized head's largest magnitude
 };
 
 Head reference_head(const Shape& s, std::span<const float> x, std::span<const float> gain,
                     std::span<const float> factors, std::span<const float> turns, std::uint32_t p, bool rotate) {
-    Head h{std::vector<double>(x.begin(), x.end()), std::vector<double>(s.d / 2), 0};
+    Head h{std::vector<double>(x.begin(), x.end()), {}, std::vector<double>(s.d / 2), 0};
     if (s.qk_norm && rotate) {
         double squares = 0;
         for (const double e : h.values) squares += e * e;
@@ -207,6 +208,7 @@ Head reference_head(const Shape& s, std::span<const float> x, std::span<const fl
         for (std::uint32_t j = 0; j < s.d; ++j) h.values[j] = h.values[j] * r * gain[j];
     }
     for (const double e : h.values) h.largest = std::max(h.largest, std::abs(e));
+    h.normalized = h.values;
     if (!rotate) return h;
     std::vector<double> out(h.values);
     for (std::uint32_t k = 0; k < s.d / 2; ++k) {
@@ -230,7 +232,7 @@ Head reference_head(const Shape& s, std::span<const float> x, std::span<const fl
 double bound(const Shape& s, const Head& h, std::uint32_t i) {
     const std::uint32_t k = s.pairing == model::RotaryPairing::Halves ? i % (s.d / 2) : i / 2;
     const std::uint32_t mate = s.pairing == model::RotaryPairing::Halves ? (i + s.d / 2) % s.d : i ^ 1u;
-    const double pair = std::abs(h.values[i]) + std::abs(h.values[mate]);
+    const double pair = std::abs(h.normalized[i]) + std::abs(h.normalized[mate]);
     const double t = std::abs(h.t_of_pair[k]);
     const double units_of_t = s.factors ? 6 : 1;
     return pair * (std::ldexp(1.0, -11) + 2 * std::numbers::pi * units_of_t * std::ldexp(1.0, -24) * t) +
