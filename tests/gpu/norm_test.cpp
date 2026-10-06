@@ -142,7 +142,7 @@ Result run_norm(WGPUInstance instance, const gpu::Device& device, const Uploaded
     std::vector<kernels::Launch> launches;
     launches.push_back(copy_launch(u.view("x_" + w), u.hidden, width));
     launches.push_back(copy_launch(u.view("y_" + w), u.output, width));
-    launches.push_back(kernels::norm_launch({u.view("gain_" + w), v.post ? &u.view("post_" + w) : nullptr, v.add,
+    launches.push_back(kernels::norm_launch({&u.view("gain_" + w), v.post ? &u.view("post_" + w) : nullptr, v.add,
                                              u.output, u.hidden, u.normed, kEpsilon, v.rows}));
     const auto program = build_program(instance, *u.upload, std::move(launches));
     run_step(instance, *program, tokens);
@@ -270,7 +270,7 @@ TEST_CASE("a step binding one buffer writable and read-only fails with WebGPU's 
     const residency::BufferRange output{u.hidden.buffer, half, half};   // same buffer, read-only
     std::vector<kernels::Launch> launches;
     launches.push_back(kernels::norm_launch(
-        {u.view("gain_1024"), nullptr, true, output, hidden, u.normed, kEpsilon, kernels::Rows::EveryToken}));
+        {&u.view("gain_1024"), nullptr, true, output, hidden, u.normed, kEpsilon, kernels::Rows::EveryToken}));
     const auto program = build_program(instance.get(), *u.upload, std::move(launches));
     const StepOutcome ran = try_step(instance.get(), *program, 1);
     CHECK(ran.error == kernels::ProgramError::Step);
@@ -282,7 +282,7 @@ TEST_CASE("a launch setting an override the program owns, or one override twice,
     const auto device = acquire(instance.get());
     const Uploaded u = upload_rows(instance.get(), *device);
     const auto norm = kernels::norm_launch(
-        {u.view("gain_1024"), nullptr, false, u.output, u.hidden, u.normed, kEpsilon, kernels::Rows::EveryToken});
+        {&u.view("gain_1024"), nullptr, false, u.output, u.hidden, u.normed, kEpsilon, kernels::Rows::EveryToken});
     for (const kernels::Override extra :
          {kernels::Override{"workgroup_size", 64}, kernels::Override{"last_token", 1}, kernels::Override{"add", 1}}) {
         CAPTURE(extra.name);

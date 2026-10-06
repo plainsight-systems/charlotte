@@ -137,12 +137,15 @@ namespace bllm::kernels {
 //     GPU.5  Use workgroup memory where reuse or reordering pays — the
 //            reduction's partial sums, 1 KiB.
 //     GPU.6  Batch tiny GPU work — the add and the gain fused in.
+//   C++ Core Guidelines
+//     C.12   Don't make data members const or references in a copyable
+//            type — the gains are pointers.
 //     GPU.8  Make barriers describe real hazards — none after the last
 //            reduction, where nothing writes the partial sums again.
 
 // One norm of the graph.
 struct NormLaunch {
-    const residency::WeightView& gain;            // F32, one row of the hidden width
+    const residency::WeightView* gain;            // never null; F32, one row of the hidden width
     const residency::WeightView* post_gain;       // Gemma 3's post-norm of y, or null
     bool add;                                     // add y into X first; required by a post-norm
     residency::BufferRange output;                // y: the block's output

@@ -35,7 +35,7 @@ TEST_CASE("a norm launch binds both gains, the output, hidden and normed, and se
     const residency::BufferRange output{residency::BufferIndex{3}, 0, 100}, hidden{residency::BufferIndex{4}, 0, 200},
         normed{residency::BufferIndex{5}, 0, 300};
 
-    const auto with_post = kernels::norm_launch({pre, &post, true, output, hidden, normed, 1e-6f, kernels::Rows::EveryToken});
+    const auto with_post = kernels::norm_launch({&pre, &post, true, output, hidden, normed, 1e-6f, kernels::Rows::EveryToken});
     CHECK(with_post.kernel == shaders::norm);
     CHECK(with_post.format == nullptr);
     REQUIRE(with_post.bindings.size() == 5);
@@ -55,7 +55,7 @@ TEST_CASE("a norm launch binds both gains, the output, hidden and normed, and se
     CHECK(with_post.workgroup_size == 256);
 
     // No post-norm: its binding is the norm's own gain, read-only, again.
-    const auto plain = kernels::norm_launch({pre, nullptr, false, output, hidden, normed, 1e-5f, kernels::Rows::LastToken});
+    const auto plain = kernels::norm_launch({&pre, nullptr, false, output, hidden, normed, 1e-5f, kernels::Rows::LastToken});
     CHECK(plain.bindings[1].offset == plain.bindings[0].offset);
     CHECK(override_of(plain, "add") == 0.0);
     CHECK(override_of(plain, "post_norm") == 0.0);

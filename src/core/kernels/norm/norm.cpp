@@ -35,13 +35,13 @@ Launch norm_launch(const NormLaunch& n) {
         std::move(bytes),
         // Without a post-norm its gain is the norm's own: read-only, so the
         // two bindings may share it.
-        {whole(n.gain), whole(post ? *n.post_gain : n.gain), whole(n.output), whole(n.hidden), whole(n.normed)},
+        {whole(*n.gain), whole(post ? *n.post_gain : *n.gain), whole(n.output), whole(n.hidden), whole(n.normed)},
         kWorkgroupSize,
         kWorkgroupSize,
         n.rows,
         {{"add", n.add ? 1.0 : 0.0},
          {"post_norm", post ? 1.0 : 0.0},
-         {"width", static_cast<double>(n.gain.shape().dimensions[0])}},
+         {"width", static_cast<double>(n.gain->shape().dimensions[0])}},
     };
 }
 
