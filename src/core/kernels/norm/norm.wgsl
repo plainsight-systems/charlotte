@@ -49,10 +49,11 @@ const kMaxVec4s = 4u;
 var<workgroup> partial: array<f32, workgroup_size>;
 
 // The workgroup's sum of `value`, in a fixed order: halving the workgroup at
-// each level. A tree in workgroup memory, not subgroupAdd, which WebGPU
-// leaves optional (norm.h). Every invocation returns the same total. A caller that reduces
+// each level. Every invocation returns the same total. A caller that reduces
 // again must first barrier, so every invocation has read partial[0] before
-// it is written.
+// it is written. A tree in workgroup memory, not subgroupAdd: subgroups are
+// optional in WebGPU, and for cross-browser compatibility the harness
+// requires no optional feature (norm.h).
 fn reduce(index: u32, value: f32) -> f32 {
     partial[index] = value;
     workgroupBarrier();

@@ -311,7 +311,8 @@ file. We decide them — from the model card, or by measurement — and record
 them per model (principle 8).
 
 **Cache precision.** Storage is 16-bit or narrower; arithmetic is always f32,
-because nothing here requires `shader-f16`, so the only error introduced is
+because, for cross-browser compatibility, nothing here requires the
+optional `shader-f16` feature, so the only error introduced is
 storage rounding. Which format is right depends on how hard the cache binds
 context length for that model. Where KV bytes per token are large against the
 memory budget, narrower storage buys context; where they are small, there is

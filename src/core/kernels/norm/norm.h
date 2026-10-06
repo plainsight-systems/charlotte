@@ -100,9 +100,10 @@ namespace bllm::kernels {
 //
 // Where WebGPU limits it, and what each limit costs here:
 //   - Subgroup operations (subgroupAdd) are the `subgroups` feature, which
-//     WebGPU leaves optional and not every browser's WebGPU offers; the
-//     harness requires only WebGPU's defaults (gpu/device_requirements.h).
-//     So the reduction is the tree above, 9 barriers, where the practice of
+//     WebGPU leaves optional and not every browser offers. For cross-browser
+//     compatibility the harness requires only WebGPU's defaults and no
+//     optional feature (gpu/device_requirements.h), though the target
+//     itself offers subgroups. So the reduction is the tree above, 9 barriers, where the practice of
 //     llama.cpp's Metal kernel (simd_sum) and vLLM's (CUB's block reduce,
 //     over warp shuffles) — a subgroup sum, the partials through workgroup
 //     memory, a subgroup sum of those — needs 1.

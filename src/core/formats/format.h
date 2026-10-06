@@ -62,7 +62,9 @@ namespace bllm::formats {
 //   takes dot products four lanes at a time.
 //   Optimization (browser): half-precision scales are read from u32 words
 //   with unpack2x16float, so no format needs the shader-f16 extension, which
-//   not every browser's WebGPU offers.
+//   is optional in WebGPU and not every browser offers; for cross-browser
+//   compatibility the harness requires no optional feature
+//   (gpu/device_requirements.h).
 //
 // Each unpack is tested on the GPU against a CPU reference that mirrors
 // ggml's dequantize_row_* for the format, in its order of operations, over

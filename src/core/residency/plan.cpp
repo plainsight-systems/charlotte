@@ -46,8 +46,10 @@
 //     llama.cpp's default micro-batch; prefill throughput across block sizes
 //     on the target devices is what moves it.
 //   - f32 working values: arithmetic is f32 everywhere, because f16
-//     arithmetic needs WebGPU's optional shader-f16 feature and f16 overflows
-//     at 65,504, which activations can reach. Only storage is narrower — the
+//     arithmetic needs WebGPU's optional shader-f16 feature, which the
+//     harness does not require, for cross-browser compatibility
+//     (gpu/device_requirements.h); and f16 overflows at 65,504, which
+//     activations can reach. Only storage is narrower — the
 //     cache, per policy — so cache rounding is the only error introduced.
 //   - one row of logits: only a step's last token needs a prediction.
 

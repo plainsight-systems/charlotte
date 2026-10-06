@@ -26,8 +26,11 @@ struct DeviceRequirements {
 // The WebGPU spec defaults, deliberately and with every number traced to
 // something the harness actually does.
 //
-// Requiring only the defaults is a product decision: it runs anywhere WebGPU
-// runs. Raising any of these would exclude fully conformant devices, and should
+// Requiring only the defaults is a product decision, for cross-browser
+// compatibility: it runs anywhere WebGPU runs. For the same reason the device
+// is requested with no optional feature — not `subgroups`, not `shader-f16` —
+// though the target, Chrome on Apple silicon, offers both; each place that
+// does without one says so. Raising any of these would exclude fully conformant devices, and should
 // only happen against a measured benefit — see the sizing evidence below for
 // why none of them currently binds.
 inline constexpr DeviceRequirements kRequirements{
