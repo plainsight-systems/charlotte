@@ -44,11 +44,18 @@ namespace bllm::kernels {
 //     size is stated once. The program works out each step's workgroups from
 //     its token count with core/gpu/dispatch_math. Workgroup size belongs to
 //     each kernel: the right value differs per kernel, and a shared constant
-//     would couple them. A kernel that covers only the last token works on
-//     row tokens - 1 of each buffer.
+//     would couple them. A launch that covers only the last token is one
+//     row's workgroups, and the program sets its override constant
+//     `last_token` to true; a kernel that can cover only the last token
+//     declares `override last_token: bool = false;` and then works on row
+//     tokens - 1 of each buffer. Rows alone decides both, so they cannot
+//     disagree.
 //   - Variants: a kernel's other override constants select among its forms —
 //     the norm with or without the residual add — so one WGSL source serves
-//     them, and each distinct set compiles once.
+//     them. The program compiles each distinct kernel, format, workgroup size
+//     and set of overrides once, and passes every override to the pipeline;
+//     `workgroup_size` and `last_token` are the program's to set, and a
+//     launch naming either, or one name twice, is refused at build.
 //   - The regime is chosen per step from its token count.
 //   - The step's token identifiers are below the vocabulary: the runtime
 //     checks them before it writes a step, since a kernel cannot tell an

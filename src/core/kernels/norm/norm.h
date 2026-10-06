@@ -38,12 +38,18 @@ namespace bllm::kernels {
 //     fixed order — so a token's normed row, and the key and value computed
 //     from it, are the same whether the token was prefilled or decoded. Not
 //     bit for bit with llama.cpp or across GPUs, which sum in other orders.
-//   - Accuracy: each output within 2⁻¹⁸ of the same computation in f64,
-//     measured against the largest output of its row — the bound for a
-//     4,096-wide row's sum (16 sequential adds an invocation, then 8 tree
-//     levels, each a rounding of at most 2⁻²⁴), the inverse square root's 2
-//     units, and the multiplies. Against the row, not the element: adding y
-//     into X can cancel, and an element near zero carries its row's error.
+//   - Accuracy, for finite rows whose squares stay finite in f32 — every
+//     activation the listed models produce: each output within 2⁻¹⁸ of the
+//     same computation in f64, measured against the largest output of its
+//     row. That is the margin a 4,096-wide row's sum leaves (16 sequential
+//     adds an invocation, then 8 tree levels, each a rounding of at most
+//     2⁻²⁴), with the inverse square root's 2 units and the multiplies; WGSL
+//     lets the compiler reassociate and does not fix the rounding direction,
+//     so it is a margin the GPU test checks on the target, not a proof.
+//     Against the row, not the element: adding y into X can cancel, and an
+//     element near zero carries its row's error. A row whose squares
+//     overflow f32 — about 10¹⁹ — is outside it; no listed model's
+//     activations come near.
 //   - Variants are override constants, so one source serves all three:
 //     `add`, and `post_norm` (which requires `add`). Every binding is
 //     declared in every variant, so a launch that does not add still binds
@@ -63,9 +69,12 @@ namespace bllm::kernels {
 // pass for Qwen3 0.6B, about 86 µs of dispatch at 1.5 µs (interface.h).
 // Bytes, a row, for Qwen3's 1,024 width: X read and written, y read, the
 // gain read, normed written — 4 KiB each, 20 KiB; Gemma 3's post-norm adds
-// its gain, 4.5 KiB at its 1,152. A 512-row prefill step moves about 10 MiB,
-// about 25 µs at 400 GB/s; a decode step's norm is one workgroup and its
-// launch. The reduction's 8 barriers bound a row's latency, not its bytes.
+// its gain, 4.5 KiB at its 1,152, 27 KiB a row in all. A 512-row prefill step
+// moves about 10 MiB, about 25 µs at 400 GB/s; a decode step's norm is one
+// workgroup and its launch. A row's latency is its reductions', not its
+// bytes: one tree of 8 levels, or for Gemma 3's post-norm two dependent ones
+// — y's scale is needed before X can be added to and reduced — 16 levels and
+// two inverse square roots.
 // Optimization (practice): the residual add and the gain ride in the norm's
 // launch, as vLLM's fused_add_rms_norm and llama.cpp's RMS_NORM + MUL + ADD
 // do, rather than in launches of their own (GPU.6).
