@@ -40,6 +40,7 @@ add_executable(charlotte_tests
     cache_prefix_test.cpp
     formats_q6_k_repack_test.cpp
     kernels_gather_test.cpp
+    kernels_geometry_test.cpp
     kernels_norm_test.cpp
     kernels_rope_test.cpp
     residency_piece_writer_test.cpp

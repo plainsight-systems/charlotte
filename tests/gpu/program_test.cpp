@@ -80,6 +80,30 @@ std::vector<std::byte> wide_constants(float first) {
     return bytes;
 }
 
+// Test-only: each workgroup adds 1 (main) or 1,000 (other) to its counter,
+// so a step's counts are the workgroups each launch ran, and which entry.
+constexpr std::string_view kCounts = R"(
+struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
+struct Nothing { unused: u32 }
+override workgroup_size: u32;
+override counter: u32 = 0;
+@group(0) @binding(0) var<uniform> step: Step;
+@group(0) @binding(1) var<uniform> nothing: Nothing;
+@group(0) @binding(2) var<storage, read_write> counts: array<atomic<u32>>;
+@compute @workgroup_size(workgroup_size)
+fn main(@builtin(local_invocation_index) local: u32) {
+    if (local == 0u && step.tokens > 0u && nothing.unused == 0u) {
+        atomicAdd(&counts[counter], 1u);
+    }
+}
+@compute @workgroup_size(workgroup_size)
+fn other(@builtin(local_invocation_index) local: u32) {
+    if (local == 0u && step.tokens > 0u && nothing.unused == 0u) {
+        atomicAdd(&counts[counter], 1000u);
+    }
+}
+)";
+
 }  // namespace
 
 TEST_CASE("constants spanning several slots are each launch's own, at its own offset") {
@@ -141,4 +165,44 @@ TEST_CASE("a launch whose pack format has no pack is refused, saying so") {
     CHECK(built.program == nullptr);
     CHECK(built.error == kernels::ProgramError::Build);
     CHECK_MESSAGE(built.message.find("no pack") != std::string::npos, built.message);
+}
+
+TEST_CASE("launches run their tiles and key splits, a combine only when split, each at its entry point") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Model m = load("tiny_qwen3");
+    const auto upload = begin(*device, m);
+    REQUIRE(stream(instance.get(), *upload, m) == residency::UploadError::Ok);
+    REQUIRE(finish(instance.get(), *upload) == residency::UploadError::Ok);
+    const residency::BufferRange counts = scratch(m, "hidden");
+    const auto launch = [&](std::uint32_t counter, std::uint32_t per_row, std::uint32_t rows_per_tile,
+                            kernels::KeySplit split, std::string_view entry) {
+        kernels::Launch l{kCounts, nullptr, std::vector<std::byte>(4),
+                          {{counts.buffer, counts.offset, counts.length}}, per_row, 64};
+        l.overrides = {{"counter", static_cast<double>(counter)}};
+        l.rows_per_tile = rows_per_tile;
+        l.key_split = split;
+        l.window = 40960;
+        l.entry_point = entry;
+        return l;
+    };
+    const auto program = build_program(
+        instance.get(), *upload,
+        {launch(0, 128, 4, kernels::KeySplit::None, "main"), launch(1, 64, 0, kernels::KeySplit::PerChunk, "other"),
+         launch(2, 64, 0, kernels::KeySplit::WhenSplit, "main")});
+    const auto read = [&] {
+        const auto words = read_floats(instance.get(), *device, upload->buffer(counts.buffer), counts.offset, 3);
+        std::uint32_t c[3];
+        std::memcpy(c, words.data(), sizeof c);
+        return std::array<std::uint32_t, 3>{c[0], c[1], c[2]};
+    };
+
+    // Decode at 4,096: one tile of 4 rows, 8 workgroups; 16 chunks, each a
+    // workgroup of the other entry; the step splits, so the combine runs.
+    run_step(instance.get(), *program, 1, {}, 4095);
+    CHECK(read() == std::array<std::uint32_t, 3>{8, 16000, 1});
+
+    // Five rows at 100: two tiles; one chunk, so no split and no combine.
+    run_step(instance.get(), *program, 5, {}, 100);
+    CHECK(read() == std::array<std::uint32_t, 3>{8 + 16, 16000 + 5000, 1});
 }

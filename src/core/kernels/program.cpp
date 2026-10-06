@@ -25,9 +25,8 @@ struct Program::State {
     struct Bound {
         std::size_t pipeline;
         gpu::BindGroup group;
-        std::uint32_t invocations_per_row;
+        Geometry geometry;
         std::uint32_t workgroup_size;
-        Rows rows;
     };
     std::vector<Bound> launches;
     gpu::Buffer constants;   // UNIFORM | COPY_DST: every launch's, on kLaunchConstantsAlignment
@@ -188,7 +187,9 @@ void Build::bind() {
         desc.entryCount = entries.size();
         desc.entries = entries.data();
         s.launches.push_back({p, gpu::BindGroup(wgpuDeviceCreateBindGroup(device, &desc)),
-                              launches[i].invocations_per_row, launches[i].workgroup_size, launches[i].rows});
+                              Geometry{launches[i].rows, launches[i].invocations_per_row, launches[i].rows_per_tile,
+                                       launches[i].key_split, launches[i].window},
+                              launches[i].workgroup_size});
     }
     pop_scopes(device, kBuildScopes.size(), shared_from_this(), ProgramError::Build);
 }
@@ -220,10 +221,10 @@ Constants constants_of(const Launch& launch) {
 // it packs, its constants. The text is compared, not its address: an
 // embedded string may lie at a different address in each translation unit
 // that names it.
-using Key = std::tuple<std::string_view, const formats::Format*, const formats::Format*, Constants>;
+using Key = std::tuple<std::string_view, std::string_view, const formats::Format*, const formats::Format*, Constants>;
 
 Key key_of(const Launch& launch) {
-    return {launch.kernel, launch.format, launch.pack_format, constants_of(launch)};
+    return {launch.kernel, launch.entry_point, launch.format, launch.pack_format, constants_of(launch)};
 }
 
 // The bytes a launch's constants take in the constants buffer: whole
@@ -258,6 +259,17 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         }
         if (launch.workgroup_size == 0 || launch.invocations_per_row == 0) {
             done(nullptr, ProgramError::Build, at + "no invocations", userdata);
+            return;
+        }
+        if (launch.rows_per_tile != 0 &&
+            (launch.rows == Rows::LastToken ||
+             std::uint64_t{launch.rows_per_tile} * launch.invocations_per_row % launch.workgroup_size != 0)) {
+            done(nullptr, ProgramError::Build, at + "a tile is not a whole number of workgroups of every token",
+                 userdata);
+            return;
+        }
+        if (launch.key_split != KeySplit::None && launch.window == 0) {
+            done(nullptr, ProgramError::Build, at + "split by key chunks with no window", userdata);
             return;
         }
         for (std::size_t o = 0; o < launch.overrides.size(); ++o) {
@@ -367,7 +379,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         const gpu::ShaderModule module(wgpuDeviceCreateShaderModule(device, &module_desc));
 
         std::vector<WGPUConstantEntry> entries;
-        for (const auto& [name, value] : std::get<3>(key)) {
+        for (const auto& [name, value] : std::get<4>(key)) {
             WGPUConstantEntry e = WGPU_CONSTANT_ENTRY_INIT;
             e.key = view_of(name);
             e.value = value;
@@ -375,7 +387,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         }
         WGPUComputePipelineDescriptor pipeline_desc = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
         pipeline_desc.compute.module = module.get();
-        pipeline_desc.compute.entryPoint = view_of("main");
+        pipeline_desc.compute.entryPoint = view_of(launch.entry_point);
         pipeline_desc.compute.constantCount = entries.size();
         pipeline_desc.compute.constants = entries.data();
 
@@ -447,9 +459,10 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
             const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), nullptr));
             std::size_t current = s.pipelines.size();
             for (const State::Bound& launch : s.launches) {
-                const std::uint64_t rows = launch.rows == Rows::LastToken ? 1 : step.tokens;
-                const gpu::DispatchResult d = gpu::dispatch_count(rows * launch.invocations_per_row,
-                                                                  launch.workgroup_size, s.max_workgroups);
+                const std::uint64_t invocations = invocations_for(launch.geometry, step.position, step.tokens);
+                if (invocations == 0) continue;   // a combine, the step unsplit
+                const gpu::DispatchResult d =
+                    gpu::dispatch_count(invocations, launch.workgroup_size, s.max_workgroups);
                 if (d.status != gpu::DispatchStatus::Ok) {
                     fits = false;
                     break;

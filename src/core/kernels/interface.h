@@ -51,7 +51,12 @@ namespace bllm::kernels {
 //     `last_token` to true; a kernel that can cover only the last token
 //     declares `override last_token: bool = false;` and then works on row
 //     tokens - 1 of each buffer. Rows alone decides both, so they cannot
-//     disagree.
+//     disagree. A launch may instead cover tiles of rows — attention's
+//     query tiles — and may multiply its workgroups by the step's key
+//     chunks or run only when the step splits them (key_chunks,
+//     invocations_for below); a launch that does not run in a step is not
+//     dispatched. A module may hold several entry points, and a launch
+//     names its own.
 //   - Variants: a kernel's other override constants select among its forms —
 //     the norm with or without the residual add — so one WGSL source serves
 //     them. The program compiles each distinct kernel, unpack and pack
@@ -147,6 +152,67 @@ enum class Rows {
     LastToken,
 };
 
+// Keys a chunk holds, fixed by position: chunk c is positions 256c ..
+// 256c + 255 (kernels/attention/attention.h). And the query rows a split
+// step's partial buffers hold, the prefill block's.
+inline constexpr std::uint32_t kChunkKeys = 256;
+inline constexpr std::uint32_t kPartialRows = residency::kPrefillBlock;
+
+// A layer's chunks of keys for a step, and how it splits them: from the
+// chunk holding its first row's earliest key, position − window + 1, to the
+// chunk holding its last row; split one workgroup a chunk when every row's
+// partials fit, else not at all. The program dispatches by it and the
+// attention kernel computes the same in WGSL.
+struct KeyChunks {
+    std::uint32_t first;
+    std::uint32_t count;
+    std::uint32_t splits;   // count, or 1
+};
+
+// Preconditions: tokens >= 1 and window >= 1.
+[[nodiscard]] constexpr KeyChunks key_chunks(std::uint32_t position, std::uint32_t tokens,
+                                             std::uint32_t window) noexcept {
+    const std::uint32_t earliest = position + 1 > window ? position + 1 - window : 0;
+    const std::uint32_t first = earliest / kChunkKeys;
+    const std::uint32_t count = (position + tokens - 1) / kChunkKeys - first + 1;
+    return {first, count, tokens * count <= kPartialRows ? count : 1};
+}
+
+// How a launch uses the step's key chunks.
+enum class KeySplit {
+    // Not at all.
+    None,
+    // Its workgroups are multiplied by the step's splits.
+    PerChunk,
+    // It runs only when the step splits: the combine after a split.
+    WhenSplit,
+};
+
+// What decides how many invocations a launch runs in a step.
+struct Geometry {
+    Rows rows;
+    std::uint32_t invocations_per_row;
+    std::uint32_t rows_per_tile;   // 0: a launch over rows
+    KeySplit key_split;
+    std::uint32_t window;
+};
+
+// The invocations a launch runs in a step of `tokens` from `position`; 0
+// when it does not run. Preconditions: tokens >= 1; a key split's window
+// >= 1.
+[[nodiscard]] constexpr std::uint64_t invocations_for(const Geometry& g, std::uint32_t position,
+                                                      std::uint32_t tokens) noexcept {
+    const std::uint64_t rows = g.rows == Rows::LastToken ? 1 : tokens;
+    const std::uint64_t covered =
+        g.rows_per_tile == 0 ? rows * g.invocations_per_row
+                             : (rows + g.rows_per_tile - 1) / g.rows_per_tile * g.rows_per_tile *
+                                   g.invocations_per_row;
+    if (g.key_split == KeySplit::None) return covered;
+    const std::uint32_t splits = key_chunks(position, tokens, g.window).splits;
+    if (g.key_split == KeySplit::WhenSplit) return splits > 1 ? covered : 0;
+    return covered * splits;
+}
+
 // A WGSL override constant and its value.
 struct Override {
     std::string_view name;
@@ -175,6 +241,16 @@ struct Launch {
     // kernel that writes the cache (formats/format.h) — or null. Pack reads
     // no binding, so it composes beside an unpack.
     const formats::Format* pack_format = nullptr;
+    // When nonzero, the launch covers tiles of this many rows: the program
+    // dispatches ceil(rows / rows_per_tile) tiles, each rows_per_tile ×
+    // invocations_per_row invocations, a whole number of workgroups.
+    std::uint32_t rows_per_tile = 0;
+    // Its use of the step's key chunks, for a layer of this window.
+    KeySplit key_split = KeySplit::None;
+    std::uint32_t window = 0;
+    // The WGSL entry point: one module may hold two roles, which share its
+    // functions and not each other's workgroup memory.
+    std::string_view entry_point = "main";
 };
 
 }  // namespace bllm::kernels

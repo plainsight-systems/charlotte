@@ -64,7 +64,7 @@ namespace bllm::kernels {
 //     workgroup folds every active chunk itself, with the same merge. A
 //     layer's step splits when tokens × count <= 512, so the partial
 //     buffers hold 512 query rows, the attention buffer's own size
-//     (key_chunks below). A chunk holding no live key for some of a
+//     (kernels/interface.h, key_chunks). A chunk holding no live key for some of a
 //     workgroup's rows writes empty partials for them, which the combine
 //     skips.
 //   - Tiles. A workgroup is 64 invocations and holds, in workgroup memory, a
@@ -100,19 +100,26 @@ namespace bllm::kernels {
 //     no live key for a query leaves its state exactly as it was. Tiles
 //     past a workgroup's last row are not loaded: causal tiles above the
 //     diagonal are skipped.
-//   - One source serves both roles: the override `combine` selects the
-//     combine, which folds a query's splits and divides, d / 4 invocations
-//     a query, each a vec4 of the output. The merge is one WGSL function
-//     both roles call.
+//   - One source serves both roles, as two entry points: `main`, and
+//     `combine`, which folds a query's splits and divides, d / 4
+//     invocations a query, each a vec4 of the output. The merge is one WGSL
+//     function both call, and the combine allocates none of main's
+//     workgroup memory, which WGSL gives only the entry points that use it.
+//     The other shape — the last workgroup of a split folding the rest —
+//     would wait on other workgroups, which WebGPU gives no forward-progress
+//     guarantee for (GDSA.4); the combine is a launch of its own.
 //   - Variants are override constants — `head_dimension`, `query_heads`,
-//     `key_value_heads`, `combine` — so tile shapes and indices fold when
-//     the pipeline is built; one pipeline per role for a model.
+//     `key_value_heads` — so tile shapes and indices fold when the pipeline
+//     is built; one pipeline per role for a model.
 //   - Constants (binding 1): struct Attention { slots: u32, window: u32,
 //     scale_log2e: f32 }, the layer's.
 //   - Bindings: 2 the query buffer, 3 the layer's keys and 4 its values in
 //     the KV cache, read-only; 5 the attention buffer, 6 the partial values and
-//     7 the partial statistics, written. The combine binds 6 and 7
-//     read-only and writes 5. Six storage buffers, under WebGPU's default 8.
+//     7 the partial statistics, written. The combine binds 2 the partial
+//     values and 3 the partial statistics, read-only, and 4 the attention
+//     buffer, written: its own declarations, which share binding numbers
+//     with main's as two entry points may. Six storage buffers at most,
+//     under WebGPU's default 8.
 //
 // What it asks of the other contracts:
 //   - kernels/interface.h and program.h: a launch may cover whole tiles of
@@ -120,7 +127,7 @@ namespace bllm::kernels {
 //     chunks, naming its layer's window, so the program multiplies its
 //     workgroups by key_chunks' split count for the step; and it may run
 //     only when the step splits, which the combine does, so an unsplit step
-//     pays no launch for it. The kernel computes the same first chunk and
+//     pays no launch for it; and it names its entry point. The kernel computes the same first chunk and
 //     split from the step's position and token count and its window, in
 //     WGSL; the tests hold the two to agreement at every boundary.
 //   - residency/plan.h: two working buffers — partial values, 512 rows of
@@ -242,6 +249,8 @@ namespace bllm::kernels {
 //     GPU.5  Use workgroup memory where reuse pays — every tile is read by
 //            every query of the workgroup; padded rows.
 //     GPU.6  Batch tiny GPU work — the combine runs only when split.
+//     GDSA.4 Never spin-wait on another workgroup without a
+//            forward-progress guarantee — the combine is a launch.
 
 // One layer's attention.
 struct AttentionLaunch {
@@ -254,26 +263,6 @@ struct AttentionLaunch {
     residency::BufferRange partials;           // a split's unnormalized O
     residency::BufferRange partial_stats;      // and its m and l
 };
-
-// Keys a chunk holds, and the query rows the partial buffers hold.
-inline constexpr std::uint32_t kChunkKeys = 256;
-inline constexpr std::uint32_t kPartialRows = residency::kPrefillBlock;
-
-// A layer's chunks for a step, and how it splits them.
-struct KeyChunks {
-    std::uint32_t first;    // the chunk holding the first row's earliest key
-    std::uint32_t count;    // through the chunk holding the last row
-    std::uint32_t splits;   // count, if every row's partials fit, else 1
-};
-
-// Preconditions: tokens >= 1 and window >= 1.
-[[nodiscard]] constexpr KeyChunks key_chunks(std::uint32_t position, std::uint32_t tokens,
-                                             std::uint32_t window) noexcept {
-    const std::uint32_t earliest = position + 1 > window ? position + 1 - window : 0;
-    const std::uint32_t first = earliest / kChunkKeys;
-    const std::uint32_t count = (position + tokens - 1) / kChunkKeys - first + 1;
-    return {first, count, tokens * count <= kPartialRows ? count : 1};
-}
 
 // The layer's attention launch and its combine, in that order.
 // Preconditions: the head dimension is 64, 128 or 256; the query heads a

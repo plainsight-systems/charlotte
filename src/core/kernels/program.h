@@ -51,7 +51,7 @@ namespace bllm::kernels {
 //
 // What a step costs, counted: calls into WebGPU are 1 writeBuffer of 16 +
 // 16 × ceil(tokens / 4) bytes, 1 createCommandEncoder, 1 beginComputePass,
-// for each launch 1 setBindGroup, 1 dispatchWorkgroups and 1 setPipeline
+// for each launch that runs 1 setBindGroup, 1 dispatchWorkgroups and 1 setPipeline
 // where the kernel changes, then end, finish, submit, two scopes' pushes and
 // pops, onSubmittedWorkDone, and the release of the three single-use objects
 // WebGPU makes a step — the command encoder, the pass encoder and the command
