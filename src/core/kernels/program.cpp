@@ -334,12 +334,13 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
     State& s = *state_;
     WGPUDevice device = s.device.get();
 
+    // The scopes cover the step's write too, so a write WebGPU refuses fails
+    // the step rather than leaving it to run on the last step's parameters.
+    push_scopes(device, kStepScopes);
     // Optimization (browser): the step's head and only the identifier words
     // it uses, in one write (interface.h).
     const std::size_t bytes = 16 + 16 * ((std::size_t{step.tokens} + 3) / 4);
     wgpuQueueWriteBuffer(s.queue.get(), s.step.get(), 0, &step, bytes);
-
-    push_scopes(device, kStepScopes);
     auto running = std::make_shared<Running>(Running{state_, kStepScopes.size(), ProgramError::Ok, done, userdata});
     bool fits = true;
     {
