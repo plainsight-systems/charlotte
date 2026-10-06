@@ -124,19 +124,18 @@ runs, in what order, with what parameters.
 | Order of every block below, per architecture | `core/arch/<arch>` A |
 | Step parameters: position, token count and the tokens' identifiers | `core/kernels/interface` contract · `core/runtime` M |
 | Launching every block, a step | `core/kernels/program` D |
-| Working buffers: hidden, normed, query, key, value, attention, gate, up, logits | `core/residency/plan` D |
+| Working buffers: hidden, normed, query, key, value, attention, output, gate, up, logits | `core/residency/plan` D |
 | **Embed** | `core/kernels/gather` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
-| **Norms**: attention, QK, feed-forward, final | `core/kernels/norm` E · `core/formats/f32` B |
+| **Norms**: attention, feed-forward, final, each with the residual add before it | `core/kernels/norm` E · `core/formats/f32` B |
 | **Projections**: Q, K, V and Wo; feed-forward gate, up and down; the output head | `core/kernels/matmul` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
-| **RoPE** | `core/kernels/rope` E · `core/model` contract |
-| **Attention**: append to the cache, scores, causal mask, softmax, weighted sum | `core/kernels/attention` E · `core/cache/kv` G · `core/formats/<format>` B, the cache's |
+| **QK-norm, RoPE, append to the cache** | `core/kernels/rope` E · `core/model` contract · `core/cache/kv` G · `core/formats/<format>` B, the cache's |
+| **Attention**: scores, causal mask, softmax, weighted sum | `core/kernels/attention` E · `core/cache/kv` G · `core/formats/<format>` B, the cache's |
 | **Activation** | `core/kernels/activation` E |
-| **Residual add** | `core/kernels/matmul` E: the matmul that ends a block adds into X |
+| **Residual add** | `core/kernels/norm` E: the norm that begins the next block adds the block's output into X |
 
-The output head reads the token embedding where the file ties them, as the
-residency plan records. QK-norm is the norm kernel on head-sized rows.
-Attention is one kernel per regime because its steps share the scores, which
-are never written out.
+Which of these blocks share a launch, and why, is in
+[`kernel-fusions.md`](kernel-fusions.md). The output head reads the token
+embedding where the file ties them, as the residency plan records.
 
 ## Files that serve several boxes
 

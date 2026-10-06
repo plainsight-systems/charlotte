@@ -67,6 +67,10 @@ Then [`docs/architecture/file-mapping.md`](docs/architecture/file-mapping.md) â€
 which files implement each box, the axis each changes on, and the contracts
 between them.
 
+Then [`docs/architecture/kernel-fusions.md`](docs/architecture/kernel-fusions.md)
+â€” which steps of a pass share a GPU dispatch, why each dispatch's cost in the
+browser makes that a design decision, and what established engines fuse.
+
 ## Governance
 
 Entry point: [`docs/decisions/MEMORY.md`](docs/decisions/MEMORY.md).
