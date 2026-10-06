@@ -207,6 +207,47 @@ def norm_rows(widths=(1024, 1152, 2048), rows=4, seed=0x6C8E9CF5):
     return build(tensors)
 
 
+def rope_rows(rows=4, seed=0x1B873593):
+    """For each listed model's attention shape — Qwen3 0.6B's 16 query and 8
+    key-value heads of 128, Llama 3.2 1B's 32 and 8 of 64, Gemma 3 1B's 4 and
+    1 of 256 — rows of queries, keys and values, the QK-norm gains, and for
+    Llama its rotary frequency factors as Llama 3's converter computes them
+    (factor 32, low and high frequency factors 1 and 4, original context
+    8,192, base 500,000). Deterministic pseudo-random F32, held as tensors so
+    a test can upload them."""
+    import math
+    state = seed
+
+    def unit():
+        nonlocal state
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        return ((state >> 8) % 2000001 - 1000000) / 1000000.0
+
+    def floats(values):
+        return b"".join(struct.pack("<f", v) for v in values)
+
+    tensors = []
+    for name, query_heads, kv_heads, d in (("qwen", 16, 8, 128), ("llama", 32, 8, 64), ("gemma", 4, 1, 256)):
+        for role, heads in (("q", query_heads), ("k", kv_heads), ("v", kv_heads)):
+            width = heads * d
+            tensors.append((f"{role}_{name}".encode(), [width, rows], T_F32,
+                            floats(2.0 * unit() for _ in range(width * rows))))
+        tensors.append((f"qn_{name}".encode(), [d], T_F32, floats(1.0 + 0.5 * unit() for _ in range(d))))
+        tensors.append((f"kn_{name}".encode(), [d], T_F32, floats(1.0 + 0.5 * unit() for _ in range(d))))
+    factors = []
+    for k in range(32):
+        wavelength = 2 * math.pi / 500000.0 ** (-2 * k / 64)
+        if wavelength < 8192 / 4:
+            factors.append(1.0)
+        elif wavelength > 8192 / 1:
+            factors.append(32.0)
+        else:
+            smooth = (8192 / wavelength - 1) / (4 - 1)
+            factors.append(1 / ((1 - smooth) / 32 + smooth))
+    tensors.append((b"factors_llama", [32], T_F32, floats(factors)))
+    return build(tensors)
+
+
 def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, reshape=None,
                head_count_kv=KV, output_copy=False, context=64, extra_tensors=()):
     """A tiny `arch` model. `reshape` is (tensor name, dims) to break a shape."""
@@ -428,6 +469,9 @@ CASES = {
     "embedding_q6_k": lambda: embedding(T_Q6_K),
     # Norm gains and activation rows at each listed model's hidden width.
     "norm_rows": lambda: norm_rows(),
+    # Queries, keys, values, QK-norm gains and Llama's factors, each listed
+    # model's attention shape.
+    "rope_rows": lambda: rope_rows(),
     "nested_array": lambda: build(
         [], metadata=[kv(b"bad", ARRAY, struct.pack("<IQ", ARRAY, 1))]
     ),

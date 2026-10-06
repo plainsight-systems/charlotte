@@ -7,6 +7,7 @@ add_executable(charlotte_gpu_tests
     gather_test.cpp
     norm_test.cpp
     program_test.cpp
+    rope_test.cpp
     mapping_test.cpp
     upload_test.cpp
     pack_f16_test.cpp
