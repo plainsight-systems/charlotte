@@ -37,6 +37,8 @@ namespace bllm::kernels {
 //   - A kernel that reads a weight composes with that weight's format's
 //     unpack, which reads the binding named `weights` (format.h); a launch
 //     binds one piece of a weight, so a split weight is one launch per piece.
+//     A kernel that writes the cache composes with the cache format's pack
+//     (format.h), which reads no binding, so it composes beside an unpack.
 //   - Geometry: a launch runs a fixed number of invocations for each row it
 //     covers — every token of the step, or only its last, which is all the
 //     final norm and the output head need — in workgroups of a size the
@@ -52,8 +54,8 @@ namespace bllm::kernels {
 //     disagree.
 //   - Variants: a kernel's other override constants select among its forms —
 //     the norm with or without the residual add — so one WGSL source serves
-//     them. The program compiles each distinct kernel, format, workgroup size
-//     and set of overrides once, and passes every override to the pipeline;
+//     them. The program compiles each distinct kernel, unpack and pack
+//     format, workgroup size and set of overrides once, and passes every override to the pipeline;
 //     `workgroup_size` and `last_token` are the program's to set, and a
 //     launch naming either, or one name twice, is refused at build.
 //   - The regime is chosen per step from its token count.
@@ -124,11 +126,12 @@ struct Step {
 };
 static_assert(sizeof(Step) == 16 + 4 * residency::kPrefillBlock);
 
-// Each launch's constants lie at their own offset in one uniform buffer,
-// on the alignment WebGPU's default limits require for a uniform binding's
-// offset, and no larger than this.
+// Each launch's constants lie at their own offset in one uniform buffer, in
+// a whole number of slots on the alignment WebGPU's default limits require
+// for a uniform binding's offset — one for most kernels, three for rope's
+// 528 bytes — and no larger than this.
 inline constexpr std::uint32_t kLaunchConstantsAlignment = 256;   // minUniformBufferOffsetAlignment
-inline constexpr std::uint32_t kMaxLaunchConstants = 256;
+inline constexpr std::uint32_t kMaxLaunchConstants = 1024;
 
 // A bound range of a buffer the residency plan names: a piece of a weight,
 // a working buffer, a layer's cache.
@@ -168,6 +171,10 @@ struct Launch {
     Rows rows = Rows::EveryToken;
     // Override constants beyond workgroup_size, which every kernel declares.
     std::vector<Override> overrides;
+    // The format whose pack the kernel composes with — the cache's, for a
+    // kernel that writes the cache (formats/format.h) — or null. Pack reads
+    // no binding, so it composes beside an unpack.
+    const formats::Format* pack_format = nullptr;
 };
 
 }  // namespace bllm::kernels

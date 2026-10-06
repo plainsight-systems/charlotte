@@ -123,6 +123,8 @@ struct Build : std::enable_shared_from_this<Build> {
     std::vector<Launch> launches;
     std::vector<std::vector<Resolved>> bindings;   // for each launch
     std::vector<std::size_t> pipeline_of;          // for each launch
+    std::vector<std::uint64_t> constants_at;       // for each launch: its slots' offset
+    std::vector<std::uint64_t> constants_size;     // and their bytes, a whole number of slots
     std::size_t pending = 0;                       // callbacks still to land in this section
     bool bound = false;                            // section two has run
     ProgramError error = ProgramError::Ok;
@@ -163,8 +165,8 @@ void Build::bind() {
         WGPUBindGroupEntry constants = WGPU_BIND_GROUP_ENTRY_INIT;
         constants.binding = kLaunchBinding;
         constants.buffer = s.constants.get();
-        constants.offset = std::uint64_t{kLaunchConstantsAlignment} * i;
-        constants.size = kLaunchConstantsAlignment;
+        constants.offset = constants_at[i];
+        constants.size = constants_size[i];
         entries.push_back(constants);
         for (std::size_t k = 0; k < bindings[i].size(); ++k) {
             WGPUBindGroupEntry e = WGPU_BIND_GROUP_ENTRY_INIT;
@@ -207,12 +209,22 @@ Constants constants_of(const Launch& launch) {
     return c;
 }
 
-// A distinct pipeline: the kernel's text, the format it unpacks, its
-// constants. The text is compared, not its address: an embedded string may
-// lie at a different address in each translation unit that names it.
-using Key = std::tuple<std::string_view, const formats::Format*, Constants>;
+// A distinct pipeline: the kernel's text, the format it unpacks, the format
+// it packs, its constants. The text is compared, not its address: an
+// embedded string may lie at a different address in each translation unit
+// that names it.
+using Key = std::tuple<std::string_view, const formats::Format*, const formats::Format*, Constants>;
 
-Key key_of(const Launch& launch) { return {launch.kernel, launch.format, constants_of(launch)}; }
+Key key_of(const Launch& launch) {
+    return {launch.kernel, launch.format, launch.pack_format, constants_of(launch)};
+}
+
+// The bytes a launch's constants take in the constants buffer: whole
+// slots, at least one, since binding 1 is bound whatever a kernel declares.
+std::uint64_t slot_bytes(const Launch& launch) {
+    const std::uint64_t size = std::max<std::uint64_t>(launch.constants.size(), 1);
+    return (size + kLaunchConstantsAlignment - 1) / kLaunchConstantsAlignment * kLaunchConstantsAlignment;
+}
 
 }  // namespace
 
@@ -231,6 +243,10 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         if (launch.constants.size() > kMaxLaunchConstants) {
             done(nullptr, ProgramError::Build, at + "constants larger than " + std::to_string(kMaxLaunchConstants),
                  userdata);
+            return;
+        }
+        if (launch.pack_format != nullptr && launch.pack_format->pack_wgsl().empty()) {
+            done(nullptr, ProgramError::Build, at + "its pack format has no pack", userdata);
             return;
         }
         if (launch.workgroup_size == 0 || launch.invocations_per_row == 0) {
@@ -276,12 +292,20 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     build->program = std::unique_ptr<Program>(new Program());
     build->program->state_ = state;
 
+    // Each launch's constants at the offset its slots begin, worked out once
+    // (MEM.11).
+    std::uint64_t constants_bytes = 0;
+    for (const Launch& launch : build->launches) {
+        build->constants_at.push_back(constants_bytes);
+        build->constants_size.push_back(slot_bytes(launch));
+        constants_bytes += build->constants_size.back();
+    }
+
     // Section one: the buffers, the constants written, the pipelines asked for.
     push_scopes(device, kBuildScopes);
-    const std::uint64_t slots = std::max<std::size_t>(build->launches.size(), 1);
     WGPUBufferDescriptor constants_desc = WGPU_BUFFER_DESCRIPTOR_INIT;
     constants_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-    constants_desc.size = slots * kLaunchConstantsAlignment;
+    constants_desc.size = std::max<std::uint64_t>(constants_bytes, kLaunchConstantsAlignment);
     state->constants = gpu::Buffer(wgpuDeviceCreateBuffer(device, &constants_desc));
     WGPUBufferDescriptor step_desc = WGPU_BUFFER_DESCRIPTOR_INIT;
     step_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
@@ -292,7 +316,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     std::vector<std::byte> packed(constants_desc.size);
     for (std::size_t i = 0; i < build->launches.size(); ++i) {
         const auto& c = build->launches[i].constants;
-        std::memcpy(packed.data() + i * kLaunchConstantsAlignment, c.data(), c.size());
+        std::copy(c.begin(), c.end(), packed.begin() + static_cast<std::ptrdiff_t>(build->constants_at[i]));
     }
     wgpuQueueWriteBuffer(state->queue.get(), state->constants.get(), 0, packed.data(), packed.size());
 
@@ -321,6 +345,10 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
             source += '\n';
             source += launch.format->unpack_wgsl();
         }
+        if (launch.pack_format != nullptr) {
+            source += '\n';
+            source += launch.pack_format->pack_wgsl();
+        }
         WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
         wgsl.code = view_of(source);
         WGPUShaderModuleDescriptor module_desc = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
@@ -328,7 +356,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         const gpu::ShaderModule module(wgpuDeviceCreateShaderModule(device, &module_desc));
 
         std::vector<WGPUConstantEntry> entries;
-        for (const auto& [name, value] : std::get<2>(key)) {
+        for (const auto& [name, value] : std::get<3>(key)) {
             WGPUConstantEntry e = WGPU_CONSTANT_ENTRY_INIT;
             e.key = view_of(name);
             e.value = value;

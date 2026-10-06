@@ -21,12 +21,13 @@ namespace bllm::kernels {
 // descriptions name, as upload holds the buffers the plan names.
 //
 //   - Build, at load: each distinct kernel — its WGSL, the unpack of the
-//     format it reads, its workgroup size and override constants — is
-//     composed and compiled once,
+//     format it reads, the pack of the format it writes, its workgroup size
+//     and override constants — is composed and compiled once,
 //     with createComputePipelineAsync, every pipeline requested at once so
 //     the browser compiles them together; a bind group is made for every
 //     launch; every launch's constants are packed into one uniform buffer,
-//     each on kLaunchConstantsAlignment, and written with one write; the
+//     each in whole slots of kLaunchConstantsAlignment, and written with one
+//     write; a launch whose pack format has no pack is refused; the
 //     step's uniform buffer is created. The buffers bound are upload's,
 //     named by plan index, so the program allocates only those two.
 //   - Run, once a step: one write of the step's parameters, then one command
@@ -68,6 +69,8 @@ namespace bllm::kernels {
 //   C++ performance guidelines
 //     GPU.6  Batch tiny GPU work — one pass, one submit, a step.
 //     GPU.9  Suballocate — one constants buffer for every launch.
+//     MEM.11 Plan offsets once from known sizes — each launch's constants
+//            offset, at build.
 //     WASM.2 Batch work across the JS boundary — one write a step.
 //     WASM.7 Budget startup — pipelines compile together, asynchronously.
 //     MEM.9  Allocate at init — buffers, pipelines and bind groups at load;

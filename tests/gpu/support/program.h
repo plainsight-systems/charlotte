@@ -26,14 +26,18 @@
 
 namespace bllm::testing {
 
-inline std::unique_ptr<kernels::Program> build_program(WGPUInstance instance, const residency::Upload& upload,
-                                                       std::vector<kernels::Launch> launches) {
-    struct Built {
-        std::unique_ptr<kernels::Program> program;
-        kernels::ProgramError error = kernels::ProgramError::Build;
-        std::string message;
-        bool done = false;
-    } built;
+// How a build ended, as its callback reported it.
+struct Built {
+    std::unique_ptr<kernels::Program> program;
+    kernels::ProgramError error = kernels::ProgramError::Build;
+    std::string message;
+    bool done = false;
+};
+
+// Builds a program for `launches` and returns how the build ended.
+inline Built try_build(WGPUInstance instance, const residency::Upload& upload,
+                       std::vector<kernels::Launch> launches) {
+    Built built;
     kernels::Program::build(
         upload, std::move(launches),
         [](std::unique_ptr<kernels::Program> p, kernels::ProgramError e, std::string_view m, void* userdata) {
@@ -45,6 +49,13 @@ inline std::unique_ptr<kernels::Program> build_program(WGPUInstance instance, co
         },
         &built);
     pump_until(instance, built.done, "the program");
+    return built;
+}
+
+// Builds a program, as try_build; it must succeed.
+inline std::unique_ptr<kernels::Program> build_program(WGPUInstance instance, const residency::Upload& upload,
+                                                       std::vector<kernels::Launch> launches) {
+    Built built = try_build(instance, upload, std::move(launches));
     REQUIRE_MESSAGE(built.error == kernels::ProgramError::Ok, built.message);
     REQUIRE(built.program != nullptr);
     return std::move(built.program);
