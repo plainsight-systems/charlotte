@@ -1,5 +1,7 @@
 #include "core/gguf/index.h"
 
+#include <algorithm>
+
 namespace bllm::gguf {
 namespace {
 
@@ -16,10 +18,11 @@ MetadataError read_as(const MetadataEntry* entry, ValueType declared, Out& out) 
 }  // namespace
 
 std::optional<TensorId> TensorIndex::find(std::string_view name) const noexcept {
-    for (std::size_t i = 0; i < tensors_.size(); ++i) {
-        if (tensors_[i].name == name) return static_cast<TensorId>(i);
-    }
-    return std::nullopt;
+    const auto at = std::lower_bound(by_name_.begin(), by_name_.end(), name, [&](TensorId id, std::string_view n) {
+        return std::string_view(tensor(id).name) < n;
+    });
+    if (at == by_name_.end() || tensor(*at).name != name) return std::nullopt;
+    return *at;
 }
 
 const MetadataEntry* TensorIndex::entry(std::string_view key) const noexcept {

@@ -67,6 +67,12 @@ public:
         return tensors_[static_cast<std::size_t>(id)];
     }
 
+    // The tensor named `name`: a binary search of the ids in name order, about
+    // nine comparisons for a model's 340 tensors, where a scan compared names
+    // with every tensor for each of describe's few hundred lookups.
+    // Optimization (practice): CDSA.11 points lookups at a flat hash table,
+    // which the standard library lacks; the sorted ids are contiguous
+    // (CACHE.3), built once by read_index.
     [[nodiscard]] std::optional<TensorId> find(std::string_view name) const noexcept;
 
     [[nodiscard]] MetadataError read_u32(std::string_view key, std::uint32_t& out) const noexcept;
@@ -83,6 +89,7 @@ private:
     [[nodiscard]] const MetadataEntry* entry(std::string_view key) const noexcept;
 
     std::vector<TensorEntry> tensors_;
+    std::vector<TensorId> by_name_;   // every tensor's id, in name order
     std::vector<MetadataEntry> metadata_;
 };
 

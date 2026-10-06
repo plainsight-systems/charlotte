@@ -391,6 +391,13 @@ ReadResult read_index(ByteSource& source, TensorIndex& out) {
     if (error != ReadError::Ok) return ReadResult{error, reader.bytes_needed()};
     out.tensors_ = reader.release_tensors();
     out.metadata_ = reader.release_metadata();
+    // Name order, for find: built once, O(T log T), as the duplicate check
+    // already sorts the names.
+    out.by_name_.resize(out.tensors_.size());
+    for (std::size_t i = 0; i < out.by_name_.size(); ++i) out.by_name_[i] = static_cast<TensorId>(i);
+    std::sort(out.by_name_.begin(), out.by_name_.end(), [&](TensorId a, TensorId b) {
+        return out.tensor(a).name < out.tensor(b).name;
+    });
     return ReadResult{};
 }
 

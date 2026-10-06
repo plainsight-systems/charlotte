@@ -8,6 +8,7 @@
 
 #include "core/gguf/reader.h"
 #include "support/gguf_fixture.h"
+#include "support/model_headers.h"
 
 using namespace bllm::gguf;
 
@@ -58,6 +59,22 @@ TEST_CASE("tensors are found by name") {
     REQUIRE(id.has_value());
     CHECK(index.tensor(*id).name == "output_norm.weight");
     CHECK_FALSE(index.find("does.not.exist").has_value());
+}
+
+TEST_CASE("every tensor of a real model is found at its own id, and no other name is") {
+    const bllm::testing::ReadHeader header = bllm::testing::read_model_header("gemma-3-1b-it-q4_0");
+    const TensorIndex& index = header.index;
+    REQUIRE(index.tensors().size() == 340);
+    for (std::size_t i = 0; i < index.tensors().size(); ++i) {
+        const auto id = index.find(index.tensors()[i].name);
+        REQUIRE(id.has_value());
+        CHECK(static_cast<std::size_t>(*id) == i);
+    }
+    // Before every name, after every name, and between two.
+    for (const char* absent : {"", "a", "zzz", "blk.0.attn_k.weightx", "blk.0.attn_k", "blk.10"}) {
+        CAPTURE(absent);
+        CHECK_FALSE(index.find(absent).has_value());
+    }
 }
 
 TEST_CASE("scalar and string metadata is decoded and typed") {
