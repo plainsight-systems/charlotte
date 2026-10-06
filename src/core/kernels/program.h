@@ -58,8 +58,9 @@ namespace bllm::kernels {
 // buffer: 14 calls out of the module, and 2 or 3 a launch; and three
 // callbacks back in, the two scopes' and the queue's. Everything else —
 // buffers, pipelines, bind groups — is made at load. The GPU adds about
-// 1.5 µs a dispatch (interface.h). Build costs a pipeline per distinct
-// kernel — about a dozen for a model — and a bind group per launch, once.
+// 1.5 µs a dispatch (interface.h). Build costs a pipeline and a bind group
+// layout per distinct kernel — about a dozen for a model — one key a launch
+// to find them, and a bind group per launch, once.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines

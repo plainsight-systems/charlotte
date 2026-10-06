@@ -153,9 +153,16 @@ void Build::bind() {
     bound = true;
     pending = kBuildScopes.size();
     push_scopes(device, kBuildScopes);
+    // A layout is the pipeline's, not the launch's: asked for once a
+    // pipeline, about a dozen calls rather than one a launch.
+    std::vector<gpu::BindGroupLayout> layouts;
+    layouts.reserve(s.pipelines.size());
+    for (const gpu::ComputePipeline& pipeline : s.pipelines) {
+        layouts.emplace_back(wgpuComputePipelineGetBindGroupLayout(pipeline.get(), kBindGroup));
+    }
     for (std::size_t i = 0; i < launches.size(); ++i) {
         const std::size_t p = pipeline_of[i];
-        const gpu::BindGroupLayout layout(wgpuComputePipelineGetBindGroupLayout(s.pipelines[p].get(), kBindGroup));
+        const gpu::BindGroupLayout& layout = layouts[p];
         std::vector<WGPUBindGroupEntry> entries;
         WGPUBindGroupEntry step = WGPU_BIND_GROUP_ENTRY_INIT;
         step.binding = kStepBinding;
@@ -320,11 +327,16 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     }
     wgpuQueueWriteBuffer(state->queue.get(), state->constants.get(), 0, packed.data(), packed.size());
 
-    std::map<Key, std::size_t> distinct;
-    for (const Launch& launch : build->launches) {
-        const Key key = key_of(launch);
-        const auto [it, added] = distinct.try_emplace(key, distinct.size());
-        build->pipeline_of.push_back(it->second);
+    // Each distinct pipeline's index and the first launch that asks for it,
+    // found in one pass over the launches: one key a launch.
+    struct Distinct {
+        std::size_t index;
+        std::size_t first_launch;
+    };
+    std::map<Key, Distinct> distinct;
+    for (std::size_t i = 0; i < build->launches.size(); ++i) {
+        const auto [it, added] = distinct.try_emplace(key_of(build->launches[i]), Distinct{distinct.size(), i});
+        build->pipeline_of.push_back(it->second.index);
     }
     state->pipelines.resize(distinct.size());
     build->pending = distinct.size() + kBuildScopes.size();
@@ -333,10 +345,9 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         std::shared_ptr<Build> build;
         std::size_t index;
     };
-    for (const auto& [key, index] : distinct) {
-        const Launch& launch = *std::find_if(build->launches.begin(), build->launches.end(), [&](const Launch& l) {
-            return key_of(l) == key;
-        });
+    for (const auto& [key, found] : distinct) {
+        const std::size_t index = found.index;
+        const Launch& launch = build->launches[found.first_launch];
         // Optimization (practice): each distinct kernel is composed and
         // compiled once, whatever its launches, and every pipeline is asked
         // for at once, so the browser compiles them together (WASM.7).
