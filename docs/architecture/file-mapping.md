@@ -111,6 +111,31 @@ and production never materialises a dequantized weight.
 | **Sample** | `core/sampler` F | no |
 | **Emit** | `core/tokenizer/<algorithm>` K · the boundary · `web/chat.js` H | yes |
 
+## Inside a pass, block to files
+
+The **Prefill · Decode** box, opened up: each block of a pass and of the
+attention block in [`logical-overview.md`](logical-overview.md), with the
+files that implement it. Every kernel is shared: the graph alone decides which
+runs, in what order, with what parameters.
+
+| Block | Files, with axis |
+|---|---|
+| Order of every block below, per architecture | `core/arch/<arch>` A |
+| Step parameters: position and token count | `core/kernels/interface` contract · `core/runtime` M |
+| Working buffers: hidden, normed, query, key, value, attention, gate, up, logits | `core/residency/plan` D |
+| **Embed** | `core/kernels/gather` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
+| **Norms**: attention, QK, feed-forward, final | `core/kernels/norm` E · `core/formats/f32` B |
+| **Projections**: Q, K, V and Wo; feed-forward gate, up and down; the output head | `core/kernels/matmul` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
+| **RoPE** | `core/kernels/rope` E · `core/model` contract |
+| **Attention**: append to the cache, scores, causal mask, softmax, weighted sum | `core/kernels/attention` E · `core/cache/kv` G · `core/formats/<format>` B, the cache's |
+| **Activation** | `core/kernels/activation` E |
+| **Residual add** | `core/kernels/matmul` E: the matmul that ends a block adds into X |
+
+The output head reads the token embedding where the file ties them, as the
+residency plan records. QK-norm is the norm kernel on head-sized rows.
+Attention is one kernel per regime because its steps share the scores, which
+are never written out.
+
 ## Files that serve several boxes
 
 A file used by two boxes is where its interface matters most. Each still

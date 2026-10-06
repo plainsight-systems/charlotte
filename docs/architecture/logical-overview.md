@@ -14,7 +14,7 @@ those appear only as evidence at the end — they are examples, not the design.
 
 ## The flow
 
-Shading is the same in all three diagrams: **coral** is selected by an
+Shading is the same in every diagram: **coral** is selected by an
 identifier in the file, **purple** is per-model policy, **teal** is a regime.
 **Gray** is written once and serves every model.
 
@@ -78,6 +78,74 @@ flowchart TD
 **Inside Prefill and Decode.** The graph is the only thing that knows the
 architecture. It chooses which shared kernels run, in what order, with what
 parameters. The kernels do not know which model they serve.
+
+```mermaid
+flowchart TD
+    emb["Embed<br/>a row of the table per token"]
+    subgraph layer["Each layer, in order"]
+        att["Attention<br/>looks back at earlier tokens"] --> ffn["Feed-forward<br/>each row alone"]
+    end
+    emb --> att
+    ffn --> fnorm["Final norm"]
+    fnorm --> head["Output head<br/>a score per vocabulary entry"]
+    head --> smp["Sample<br/>one token"]
+    smp --> out["Detokenize<br/>each token as it comes"]
+    smp -. next token .-> emb
+    kv[("KV cache<br/>keys and values,<br/>per layer")]
+    att <-.->|append, read| kv
+    classDef default fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    classDef policy fill:#EEEDFE,stroke:#534AB7,color:#3C3489
+    classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
+    class smp,kv policy
+    class att,ffn,head regime
+```
+
+**One pass.** Prefill and Decode are the same pass with a different number of
+rows: the tokens the diff did not find in the cache, at most a prefill block
+at a time, or the one token just sampled. Each row is embedded, moves through
+every layer, and only the last row reaches the output head. The sampled token
+is fed back for the next pass, and is detokenized and streamed as it comes.
+Within a layer every step works on each row alone, except attention: the only
+place one token reads another, and only through the keys and values the cache
+holds. Weight formats reach the embedding, every projection and the output
+head — the steps that read weights.
+
+```mermaid
+flowchart TD
+    x["Hidden state X<br/>one row per token in the pass"] --> n["RMSNorm<br/>of a copy"]
+    n --> q["Q projection<br/>a query per head"]
+    n --> k["K projection<br/>a key per shared head"]
+    n --> v["V projection<br/>a value per shared head"]
+    q --> rq["QK-norm where the file has it,<br/>then RoPE by position"]
+    k --> rk["QK-norm where the file has it,<br/>then RoPE by position"]
+    rk -->|append| kv[("KV cache")]
+    v -->|append| kv
+    rq --> s["Scores<br/>q · k / √head size"]
+    kv -->|every key, cached and new| s
+    s --> m["Causal mask, softmax<br/>row i: weights over 0..i"]
+    m --> w["Weighted sum of values"]
+    kv -->|every value, cached and new| w
+    w --> o["Concatenate heads, × Wo<br/>back to the hidden width"]
+    o --> add["Add to X"]
+    x -. residual .-> add
+    classDef default fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    classDef policy fill:#EEEDFE,stroke:#534AB7,color:#3C3489
+    classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
+    class kv policy
+    class q,k,v,s,m,w,o regime
+```
+
+**The attention block.** The norm works on a copy: the block's result is
+added to X, never written over it, so information carries through every
+layer. The projections give each row a query for every head, and a key and a
+value for every shared key-value head; heads that share one read the same keys
+and values. Position enters here and nowhere else: RoPE rotates each query and
+key by its token's position, so a score depends on how far apart two tokens
+are. The new keys and values are appended to the cache before the scores, so
+each row scores itself and every earlier token, cached or new. The scores are
+never stored whole; they are computed in tiles and combined as they go.
+Concatenating heads moves nothing — each head writes its own columns — and
+the output projection maps them back to the hidden width.
 
 ## Principles
 
