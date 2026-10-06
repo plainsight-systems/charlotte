@@ -53,11 +53,12 @@ namespace bllm::kernels {
 //   - write: y to one buffer: the output projection and down projection
 //     into the plan's `output`, which the next norm adds (norm.h); the head
 //     into `logits`, for the step's last token only.
-//   - QKV: the layer's Q, K and V weights, placed as one (residency, below),
-//     one product, outputs 0 .. H_q × d − 1 into `query`, the next H_kv × d
-//     into `key`, the rest into `value` — the rope kernel's inputs.
-//   - gated activation: the layer's gate and up weights, placed as one, rows
-//     gate then up; a decode workgroup's 8 rows are 4 gate rows and the same
+//   - QKV: the layer's Q, K and V weights as one product of their stacked
+//     rows, one binding spanning the three, each read from its own place in
+//     it (residency, below): outputs 0 .. H_q × d − 1 into `query`, the next
+//     H_kv × d into `key`, the rest into `value` — the rope kernel's inputs.
+//   - gated activation: the layer's gate and up weights as one product,
+//     likewise, rows gate then up; a decode workgroup's 8 rows are 4 gate rows and the same
 //     4 of up, a prefill tile's 64 outputs 32 and the same 32, so each
 //     invocation holds both values of the outputs it writes, and writes
 //     activation(gate) × up — SiLU for Qwen3 and Llama 3.2, GELU's tanh
@@ -66,32 +67,39 @@ namespace bllm::kernels {
 //
 //   - Pieces. A weight larger than one binding is split by rows
 //     (residency/plan.h): one launch a piece, each covering its rows. The
-//     head of Llama 3.2 is 2 launches, Gemma 3's 3. Every listed QKV and
-//     gate-and-up weight is one piece.
+//     head of Llama 3.2 is 2 launches, Gemma 3's 3. Every listed Q, K, V,
+//     gate and up weight is one piece.
 //   - Formats. Each format a weight uses is a pipeline: Q4_0 for most,
 //     Q4_1 for a few layers' down projections, Q6_K and Q8_0 for heads.
 //   - Variants are override constants — `rows` (N), `columns` (K), the
 //     epilogue, the QKV split rows, the activation — so indices fold when
 //     the pipeline is built.
-//   - Constants (binding 1): struct Matmul { blocks_in_piece: u32,
-//     first_row: u32 } — the piece's, for unpack and for which outputs it
-//     writes.
-//   - Bindings: 2 the weight piece (`weights`, unpack's), 3 the input; then
-//     the outputs, written — one, or query, key and value. Five at most.
+//   - Constants (binding 1): struct Matmul { members: array<vec4<u32>, 3> }
+//     — for each member of the product, or its one piece: its first word
+//     within the binding, its blocks, for unpack, and its first output row
+//     and row count.
+//   - Bindings: 2 the weights (`weights`, unpack's): one piece, or the range
+//     spanning a fused group's members; 3 the input; then the outputs,
+//     written — one, or query, key and value. Five at most.
 //
 // What it asks of the other contracts:
 //   - kernels/interface.h: a launch may run in one regime only, Decode a
 //     step of one token, Prefill one of more (regime_for), and is not
 //     dispatched in the other; Geometry gains the regime.
-//   - residency (plan.h, routes.h, piece_writer.h): a layer's Q, K and V
-//     are placed as one weight, rows Q then K then V, and its gate and up
-//     as one, when each group's formats and widths agree — they do in every
-//     listed file. The group's pieces are pieces like any other, each
-//     format's streams running across all its rows (device_layout.h); each
-//     member is routed into them at its first row, so a route gains its
-//     first block within the piece. A member has no view of its own. A group
-//     whose members disagree is placed as separate weights, and the graph
-//     launches them separately, an epilogue each.
+//   - residency/plan.h: a layer's Q, K and V, and its gate and up, each
+//     lie in one buffer, within one binding's span from the first to the
+//     last — the plan opens a new buffer for a group that would not fit the
+//     open one. Each stays the weight it is, in file order, with its own
+//     view, and upload and its routes are unchanged: a fused launch binds the
+//     span, the tensors the file puts between its members included and
+//     never read. In the listed files a span is at most 18.9 MB, Llama
+//     3.2's gate and up; its QKV span, 5.9 MB, holds its 2.4 MB output
+//     projection unread between them; both are far under a binding's 128
+//     MiB. A group whose members differ in format or width, or whose span
+//     exceeds a binding, is launched as separate products, an epilogue each.
+//   - formats/format.h: unpack takes its piece's first word within the
+//     binding — fn unpack(base: u32, blocks_in_piece: u32, group: u32) —
+//     0 for a binding of one piece, as every caller's is today.
 //   - residency/plan.h: the gate working buffer holds the activation, and
 //     the up buffer is gone: 6 MiB fewer for Qwen3.
 //   - model/model_description.h: the feed-forward activation; and describe
@@ -142,10 +150,11 @@ namespace bllm::kernels {
 //     them while its token tiles run. Workgroups: QKV 1,024 of the tile.
 // Optimization (practice): weights decoded in the load path, never
 // expanded (GDSA.18) — llama.cpp's mul_mv and mul_mm do the same.
-// Optimization (practice): Q, K and V as one weight and gate and up as one,
-// so a layer runs 2 products where it would run 5 — vLLM's
-// QKVParallelLinear and MergedColumnParallelLinear — 84 launches a step
-// for Qwen3, about 126 µs (GPU.6).
+// Optimization (practice): Q, K and V as one product and gate and up as
+// one, so a layer runs 2 products where it would run 5 — vLLM's
+// QKVParallelLinear and MergedColumnParallelLinear, which concatenate the
+// weights at load; here one binding spans them, so upload writes the file
+// as it lies — 84 launches a step for Qwen3, about 126 µs (GPU.6).
 // Optimization (practice): the activation is the gate-and-up product's
 // epilogue, so gate and up are never written and read back, nor read by a
 // launch of its own: 48 KiB a token and a layer saved of the 60 KiB
@@ -201,8 +210,6 @@ namespace bllm::kernels {
 //     GDSA.16 Stream through on-chip tiles — prefill steps along K through
 //            workgroup memory, each output written once.
 //     GPU.6  Batch tiny GPU work — fused weights, fewer launches.
-//     CDSA.32 Transform static data once into the layout its consumer
-//            reads — Q, K and V placed as one, at load.
 
 // What a product writes.
 enum class Epilogue {
@@ -213,7 +220,10 @@ enum class Epilogue {
 
 // One matrix product of the graph.
 struct MatmulLaunch {
-    const residency::WeightView* weights;            // never null; a fused group's view, or one weight's
+    // The weight, or a fused group's members in output order: Q, K, V, or
+    // gate, up. Never null; members are one piece each, in one buffer.
+    std::array<const residency::WeightView*, 3> weights;
+    std::uint32_t members;                           // 1, 2 or 3
     residency::BufferRange input;                    // rows of K floats
     // Write: outputs[0]. QKV: query, key, value. GatedActivation: the
     // activation, in outputs[0].
@@ -227,8 +237,9 @@ struct MatmulLaunch {
 
 // The product's launches: for each piece of the weight, a decode form and a
 // prefill form, each in its regime; or for the head, the decode form alone,
-// in every regime. Preconditions: K is
-// a whole number of 32-weight groups; a fused view's rows are the epilogue's.
+// in every regime. Preconditions: K is a whole number of 32-weight groups;
+// a fused group's members lie in one buffer within a binding's span, and
+// their rows are the epilogue's.
 [[nodiscard]] std::vector<Launch> matmul_launches(const MatmulLaunch& matmul);
 
 }  // namespace bllm::kernels
