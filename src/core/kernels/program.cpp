@@ -41,6 +41,9 @@ struct Program::State {
     std::shared_ptr<State> in_flight;
     std::size_t step_pending = 0;
     ProgramError step_error = ProgramError::Ok;
+    // The first failure's message, reserved at build and truncated to that
+    // capacity, so reporting a failure allocates nothing either.
+    std::string step_message;
     StepCallback step_done = nullptr;
     void* step_userdata = nullptr;
 };
@@ -74,6 +77,9 @@ ProgramError from_work_done(WGPUQueueWorkDoneStatus status) {
 constexpr std::array<WGPUErrorFilter, 3> kBuildScopes = {WGPUErrorFilter_OutOfMemory, WGPUErrorFilter_Validation,
                                                          WGPUErrorFilter_Internal};
 constexpr std::array<WGPUErrorFilter, 2> kStepScopes = {WGPUErrorFilter_Validation, WGPUErrorFilter_Internal};
+// Room for WebGPU's message on a failed step; a longer one is cut there. Dawn's
+// validation messages run to a few hundred bytes.
+constexpr std::size_t kStepMessageCapacity = 1024;
 
 template <std::size_t N>
 void push_scopes(WGPUDevice device, const std::array<WGPUErrorFilter, N>& filters) {
@@ -265,6 +271,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     WGPULimits limits = WGPU_LIMITS_INIT;
     wgpuDeviceGetLimits(device, &limits);
     state->max_workgroups = limits.maxComputeWorkgroupsPerDimension;
+    state->step_message.reserve(kStepMessageCapacity);
     build->state = state;
     build->program = std::unique_ptr<Program>(new Program());
     build->program->state_ = state;
@@ -359,12 +366,19 @@ namespace {
 
 // One of the step's callbacks has landed: its two scopes and its work done,
 // in any order. The last reports the step.
-void settle_step(Program::State& s, ProgramError e) {
-    if (s.step_error == ProgramError::Ok && e != ProgramError::Ok) s.step_error = e;
+void settle_step(Program::State& s, ProgramError e, WGPUStringView message) {
+    if (s.step_error == ProgramError::Ok && e != ProgramError::Ok) {
+        s.step_error = e;
+        const std::size_t length = message.data == nullptr ? 0
+                                   : message.length == WGPU_STRLEN ? std::strlen(message.data)
+                                                                   : message.length;
+        s.step_message.assign(message.data == nullptr ? "" : message.data,
+                              std::min(length, s.step_message.capacity()));
+    }
     if (--s.step_pending > 0) return;
     // Held until `done` returns, which may destroy the Program.
     const std::shared_ptr<Program::State> keep = std::move(s.in_flight);
-    s.step_done(s.cancelled ? ProgramError::Cancelled : s.step_error, s.step_userdata);
+    s.step_done(s.cancelled ? ProgramError::Cancelled : s.step_error, s.step_message, s.step_userdata);
 }
 
 }  // namespace
@@ -384,6 +398,7 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
     s.in_flight = state_;
     s.step_pending = kStepScopes.size();
     s.step_error = ProgramError::Ok;
+    s.step_message.clear();
     s.step_done = done;
     s.step_userdata = userdata;
     bool fits = true;
@@ -419,8 +434,8 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         ++s.step_pending;
         WGPUQueueWorkDoneCallbackInfo info = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
         info.mode = gpu::kCallbackMode;
-        info.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView, void* userdata1, void*) {
-            settle_step(*static_cast<State*>(userdata1), from_work_done(status));
+        info.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView message, void* userdata1, void*) {
+            settle_step(*static_cast<State*>(userdata1), from_work_done(status), message);
         };
         info.userdata1 = &s;
         wgpuQueueOnSubmittedWorkDone(s.queue.get(), info);
@@ -428,13 +443,14 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         // A step too large for one dispatch's workgroups: refused, not
         // truncated (gpu/dispatch_math.h).
         s.step_error = ProgramError::Step;
+        s.step_message.assign("a launch needs more workgroups than one dispatch allows");
     }
     for (std::size_t i = 0; i < kStepScopes.size(); ++i) {
         WGPUPopErrorScopeCallbackInfo info = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
         info.mode = gpu::kCallbackMode;
-        info.callback = [](WGPUPopErrorScopeStatus status, WGPUErrorType type, WGPUStringView, void* userdata1,
-                           void*) {
-            settle_step(*static_cast<State*>(userdata1), from_scope(status, type, ProgramError::Step));
+        info.callback = [](WGPUPopErrorScopeStatus status, WGPUErrorType type, WGPUStringView message,
+                           void* userdata1, void*) {
+            settle_step(*static_cast<State*>(userdata1), from_scope(status, type, ProgramError::Step), message);
         };
         info.userdata1 = &s;
         wgpuDevicePopErrorScope(device, info);

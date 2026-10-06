@@ -269,7 +269,7 @@ TEST_CASE("destroying the program with a step in flight reports Cancelled, once"
         bool done = false;
     } ran;
     program->run(step,
-                 [](ProgramError e, void* userdata) {
+                 [](ProgramError e, std::string_view, void* userdata) {
                      auto& r = *static_cast<Ran*>(userdata);
                      r.error = e;
                      ++r.calls;

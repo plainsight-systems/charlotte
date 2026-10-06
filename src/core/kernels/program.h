@@ -39,7 +39,7 @@ namespace bllm::kernels {
 //     validation and internal error scopes, and a pipeline that fails to
 //     compile reports WebGPU's message; a step runs inside validation and
 //     internal scopes popped with the step's completion, and any of them
-//     failing fails the step. A step reported done is not proof the device
+//     failing fails the step with the first failure's message. A step reported done is not proof the device
 //     ran it: a lost device resolves queued work as done and scopes clean
 //     (gpu/device.h). What a step computed is trusted only through a
 //     completed mapping, which a lost device refuses — the sampler's
@@ -91,7 +91,9 @@ class Program;
 
 using BuildCallback = void (*)(std::unique_ptr<Program> program, ProgramError error, std::string_view message,
                                void* userdata);
-using StepCallback = void (*)(ProgramError error, void* userdata);
+// `message` is WebGPU's for a failed step, at most 1 KiB, and empty on
+// success; it is valid only during the call.
+using StepCallback = void (*)(ProgramError error, std::string_view message, void* userdata);
 
 class Program {
 public:

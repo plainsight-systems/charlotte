@@ -257,6 +257,26 @@ TEST_CASE("the final norm adds and normalizes only the step's last row") {
     check_row(std::span(got.normed).subspan((kRows - 1) * width, width), want.normed);
 }
 
+// Why the plan gives each working buffer a buffer of its own
+// (residency/plan.h): WebGPU refuses a dispatch that binds one buffer both
+// writable and read-only, even in ranges that do not overlap. The step fails,
+// and says why.
+TEST_CASE("a step binding one buffer writable and read-only fails with WebGPU's message") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_rows(instance.get(), *device);
+    const std::uint64_t half = u.hidden.length / 2;
+    const residency::BufferRange hidden{u.hidden.buffer, 0, half};
+    const residency::BufferRange output{u.hidden.buffer, half, half};   // same buffer, read-only
+    std::vector<kernels::Launch> launches;
+    launches.push_back(kernels::norm_launch(
+        {u.view("gain_1024"), nullptr, true, output, hidden, u.normed, kEpsilon, kernels::Rows::EveryToken}));
+    const auto program = build_program(instance.get(), *u.upload, std::move(launches));
+    const StepOutcome ran = try_step(instance.get(), *program, 1);
+    CHECK(ran.error == kernels::ProgramError::Step);
+    CHECK_MESSAGE(ran.message.find("writable usage") != std::string::npos, ran.message);
+}
+
 TEST_CASE("a launch setting an override the program owns, or one override twice, is refused by name") {
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());

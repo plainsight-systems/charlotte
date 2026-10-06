@@ -50,30 +50,45 @@ inline std::unique_ptr<kernels::Program> build_program(WGPUInstance instance, co
     return std::move(built.program);
 }
 
-// Runs one step of `tokens` tokens, identifiers `ids` where given; it must
-// succeed, reported once.
-inline void run_step(WGPUInstance instance, kernels::Program& program, std::uint32_t tokens,
-                     std::span<const std::uint32_t> ids = {}) {
+// How a step ended, as its callback reported it.
+struct StepOutcome {
+    kernels::ProgramError error;
+    std::string message;
+};
+
+// Runs one step of `tokens` tokens, identifiers `ids` where given, and
+// returns how it ended; it must be reported once.
+inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, std::uint32_t tokens,
+                            std::span<const std::uint32_t> ids = {}) {
     kernels::Step step{};
     step.position = 0;
     step.tokens = tokens;
     std::copy(ids.begin(), ids.end(), step.ids.begin());
     struct Ran {
         kernels::ProgramError error = kernels::ProgramError::Step;
+        std::string message;
         int calls = 0;
         bool done = false;
     } ran;
     program.run(step,
-                [](kernels::ProgramError e, void* userdata) {
+                [](kernels::ProgramError e, std::string_view message, void* userdata) {
                     auto& r = *static_cast<Ran*>(userdata);
                     r.error = e;
+                    r.message = message;
                     ++r.calls;
                     r.done = true;
                 },
                 &ran);
     pump_until(instance, ran.done, "the step");
     REQUIRE(ran.calls == 1);
-    REQUIRE(ran.error == kernels::ProgramError::Ok);
+    return {ran.error, std::move(ran.message)};
+}
+
+// Runs one step, as try_step; it must succeed.
+inline void run_step(WGPUInstance instance, kernels::Program& program, std::uint32_t tokens,
+                     std::span<const std::uint32_t> ids = {}) {
+    const StepOutcome ran = try_step(instance, program, tokens, ids);
+    REQUIRE_MESSAGE(ran.error == kernels::ProgramError::Ok, ran.message);
 }
 
 // `count` floats of `buffer` from `offset`, read back through a mapping. The
