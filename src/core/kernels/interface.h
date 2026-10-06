@@ -49,19 +49,19 @@ namespace bllm::kernels {
 //     identifier past the table from one in another piece of it.
 //
 // What a launch costs, measured on the target (Chrome 152, Apple M3 Max,
-// Metal; 300 one-workgroup dispatches a pass, medians of 20 runs of 40
-// passes): the GPU spends about 1.7 µs on every dispatch on top of its own
-// work, whether or not dispatches share a buffer; encoding from JavaScript
-// is about 0.03 µs a launch, pipeline changes included, a lower bound for
-// the module's path, which adds a wasm-to-browser crossing a call; and
-// submitting one pass and hearing it done takes about 0.9 ms. So a graph of
-// 300 launches pays about 0.5 ms a pass in dispatch overhead, about half the
-// 0.95 ms floor for reading Qwen3 0.6B's 380 MB of weights at the M3 Max's
-// 400 GB/s (its published bandwidth). That is not small, and WebGPU has no
-// captured compute sequence to replay, so the lever is fusion: each kernel's
-// header states its launches a pass, and the graph keeps the total low
-// (GPU.6). The module's own encoding cost, and where a real pass's time goes,
-// are measured once the program runs (GPU.10).
+// Metal). Holding a pass's work constant at 300 workgroups and splitting it
+// into 1, 3, 10, 30, 100 and 300 dispatches, each extra dispatch adds about
+// 1.5 µs of GPU time (20 µs a pass for one dispatch, 478 µs for 300; medians
+// of 16 runs of 40 passes). Encoding from JavaScript is about 0.03 µs a
+// launch, pipeline changes included, a lower bound for the module's path,
+// which adds a wasm-to-browser crossing a call. So a graph of 300 launches
+// pays about 0.45 ms a pass in dispatch overhead, about half the 0.95 ms
+// floor for reading Qwen3 0.6B's 380 MB of weights at the M3 Max's 400 GB/s
+// (its published bandwidth). That is not small, and WebGPU has no captured
+// compute sequence to replay, so the lever is fusion: each kernel's header
+// states its launches a pass, and the graph keeps the total low (GPU.6). The
+// module's own encoding cost, and where a real pass's time goes, are
+// measured once the program runs (GPU.10).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines

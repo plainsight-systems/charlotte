@@ -41,12 +41,12 @@ namespace bllm::kernels {
 //   - Workgroups of 64 invocations.
 //
 // What it costs, counted. Launches: one a piece, a step — 1 for Qwen3, 2 for
-// Llama 3.2, 3 for Gemma 3 — at 1.7 µs of GPU time each (interface.h). Bytes,
+// Llama 3.2, 3 for Gemma 3 — at about 1.5 µs of GPU time each (interface.h). Bytes,
 // a row: unpack's reads for every group of it — for Qwen3's repacked Q6_K,
 // 8 words a group, 32 groups, 1 KiB, against 840 bytes stored — and 4 bytes a
 // weight written: 4 KiB. A 512-row prefill step reads 512 KiB and writes
-// 2 MiB; a decode step reads 1 KiB and writes 4 KiB, so decode's embedding is
-// its one launch, about 1.7 µs, and nothing else. No row of the table that
+// 2 MiB; a decode step reads 1 KiB and writes 4 KiB, so decode's embedding
+// costs about its one launch's 1.5 µs. No row of the table that
 // the step does not name is read.
 // Optimization (practice): an invocation writes its group's 128 bytes
 // contiguously and adjacent invocations take adjacent groups, so a
@@ -59,7 +59,7 @@ namespace bllm::kernels {
 // scale other than 1.
 //
 // Pieces are not bound together. One launch could bind every piece and pick
-// one by identifier, saving 1.7 µs a step for Llama 3.2 and 3.4 µs for
+// one by identifier, saving about 1.5 µs a step for Llama 3.2 and 3 µs for
 // Gemma 3, about a tenth to a third of a percent of a decode step; it would
 // need an unpack for each binding, where every format's unpack reads the one
 // binding named `weights` (format.h).

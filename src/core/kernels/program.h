@@ -51,13 +51,13 @@ namespace bllm::kernels {
 // 16 × ceil(tokens / 4) bytes, 1 createCommandEncoder, 1 beginComputePass,
 // for each launch 1 setBindGroup, 1 dispatchWorkgroups and 1 setPipeline
 // where the kernel changes, then end, finish, submit, two scopes' pushes and
-// pops and onSubmittedWorkDone: 11 calls, and 2 or 3 a launch. Three objects
-// are made a step, because WebGPU makes a command encoder, a pass encoder
-// and a command buffer single-use; everything else — buffers, pipelines,
-// bind groups — is made at load. Measured on the target (interface.h): the
-// GPU's 1.7 µs a dispatch, and about 0.9 ms from submit to done for a pass,
-// which a step pays once. Build costs a pipeline per distinct kernel — about
-// a dozen for a model — and a bind group per launch, once.
+// pops, onSubmittedWorkDone, and the release of the three single-use objects
+// WebGPU makes a step — the command encoder, the pass encoder and the command
+// buffer: 14 calls out of the module, and 2 or 3 a launch; and three
+// callbacks back in, the two scopes' and the queue's. Everything else —
+// buffers, pipelines, bind groups — is made at load. The GPU adds about
+// 1.5 µs a dispatch (interface.h). Build costs a pipeline per distinct
+// kernel — about a dozen for a model — and a bind group per launch, once.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
