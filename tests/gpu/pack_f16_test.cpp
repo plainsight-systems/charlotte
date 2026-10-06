@@ -17,7 +17,9 @@
 #include "core/gpu/wgpu_handles.h"
 #include "support/acquire.h"
 #include "support/compute.h"
+#include "core/quant/q4_0.h"
 #include "support/f16_reference.h"
+#include "support/unpack.h"
 
 using namespace bllm;
 
@@ -32,6 +34,19 @@ constexpr std::string_view kPackHarness = R"(
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x < params.x) {
         packed[id.x] = pack(values[id.x]);
+    }
+}
+)";
+
+// And back: the words stored, unpacked.
+constexpr std::string_view kUnpackHarness = R"(
+@group(0) @binding(0) var<storage, read> words: array<vec2<u32>>;
+@group(0) @binding(1) var<storage, read_write> values: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: vec4<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x < params.x) {
+        values[id.x] = unpack4(words[id.x]);
     }
 }
 )";
@@ -87,4 +102,24 @@ TEST_CASE("F16 pack rounds to nearest even, keeps subnormals and saturates beyon
         }
     }
     CHECK(differing == 0);
+}
+
+TEST_CASE("F16 unpack4 returns the four values two words store, exactly") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = testing::acquire(instance.get());
+    // Every finite half, both signs, subnormals included.
+    std::vector<std::uint16_t> halves;
+    for (std::uint32_t h = 0; h < 0x10000u; ++h) {
+        if ((h & 0x7C00u) != 0x7C00u) halves.push_back(static_cast<std::uint16_t>(h));
+    }
+    while (halves.size() % 4 != 0) halves.push_back(0);
+    const auto quads = static_cast<std::uint32_t>(halves.size() / 4);
+    const std::string source = std::string(formats::kF16.pack_wgsl()) + std::string(kUnpackHarness);
+    const auto out = testing::run_compute(instance.get(), *device, source, std::as_bytes(std::span(halves)),
+                                          halves.size() * 4, {quads, 0, 0, 0}, (quads + 63) / 64);
+    std::vector<float> got(halves.size());
+    std::memcpy(got.data(), out.data(), out.size());
+    std::vector<float> want(halves.size());
+    for (std::size_t i = 0; i < halves.size(); ++i) want[i] = quant::fp16_to_fp32(halves[i]);
+    testing::check_bitwise(got, want);
 }

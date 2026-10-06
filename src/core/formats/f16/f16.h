@@ -10,7 +10,8 @@ namespace bllm::formats {
 //
 // F16: one half-precision value a block, two bytes; the KV cache's storage
 // at load policy's default precision, and the weights a file stores at half
-// precision. Its unpack is f16.wgsl and its pack f16_pack.wgsl; its layout,
+// precision. Its unpack is f16.wgsl; its pack and pack's inverse, unpack4,
+// are f16_pack.wgsl; its layout,
 // one stream, is kF16Layout (device_layout.h).
 inline constexpr Format kF16{kF16Layout, shaders::f16, shaders::f16_pack};
 
