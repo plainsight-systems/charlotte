@@ -131,10 +131,12 @@ namespace bllm::kernels {
 // workgroups a token, 384 pairs a token and a layer, where a head at a time
 // would compute 1,536; 160 against 1,280 for Llama 3.2, 384 against 640 for
 // Gemma 3. A 512-row prefill step of Qwen3 takes 5.5 million pairs, 11
-// million sin and cos at tens of instructions each — about 0.4 × 10⁹
-// instructions, about 0.05 ms for a GPU of about 14 f32 TFLOPS, as
-// third-party measurement puts the 40-core M3 Max — under its bytes' 1.0 ms,
-// and overlapped with them. So the bytes bound it. Unfused — two norms, two rotations and
+// million sin and cos. An estimate, not a count: if each, reduced to
+// [−π, π], costs about 40 instructions — a range check and a polynomial,
+// as a precise sin does — that is about 0.4 × 10⁹ instructions, about 0.06
+// ms at the 40-core M3 Max's roughly 5,120 lanes issuing one a cycle at
+// about 1.4 GHz (third-party figures). Four times that would still be under
+// the step's 1.0 ms of bytes, which it overlaps. Unfused — two norms, two rotations and
 // two cache writes, each reading and writing its own pass — Qwen3 would move
 // 60 KiB a token and a layer, in six launches a layer, 140 more a pass.
 // Optimization (practice): the norms, both rotations and the cache append
@@ -165,13 +167,15 @@ namespace bllm::kernels {
 //     memory adds a store and a barrier a workgroup.
 //
 // Levers not taken:
-//   - The step's angles computed once, by a launch of their own, into a
-//     working buffer the rope launches read: B × T × d / 2 pairs a step for
-//     B distinct bases and factors — 32,768 for Qwen3's 512 rows, 168 times
-//     fewer than the workgroups compute. It saves at most the 0.05 ms above
-//     in a prefill step, where the bytes take 1.0 ms anyway, and costs every
-//     decode step a launch, 1.5 µs, to save 10,752 pairs spread one to an
-//     invocation over 168 workgroups.
+//   - A prefill step's angles computed once, by a launch of their own, into
+//     a working buffer the rope launches read, decode keeping them inline: B
+//     × T × d / 2 pairs a step for B distinct bases and factors — 32,768 for
+//     Qwen3's 512 rows, 168 times fewer than the workgroups compute. It
+//     saves the estimate above, about 0.06 ms and by that estimate under
+//     0.25 ms, in a step whose matrix products — 2 × 0.6 × 10⁹ × 512 f32
+//     operations, about 44 ms at about 14 TFLOPS — take over a hundred times
+//     longer. It costs a second form of every rope launch and a launch list
+//     for each regime, which the program does not have.
 //   - A cos and sin table by position, as vLLM's RotaryEmbedding keeps: no
 //     sin or cos in the kernel, for a table of context × d / 2 pairs — 20
 //     MiB for Qwen3, 64 MiB for Gemma 3's two bases — taken from the cache's
