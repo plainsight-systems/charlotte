@@ -34,7 +34,9 @@ namespace bllm::residency {
 //     and writes `hidden` — so two working buffers in one buffer could not be
 //     bound together. Weights are only read, and no dispatch both reads and
 //     writes the cache, so those pools stay suballocated. Ten buffers instead
-//     of one costs ten allocations at load and nothing a step.
+//     of one costs ten allocations at load and nothing a step; GPU.9 keeps
+//     dedicated allocations for where an API requirement justifies them, and
+//     this is one.
 //   - Limits are the ones the device granted, never the adapter's advertised
 //     maxima (WASM.10). Packing works at WebGPU's default limits.
 //   - A weight larger than one storage binding is split by rows. Every offset

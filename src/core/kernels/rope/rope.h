@@ -53,8 +53,12 @@ namespace bllm::kernels {
 //     3, half of them one for Llama 3.2 — into workgroup memory, d / 2 ×
 //     8 bytes, 1 KiB at most; the barrier before the norm's tree publishes
 //     them, and without QK-norm one barrier of their own does. Every head of
-//     the workgroup then reads its pairs' cos and sin there. A workgroup of
-//     value heads alone computes none.
+//     the workgroup then reads its pairs' cos and sin there: cosines, then
+//     sines, by pair, so under Halves invocation i of a head reads vec4 i of
+//     each — adjacent invocations adjacent words, and a workgroup's heads
+//     the same ones, which workgroup memory broadcasts. A workgroup of value
+//     heads alone computes none. With the norm's 64 partial sums, a
+//     workgroup holds at most 1.25 KiB of workgroup memory.
 //   - The norm reduces each head in workgroup memory: an invocation's own 8
 //     squares, then a tree across its head's d / 8 invocations, every head
 //     of the workgroup at once — log2(d / 8) levels, 4 for Qwen3, 5 for
@@ -140,6 +144,8 @@ namespace bllm::kernels {
 // Optimization (practice): a workgroup's angles computed once and shared
 // through workgroup memory by its heads — 4 for Qwen3, 8 for Llama 3.2 — not
 // once a head, as llama.cpp's kernel does (GPU.5).
+// Optimization (practice): the frequencies, fixed by the file, computed once
+// at load into the form the kernel reads, turns a position (CDSA.32).
 //
 // Where WebGPU limits it, and what each limit costs here:
 //   - WGSL bounds pow only to 3 + 2 |y log2 x| units in the last place —
@@ -187,6 +193,11 @@ namespace bllm::kernels {
 //   C++ Core Guidelines
 //     I.4    Make interfaces precisely and strongly typed — the pairing is an
 //            enumeration, the norms and factors views or null.
+//     C.12   Don't make data members const or references in a copyable
+//            type — RopeLaunch holds its small parts by value and the rest by
+//            pointer.
+//     F.60   Prefer T* over T& when "no argument" is valid — the norms and
+//            factors.
 //     F.20   Prefer return values to out parameters — the launch is
 //            returned.
 //   C++ performance guidelines
@@ -196,12 +207,15 @@ namespace bllm::kernels {
 //            unfused count against them.
 //     GPU.2  Shape data for coalesced lane access — the vec4 mapping above.
 //     GPU.5  Use workgroup memory where reuse or reordering pays — each
-//            head's partial sums, and the workgroup's angles.
+//            head's partial sums, and the workgroup's angles; its bytes and
+//            barriers counted above.
 //     GPU.6  Batch tiny GPU work — six steps, one launch.
+//     CDSA.32 Transform static data once into the layout its consumer reads —
+//            the turns, at load.
 
 // One layer's rope launch.
 struct RopeLaunch {
-    const model::LayerDescription& layer;          // heads, head dimension, rotary base
+    model::LayerDescription layer;                 // heads, head dimension, rotary base
     model::RotaryPairing pairing;
     const residency::WeightView* query_norm;       // F32, head dimension; null without QK-norm
     const residency::WeightView* key_norm;         // present exactly when query_norm is
@@ -210,8 +224,8 @@ struct RopeLaunch {
     residency::BufferRange query;                  // the plan's working buffers
     residency::BufferRange key;
     residency::BufferRange value;
-    const residency::PlannedCacheLayer& cache;     // the layer's
-    const formats::Format& cache_format;           // its pack writes the cache
+    residency::PlannedCacheLayer cache;            // the layer's
+    const formats::Format* cache_format;           // never null; its pack writes the cache
 };
 
 // The launch for one layer. Preconditions: the head dimension is 64, 128 or
