@@ -108,8 +108,11 @@ public:
     Program(const Program&) = delete;
     Program& operator=(const Program&) = delete;
 
-private:
+    // What the program and its in-flight callbacks share; defined only where
+    // the program is.
     struct State;
+
+private:
     Program() = default;
     std::shared_ptr<State> state_;   // shared with in-flight callbacks
 };

@@ -28,6 +28,7 @@ Q6_K_BLOCK_ELEMENTS, Q6_K_BLOCK_BYTES = 256, 210
 # test of an unsupported format reports stays unsupported.
 T_Q5_0 = 6
 Q5_0_BLOCK_BYTES = 22
+T_Q4_1, T_Q8_0 = 3, 8
 
 
 def gstr(s: bytes) -> bytes:
@@ -146,6 +147,37 @@ def f32_zeros(dims):
     for d in dims:
         n *= d
     return b"\0" * (4 * n)
+
+
+def embedding(ggml_type, rows=7, width=256, seed=0x2545F491):
+    """A token embedding table alone, `rows` tokens of `width` weights, of
+    deterministic pseudo-random blocks: codes of every value, fp16 scales
+    finite and of either sign. What a gather of it should write is the
+    format's CPU reference applied to the same stored blocks."""
+    state = seed
+
+    def u32():
+        nonlocal state
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        return state
+
+    def raw(n):
+        return bytes((u32() >> 24) & 0xFF for _ in range(n))
+
+    def half():
+        return struct.pack("<e", ((u32() >> 8) % 2001 - 1000) / 500.0)
+
+    blocks_per_row = {T_F32: width, T_Q4_0: width // 32, T_Q4_1: width // 32,
+                      T_Q8_0: width // 32, T_Q6_K: width // Q6_K_BLOCK_ELEMENTS}[ggml_type]
+    block = {
+        T_F32: lambda: struct.pack("<f", ((u32() >> 8) % 20001 - 10000) / 2500.0),
+        T_Q4_0: lambda: half() + raw(16),
+        T_Q4_1: lambda: half() + half() + raw(16),
+        T_Q8_0: lambda: half() + raw(32),
+        T_Q6_K: lambda: raw(128) + raw(64) + raw(16) + half(),
+    }[ggml_type]
+    data = b"".join(block() for _ in range(rows * blocks_per_row))
+    return build([(b"token_embd.weight", [width, rows], ggml_type, data)])
 
 
 def tiny_model(arch, layers=2, *, extra=(), omit_key=None, omit_tensor=None, reshape=None,
@@ -344,6 +376,12 @@ CASES = {
                 "attention.layer_norm_rms_epsilon": (F32, struct.pack("<f", 1e-6)),
                 "rope.freq_base": (F32, struct.pack("<f", 1e6)),
             }.items()]),
+    # A token embedding table in each format a kernel reads weights in.
+    "embedding_f32": lambda: embedding(T_F32),
+    "embedding_q4_0": lambda: embedding(T_Q4_0),
+    "embedding_q4_1": lambda: embedding(T_Q4_1),
+    "embedding_q8_0": lambda: embedding(T_Q8_0),
+    "embedding_q6_k": lambda: embedding(T_Q6_K),
     "nested_array": lambda: build(
         [], metadata=[kv(b"bad", ARRAY, struct.pack("<IQ", ARRAY, 1))]
     ),

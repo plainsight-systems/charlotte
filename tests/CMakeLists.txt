@@ -39,6 +39,7 @@ add_executable(charlotte_tests
     cache_kv_test.cpp
     cache_prefix_test.cpp
     formats_q6_k_repack_test.cpp
+    kernels_gather_test.cpp
     residency_piece_writer_test.cpp
     residency_routes_test.cpp
     main_test.cpp

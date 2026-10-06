@@ -25,7 +25,13 @@ namespace bllm::kernels {
 //     already requires of any tensor kernels read (format.h, steps_by_groups).
 //   - The scale is the graph's: 1 for most architectures; Gemma 3 scales its
 //     embedding by the square root of the hidden width, as llama.cpp's
-//     build_inp_embd(tok_embd, sqrtf(n_embd)) does, in f32.
+//     build_inp_embd(tok_embd, sqrtf(n_embd)) does, in f32. With a scale of
+//     1 every weight is its unpack's, bit for bit within format.h's
+//     contract. With another, a weight is within 2 units in the last place
+//     of llama.cpp's decode-then-scale: the GPU's compiler may fold the
+//     scale into the block's own, multiplying the code by d × scale rather
+//     than the decoded weight by scale — on Metal every weight was exactly
+//     that — and each order rounds twice.
 //   - A table split by rows (residency/plan.h) is one launch per piece, each
 //     binding only its piece. Every launch covers every row of the step; an
 //     invocation whose token lies in another piece returns once it has read
@@ -56,7 +62,7 @@ namespace bllm::kernels {
 // format's CPU reference (tests/support): every row of a step, for each
 // listed format, bit for bit within format.h's contract; a table forced into
 // several pieces, with identifiers on either side of each boundary; and a
-// scale other than 1.
+// scale other than 1, within the 2 units above.
 //
 // Pieces are not bound together. One launch could bind every piece and pick
 // one by identifier, saving about 1.5 µs a step for Llama 3.2 and 3 µs for

@@ -53,6 +53,7 @@ add_library(charlotte_core STATIC
     src/core/cache/prefix.cpp
     src/core/formats/q6_k/q6_k_repack.cpp
     src/core/residency/piece_writer.cpp
+    src/core/kernels/gather/gather.cpp
     src/core/residency/routes.cpp
     src/core/gpu/dispatch_math.cpp
 )
@@ -76,6 +77,7 @@ bllm_embed_shaders(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/formats/q4_1/q4_1.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/formats/q6_k/q6_k.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/formats/q8_0/q8_0.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/gather/gather.wgsl"
 )
 
 # ---------------------------------------------------------------------------
@@ -88,6 +90,7 @@ bllm_embed_shaders(
 add_library(charlotte_gpu STATIC
     src/core/gpu/device.cpp
     src/core/gpu/self_check.cpp
+    src/core/kernels/program.cpp
     src/core/residency/mapping.cpp
     src/core/residency/upload.cpp
     src/core/residency/witness.cpp

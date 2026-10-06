@@ -4,6 +4,7 @@
 # ran nothing would claim what was never checked.
 add_executable(charlotte_gpu_tests
     device_test.cpp
+    gather_test.cpp
     mapping_test.cpp
     upload_test.cpp
     unpack_f32_test.cpp
