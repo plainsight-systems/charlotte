@@ -42,19 +42,22 @@ TEST_CASE("a layer's key chunks run from its first row's earliest key to its las
     }
 }
 
-TEST_CASE("a launch runs its rows, its tiles, its splits, or not at all") {
-    // Over rows, every token or the last.
-    CHECK(invocations_for({Rows::EveryToken, 256, 0, KeySplit::None, 0}, 0, 5) == 1280);
-    CHECK(invocations_for({Rows::LastToken, 256, 0, KeySplit::None, 0}, 0, 5) == 256);
+TEST_CASE("a launch runs its rows, its tiles, its splits, or not at all, in whole workgroups") {
+    // Over rows, every token or the last, workgroups of 64.
+    CHECK(workgroups_for({Rows::EveryToken, 256, 0, KeySplit::None, 0}, 64, 0, 5) == 20);
+    CHECK(workgroups_for({Rows::LastToken, 256, 0, KeySplit::None, 0}, 64, 0, 5) == 4);
+    CHECK(workgroups_for({Rows::EveryToken, 32, 0, KeySplit::None, 0}, 64, 0, 5) == 3);   // 160 invocations
     // Tiles of 4 rows, 128 invocations a row: 5 rows take two tiles.
-    CHECK(invocations_for({Rows::EveryToken, 128, 4, KeySplit::None, 0}, 0, 1) == 512);
-    CHECK(invocations_for({Rows::EveryToken, 128, 4, KeySplit::None, 0}, 0, 4) == 512);
-    CHECK(invocations_for({Rows::EveryToken, 128, 4, KeySplit::None, 0}, 0, 5) == 1024);
-    // Split by chunks: decode at 4,096 takes 16.
-    CHECK(invocations_for({Rows::EveryToken, 128, 4, KeySplit::PerChunk, 40960}, 4095, 1) == 512 * 16);
-    CHECK(invocations_for({Rows::EveryToken, 128, 4, KeySplit::PerChunk, 40960}, 0, 512) == 512 * 128);
+    CHECK(workgroups_for({Rows::EveryToken, 128, 4, KeySplit::None, 0}, 64, 0, 1) == 8);
+    CHECK(workgroups_for({Rows::EveryToken, 128, 4, KeySplit::None, 0}, 64, 0, 4) == 8);
+    CHECK(workgroups_for({Rows::EveryToken, 128, 4, KeySplit::None, 0}, 64, 0, 5) == 16);
+    // Split by chunks: decode at 4,096 takes 16, each split whole workgroups
+    // even when its invocations fill less than one.
+    CHECK(workgroups_for({Rows::EveryToken, 128, 4, KeySplit::PerChunk, 40960}, 64, 4095, 1) == 8 * 16);
+    CHECK(workgroups_for({Rows::EveryToken, 1, 0, KeySplit::PerChunk, 40960}, 64, 4095, 1) == 16);
+    CHECK(workgroups_for({Rows::EveryToken, 128, 4, KeySplit::PerChunk, 40960}, 64, 0, 512) == 1024);
     // The combine: only when the step splits.
-    CHECK(invocations_for({Rows::EveryToken, 512, 0, KeySplit::WhenSplit, 40960}, 4095, 1) == 512);
-    CHECK(invocations_for({Rows::EveryToken, 512, 0, KeySplit::WhenSplit, 40960}, 100, 1) == 0);
-    CHECK(invocations_for({Rows::EveryToken, 512, 0, KeySplit::WhenSplit, 40960}, 0, 512) == 0);
+    CHECK(workgroups_for({Rows::EveryToken, 512, 0, KeySplit::WhenSplit, 40960}, 64, 4095, 1) == 8);
+    CHECK(workgroups_for({Rows::EveryToken, 512, 0, KeySplit::WhenSplit, 40960}, 64, 100, 1) == 0);
+    CHECK(workgroups_for({Rows::EveryToken, 512, 0, KeySplit::WhenSplit, 40960}, 64, 0, 512) == 0);
 }

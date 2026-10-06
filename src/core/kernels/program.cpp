@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "core/gpu/callback_mode.h"
-#include "core/gpu/dispatch_math.h"
 #include "core/gpu/userdata.h"
 
 namespace bllm::kernels {
@@ -459,11 +458,10 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
             const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), nullptr));
             std::size_t current = s.pipelines.size();
             for (const State::Bound& launch : s.launches) {
-                const std::uint64_t invocations = invocations_for(launch.geometry, step.position, step.tokens);
-                if (invocations == 0) continue;   // a combine, the step unsplit
-                const gpu::DispatchResult d =
-                    gpu::dispatch_count(invocations, launch.workgroup_size, s.max_workgroups);
-                if (d.status != gpu::DispatchStatus::Ok) {
+                const std::uint64_t workgroups =
+                    workgroups_for(launch.geometry, launch.workgroup_size, step.position, step.tokens);
+                if (workgroups == 0) continue;   // a combine, the step unsplit
+                if (workgroups > s.max_workgroups) {
                     fits = false;
                     break;
                 }
@@ -472,7 +470,7 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
                     current = launch.pipeline;
                 }
                 wgpuComputePassEncoderSetBindGroup(pass.get(), kBindGroup, launch.group.get(), 0, nullptr);
-                wgpuComputePassEncoderDispatchWorkgroups(pass.get(), d.workgroup_count, 1, 1);
+                wgpuComputePassEncoderDispatchWorkgroups(pass.get(), static_cast<std::uint32_t>(workgroups), 1, 1);
             }
             wgpuComputePassEncoderEnd(pass.get());
         }
@@ -493,7 +491,7 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         wgpuQueueOnSubmittedWorkDone(s.queue.get(), info);
     } else {
         // A step too large for one dispatch's workgroups: refused, not
-        // truncated (gpu/dispatch_math.h).
+        // truncated.
         s.step_error = ProgramError::Step;
         s.step_message.assign("a launch needs more workgroups than one dispatch allows");
     }

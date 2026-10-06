@@ -44,7 +44,7 @@ namespace bllm::kernels {
 //     final norm and the output head need — in workgroups of a size the
 //     launcher chooses and gives the kernel as an override constant, so the
 //     size is stated once. The program works out each step's workgroups from
-//     its token count with core/gpu/dispatch_math. Workgroup size belongs to
+//     its position and token count with workgroups_for below. Workgroup size belongs to
 //     each kernel: the right value differs per kernel, and a shared constant
 //     would couple them. A launch that covers only the last token is one
 //     row's workgroups, and the program sets its override constant
@@ -54,7 +54,7 @@ namespace bllm::kernels {
 //     disagree. A launch may instead cover tiles of rows — attention's
 //     query tiles — and may multiply its workgroups by the step's key
 //     chunks or run only when the step splits them (key_chunks,
-//     invocations_for below); a launch that does not run in a step is not
+//     workgroups_for below); a launch that does not run in a step is not
 //     dispatched. A module may hold several entry points, and a launch
 //     names its own.
 //   - Variants: a kernel's other override constants select among its forms —
@@ -197,20 +197,23 @@ struct Geometry {
     std::uint32_t window;
 };
 
-// The invocations a launch runs in a step of `tokens` from `position`; 0
-// when it does not run. Preconditions: tokens >= 1; a key split's window
-// >= 1.
-[[nodiscard]] constexpr std::uint64_t invocations_for(const Geometry& g, std::uint32_t position,
-                                                      std::uint32_t tokens) noexcept {
+// The workgroups a launch of `workgroup_size` runs in a step of `tokens`
+// from `position`; 0 when it does not run. A split runs its rows' or
+// tiles' workgroups once for each chunk, each a whole number of
+// workgroups. Preconditions: tokens >= 1; workgroup_size >= 1; a key
+// split's window >= 1.
+[[nodiscard]] constexpr std::uint64_t workgroups_for(const Geometry& g, std::uint32_t workgroup_size,
+                                                     std::uint32_t position, std::uint32_t tokens) noexcept {
     const std::uint64_t rows = g.rows == Rows::LastToken ? 1 : tokens;
     const std::uint64_t covered =
         g.rows_per_tile == 0 ? rows * g.invocations_per_row
                              : (rows + g.rows_per_tile - 1) / g.rows_per_tile * g.rows_per_tile *
                                    g.invocations_per_row;
-    if (g.key_split == KeySplit::None) return covered;
+    const std::uint64_t workgroups = (covered + workgroup_size - 1) / workgroup_size;
+    if (g.key_split == KeySplit::None) return workgroups;
     const std::uint32_t splits = key_chunks(position, tokens, g.window).splits;
-    if (g.key_split == KeySplit::WhenSplit) return splits > 1 ? covered : 0;
-    return covered * splits;
+    if (g.key_split == KeySplit::WhenSplit) return splits > 1 ? workgroups : 0;
+    return workgroups * splits;
 }
 
 // A WGSL override constant and its value.
