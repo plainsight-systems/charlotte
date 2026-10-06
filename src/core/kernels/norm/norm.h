@@ -69,9 +69,14 @@ namespace bllm::kernels {
 // pass for Qwen3 0.6B, about 86 µs of dispatch at 1.5 µs (interface.h).
 // Bytes, a row, for Qwen3's 1,024 width: X read and written, y read, the
 // gain read, normed written — 4 KiB each, 20 KiB; Gemma 3's post-norm adds
-// its gain, 4.5 KiB at its 1,152, 27 KiB a row in all. A 512-row prefill step
-// moves about 10 MiB, about 25 µs at 400 GB/s; a decode step's norm is one
-// workgroup and its launch. A row's latency is its reductions', not its
+// its gain, 4.5 KiB at its 1,152, 27 KiB a row in all; the first layer's
+// attention norm, which does not add, 12 KiB. One norm launch over a 512-row
+// prefill step moves about 10 MiB, about 25 µs at 400 GB/s. A pass's 57 —
+// one without the add, 55 with it over every row, the final norm's one row —
+// move W × (1,112 T + 20) bytes for T rows and width W: about 556 MiB, 1.46
+// ms, at T = 512, of which the gains, read again by every row but 4 KiB
+// each, are 112 MiB; at decode, 1.1 MiB, under 3 µs, far below the
+// launches' 86 µs. A row's latency is its reductions', not its
 // bytes: one tree of 8 levels, or for Gemma 3's post-norm two dependent ones
 // — y's scale is needed before X can be added to and reduced — 16 levels and
 // two inverse square roots.
