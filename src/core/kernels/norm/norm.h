@@ -97,8 +97,28 @@ namespace bllm::kernels {
 // (GDSA.6's whole-tile accounting: an inactive iteration still costs its
 // instructions). Gemma 3's 288 vec4s still leave 224 invocations idle in
 // the second.
-// Optimization (browser): reduced in workgroup memory, not with subgroup
-// operations, which are an optional WebGPU feature.
+//
+// Where WebGPU limits it, and what each limit costs here:
+//   - Subgroup operations (subgroupAdd) are the `subgroups` feature, which
+//     WebGPU leaves optional and not every browser's WebGPU offers; the
+//     harness requires only WebGPU's defaults (gpu/device_requirements.h).
+//     So the reduction is the tree above, 9 barriers, where the practice of
+//     llama.cpp's Metal kernel (simd_sum) and vLLM's (CUB's block reduce,
+//     over warp shuffles) — a subgroup sum, the partials through workgroup
+//     memory, a subgroup sum of those — needs 1.
+//   - WGSL zero-fills workgroup memory before a workgroup runs, so each one
+//     also stores its 1 KiB of partial sums and waits at one more barrier
+//     before Step 1, though the kernel writes every entry before reading it.
+// Within those limits the reduction follows the practice for a tree without
+// subgroups (Harris, "Optimizing Parallel Reduction in CUDA"): sequential
+// addressing, so active invocations stay contiguous (his kernel 3); each
+// invocation's own vec4s summed before the tree (4); several vec4s an
+// invocation for rows wider than 1,024 (7). His kernel 5, the last levels
+// run without barriers within a warp, is the subgroup sum above. And one
+// workgroup a row, one vec4 an invocation for Qwen3, as llama.cpp and vLLM
+// size theirs: a 4 KiB row split across workgroups would need a second
+// launch or atomics to combine its sums, slower for a decode step's one
+// row, not faster.
 //
 // Verification the implementation is held to, on the GPU against an f64
 // reference: every variant, at the widths of the listed models; rows of
