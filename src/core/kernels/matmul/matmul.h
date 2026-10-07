@@ -86,14 +86,15 @@ namespace bllm::kernels {
 //     and 16 for 9 to 16, and the 32-token tile from 17. Each token tile
 //     reads and decodes the whole weight, so the rule first keeps a step to
 //     the fewest weight passes — one up to 32 tokens — and among those takes
-//     the tile issuing the fewest instructions: per output and step of K, a
-//     tile of τ tokens issues τ multiply-adds, τ / 8 + 8 reads of workgroup
-//     memory, τ / 64 input loads and a weight's decode, and two barriers a
-//     workgroup, so a narrower tile holding the step issues less on every
-//     count. Past 32 tokens three 16-token tiles would issue fewer
-//     multiply-adds than two 32-token ones at 33 to 48 tokens, at a third
-//     more weight passes and decodes; the rule keeps the passes. The 32-token
-//     tile's last tile holds the step's remainder and runs all 32 slots, as
+//     the narrowest. A workgroup with a tile of τ tokens, for each group of
+//     32 along K, does 2,048τ multiply-adds and 2,048 × (τ / 8 + 8) reads of
+//     workgroup memory, loads 32τ input floats, decodes 64 weight blocks and
+//     passes two barriers: a narrower tile holding the step does fewer
+//     multiply-adds, reads and loads, and the same decodes and barriers. Past
+//     32 tokens three 16-token tiles would do fewer multiply-adds than two
+//     32-token ones at 33 to 48 tokens, at a third more weight passes,
+//     decodes and barriers; the rule keeps the passes. The 32-token tile's
+//     last tile holds the step's remainder and runs all 32 slots, as
 //     llama.cpp's mul_mm does: 1.88 times the useful products at 17 tokens,
 //     1.94 at 33, none extra at 64 or 512. The 8-token tile runs 4 times at 2
 //     tokens, where the 32-token tile would run 16; the 16-token tile 1.78 at
