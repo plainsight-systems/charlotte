@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace bllm::policy {
 
@@ -10,10 +12,11 @@ namespace bllm::policy {
 // values change when a model is measured (axis J); this header changes only
 // when what can be configured changes.
 //
-// Two parts cross the boundary at different times. Cache precision and the
-// memory budget are fixed at load. Sampling settings depend on the mode a turn
-// runs in, such as thinking or not, so the JavaScript side resolves them for
-// the turn and passes them with each generate, together with the seed.
+// Two parts cross the boundary at different times. Cache precision, the
+// memory budget and the stop tokens are fixed at load. Sampling settings
+// depend on the mode a turn runs in, such as thinking or not, so the
+// JavaScript side resolves them for the turn and passes them with each
+// generate, together with the seed and the reply's token limit.
 //
 // An unmeasured model runs on the defaults below and is shown as unmeasured.
 // The context offered is not policy: it is derived from the file, the memory
@@ -38,6 +41,11 @@ struct LoadPolicy {
     // enough to regenerate a long reply. A deeper rollback restarts the cache
     // from the first token.
     std::uint32_t rollback_reserve = 4096;
+    // Stop tokens, by their text, beyond the end-of-generation tokens the
+    // file names, where the model's generation config lists more than its
+    // file carries (runtime/stops.h). Each must be one control token of the
+    // vocabulary. None by default: an unmeasured model stops on its file's.
+    std::vector<std::string> stop;
 };
 
 // Defaults are llama.cpp's, the most widely exercised settings for models
@@ -56,6 +64,9 @@ enum class Seed : std::uint64_t {};
 struct TurnPolicy {
     SamplingSettings sampling;
     Seed seed;
+    // The most tokens the reply may draw, at least 1; the context offered
+    // bounds it first, so the largest value asks for no other limit.
+    std::uint32_t max_tokens = UINT32_MAX;
 };
 
 }  // namespace bllm::policy
