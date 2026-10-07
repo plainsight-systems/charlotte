@@ -12,10 +12,10 @@ Detokenizer::Detokenizer(const Tokenizer& tokenizer) : tokenizer_(&tokenizer) {
         longest_ = std::max(longest_, vocabulary.text(static_cast<TokenId>(id)).size());
     }
     bytes_.reserve(longest_);
-    // At the worst every byte — the up to three held before a token's, then
-    // its own — is one the stream cannot place, each written as U+FFFD's
-    // three bytes.
-    text_.reserve(3 * (longest_ + 3));
+    // At the worst each of a token's bytes is one the stream cannot place,
+    // written as U+FFFD's three bytes; the up to three held before them leave
+    // as themselves, completed, or as one U+FFFD for all of them: 3 more.
+    text_.reserve(3 * longest_ + 3);
 }
 
 std::string_view Detokenizer::push(TokenId token) {
