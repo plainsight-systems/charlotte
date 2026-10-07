@@ -69,40 +69,51 @@ fn negative_infinity(bits: u32) -> bool {
 
 @compute @workgroup_size(workgroup_size)
 fn main(@builtin(local_invocation_index) t: u32) {
+    let k = min(step.top_k, draw.count);
+    // At a top_p of 1 top-p keeps every candidate, and none of its work is
+    // done: no weight, total, division or running sum. The step's settings
+    // are uniform, so every branch on them keeps the barriers uniform.
+    let top_p = step.top_p < 1.0;
     let first_bits = candidates[0].x;
-    let mine_bits = candidates[t].x;
     let failed = !finite(first_bits);
     weight[t] = 0.0;
     tempered[t] = 0.0;
     above_min_p[t] = 0u;
-    // −∞ weighs nothing; a non-finite first fails the draw before any of it
-    // is used.
-    if (!failed && !negative_infinity(mine_bits)) {
-        let first = bitcast<f32>(first_bits);
-        let mine = bitcast<f32>(mine_bits);
-        weight[t] = exp(mine - first);
-        if (step.temperature > 0.0) {
-            tempered[t] = exp((mine - first) / step.temperature);
+    // A candidate past top_k is never read, so its invocation works none of
+    // it. −∞ weighs nothing; a non-finite first fails the draw before any of
+    // it is used.
+    if (t < k && !failed) {
+        let mine_bits = candidates[t].x;
+        if (!negative_infinity(mine_bits)) {
+            let first = bitcast<f32>(first_bits);
+            let mine = bitcast<f32>(mine_bits);
+            if (top_p) {
+                weight[t] = exp(mine - first);
+            }
+            if (step.temperature > 0.0) {
+                tempered[t] = exp((mine - first) / step.temperature);
+            }
+            above_min_p[t] = select(0u, 1u, step.min_p == 0.0 || mine >= first + step.log_min_p);
         }
-        above_min_p[t] = select(0u, 1u, step.min_p == 0.0 || mine >= first + step.log_min_p);
     }
     if (t == workgroup_size - 1u) {
         u = unit_interval(philox(vec4<u32>(step.position, 0u, 0u, 0u), step.seed).x);
     }
     workgroupBarrier();
-    let k = min(step.top_k, draw.count);
-    if (t == 0u) {
-        var sum = 0.0;
-        for (var i = 0u; i < k; i++) {
-            sum = sum + weight[i];
+    if (top_p) {
+        if (t == 0u) {
+            var sum = 0.0;
+            for (var i = 0u; i < k; i++) {
+                sum = sum + weight[i];
+            }
+            total = sum;
         }
-        total = sum;
+        workgroupBarrier();
+        if (t < k && !failed) {
+            weight[t] = weight[t] / total;   // the softmax at temperature 1
+        }
+        workgroupBarrier();
     }
-    workgroupBarrier();
-    if (!failed) {
-        weight[t] = weight[t] / total;   // the softmax at temperature 1
-    }
-    workgroupBarrier();
     if (t != 0u) {
         return;
     }
@@ -112,12 +123,14 @@ fn main(@builtin(local_invocation_index) t: u32) {
     var cumulative = 0.0;
     var tempered_sum = 0.0;
     for (var i = 0u; i < k; i++) {
-        cumulative = cumulative + weight[i];
         tempered_sum = tempered_sum + tempered[i];
         running[i] = tempered_sum;
-        if (step.top_p < 1.0 && cumulative >= step.top_p) {
-            kept = i + 1u;
-            break;
+        if (top_p) {
+            cumulative = cumulative + weight[i];
+            if (cumulative >= step.top_p) {
+                kept = i + 1u;
+                break;
+            }
         }
     }
     // min-p: a prefix too, the candidates being sorted.

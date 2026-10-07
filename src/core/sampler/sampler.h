@@ -25,9 +25,10 @@ namespace bllm::sampler {
 //
 // The draw, one workgroup of 64 invocations, over the candidates sorted
 // largest first, in llama.cpp's order (common.h's default chain, at the
-// commit tools/make_reference_logits.sh pins). Invocation i works candidate
-// i — its two exponentials, its min-p test, and its division by top-p's
-// total — and the last invocation Philox, side by side; invocation 0 alone
+// commit tools/make_reference_logits.sh pins). Invocation i below top_k
+// works candidate i — its two exponentials, its min-p test, and its division
+// by top-p's total — and a candidate past top_k is never read; the last
+// invocation runs Philox, side by side; invocation 0 alone
 // takes the sums and running sums, in candidate order, so the draw does not
 // depend on how the others are scheduled:
 //   1. top-k: the first top_k candidates.
@@ -145,7 +146,11 @@ namespace bllm::sampler {
 //     more, and writes the record.
 // Three barriers, and in sequence on one invocation 3 × top_k adds at most
 // — 192 at a top_k of 64, 60 at Qwen3's 20 — with as many interleaved
-// beside them. An estimate of its latency at the worst, a top_k of 64, on
+// beside them. At a top_p of 1, top-p's weights, total, division and
+// running sum are not computed: one barrier, and 2 × top_k adds.
+// Optimization (practice): only the first top_k candidates are worked, and
+// none of top-p's work is done where it would keep every candidate; both
+// branch on the step's uniform settings, so neither diverges a workgroup. An estimate of its latency at the worst, a top_k of 64, on
 // cores near 1.4 GHz from about 400 cycles for the loads, 50 a barrier and
 // 8 an add with its read, compare and loop control: 2,086 cycles, 1.5 µs,
 // leaving out the exponentials' and the divisions' latency, each on the
