@@ -178,9 +178,10 @@ namespace bllm::graph {
 //     and fetched as test data: a pinned prompt of 64 token identifiers
 //     decoded a token at a time, and at every position the log-probabilities
 //     of llama.cpp's 20 most likely tokens within the largest difference
-//     llama.cpp shows between its own CPU and Metal backends on the same file
-//     and tokens, and its top token ours wherever its top two are further
-//     apart than that. llama.cpp's logits are produced at a pinned commit by
+//     llama.cpp shows at that position between its own CPU and Metal
+//     backends on the same file and tokens — 0.1 to 1.0 nats, by position —
+//     and its top token ours wherever its top two are further apart than
+//     that. llama.cpp's logits are produced at a pinned commit by
 //     tools/reference_logits and kept as a fixture — each position's top 20
 //     and log-sum-exp. A pairing swapped from halves to adjacent fails it.
 //

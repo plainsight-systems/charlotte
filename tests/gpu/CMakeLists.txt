@@ -6,6 +6,7 @@ add_executable(charlotte_gpu_tests
     device_test.cpp
     gather_test.cpp
     forward_test.cpp
+    reference_test.cpp
     attention_test.cpp
     matmul_test.cpp
     norm_test.cpp
@@ -31,6 +32,7 @@ target_compile_options(charlotte_gpu_tests PRIVATE -ffp-contract=off)
 target_link_libraries(charlotte_gpu_tests PRIVATE charlotte_gpu doctest::doctest)
 target_include_directories(charlotte_gpu_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_definitions(charlotte_gpu_tests PRIVATE
-    BLLM_GGUF_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/gguf")
+    BLLM_GGUF_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/gguf"
+    BLLM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../.cache/test-data")
 
 add_test(NAME charlotte_gpu_tests COMMAND charlotte_gpu_tests)
