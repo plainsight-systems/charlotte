@@ -59,6 +59,7 @@ add_library(charlotte_core STATIC
     src/core/kernels/norm/norm.cpp
     src/core/kernels/attention/attention.cpp
     src/core/kernels/rope/rope.cpp
+    src/core/kernels/schedule.cpp
     src/core/residency/routes.cpp
     src/core/gpu/dispatch_math.cpp
 )

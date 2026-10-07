@@ -125,9 +125,10 @@ namespace bllm::graph {
 //   - Dispatched a step: 8 a layer, and the gather, final norm and head: 227
 //     (kernel-fusions.md); 255 once a decode step's keys span two 256-key
 //     chunks and every layer's combine runs; 225 in a prefill step that does
-//     not end the prompt. The program walks all 591 launches, a
-//     constant-time workgroups_for each, and calls out of the module 14
-//     times and 3 a dispatch — a bind group, the dispatch, and a pipeline,
+//     not end the prompt. The program walks the 253 to 255 launches its
+//     schedule lists for the step (kernels/schedule.h), a constant-time
+//     workgroups_for each, and calls out of the module 14 times and 3 a
+//     dispatch — a bind group, the dispatch, and a pipeline,
 //     which changes at every dispatch since no two consecutive launches
 //     share one: 695 calls a step, 779 when split, 689 without logits. At
 //     about 1.5 µs a dispatch (kernels/interface.h), 0.34 to 0.38 ms of GPU

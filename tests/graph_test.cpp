@@ -20,6 +20,7 @@
 #include "core/kernels/matmul/matmul.h"
 #include "core/kernels/norm/norm.h"
 #include "core/kernels/rope/rope.h"
+#include "core/kernels/schedule.h"
 #include "core/residency/plan.h"
 #include "support/model_headers.h"
 
@@ -199,6 +200,35 @@ TEST_CASE("Qwen3's graph is the stated order, 591 launches, 227 dispatched a ste
     CHECK(dispatched(launches, 300, 1, true) == 255);
     // No post-norms: no norm normalizes `output` before adding it.
     CHECK(count_override(launches, "post_norm", 1.0) == 0);
+}
+
+TEST_CASE("each step's schedule holds every launch the step dispatches, and walks 253 to 255") {
+    const auto launches = graph_of(load("qwen3-0.6b-q4_0"));
+    std::vector<kernels::Geometry> geometries;
+    for (const kernels::Launch& l : launches) {
+        geometries.push_back({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens});
+    }
+    const kernels::Schedules schedules{geometries};
+    for (std::uint32_t tokens = 1; tokens <= residency::kPrefillBlock; ++tokens) {
+        for (const bool logits : {false, true}) {
+            const auto list = schedules.of(tokens, logits);
+            CHECK(list.size() == (logits ? 255u : 253u));
+            for (const std::uint32_t position : {0u, 255u, 300u, 4095u, 40000u}) {
+                std::vector<std::uint32_t> runs, listed;
+                for (std::uint32_t i = 0; i < geometries.size(); ++i) {
+                    if (kernels::workgroups_for(geometries[i], launches[i].workgroup_size, position, tokens, logits) > 0) {
+                        runs.push_back(i);
+                    }
+                }
+                for (const std::uint32_t i : list) {
+                    if (kernels::workgroups_for(geometries[i], launches[i].workgroup_size, position, tokens, logits) > 0) {
+                        listed.push_back(i);
+                    }
+                }
+                if (runs != listed) FAIL_CHECK("tokens " << tokens << " logits " << logits << " position " << position);
+            }
+        }
+    }
 }
 
 TEST_CASE("Llama 3.2's graph is the stated order, its rotary factors bound in every layer") {

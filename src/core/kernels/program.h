@@ -33,7 +33,9 @@ namespace bllm::kernels {
 //   - Run, once a step: one write of the step's parameters, then one command
 //     encoder holding one compute pass that sets each launch's bind group
 //     and dispatches its workgroups, setting a pipeline only where it
-//     changes from the launch before, then one submit. Launches run in the
+//     changes from the launch before, then one submit. It walks only the
+//     launches the step's token count and logits can run, planned at build
+//     (kernels/schedule.h). Launches run in the
 //     order given, which is the graph's; WebGPU orders dispatches in a pass
 //     by their buffer use, so a launch sees what the one before it wrote.
 //   - Failure is visible, as upload's is. Build runs inside out-of-memory,

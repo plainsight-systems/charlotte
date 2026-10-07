@@ -10,6 +10,7 @@
 
 #include "core/gpu/callback_mode.h"
 #include "core/gpu/userdata.h"
+#include "core/kernels/schedule.h"
 
 namespace bllm::kernels {
 
@@ -28,6 +29,9 @@ struct Program::State {
         std::uint32_t workgroup_size;
     };
     std::vector<Bound> launches;
+    // The launches each step can dispatch, planned once the launches are
+    // bound (kernels/schedule.h).
+    Schedules schedules{std::span<const Geometry>{}};
     gpu::Buffer constants;   // UNIFORM | COPY_DST: every launch's, on kLaunchConstantsAlignment
     gpu::Buffer step;        // UNIFORM | COPY_DST: sizeof(Step)
     std::uint32_t max_workgroups = 0;
@@ -190,6 +194,10 @@ void Build::bind() {
                                        launches[i].key_split, launches[i].window, launches[i].tokens},
                               launches[i].workgroup_size});
     }
+    std::vector<Geometry> geometries;
+    geometries.reserve(s.launches.size());
+    for (const auto& b : s.launches) geometries.push_back(b.geometry);
+    s.schedules = Schedules(geometries);
     pop_scopes(device, kBuildScopes.size(), shared_from_this(), ProgramError::Build);
 }
 
@@ -460,7 +468,8 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         {
             const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), nullptr));
             std::size_t current = s.pipelines.size();
-            for (const State::Bound& launch : s.launches) {
+            for (const std::uint32_t index : s.schedules.of(step.tokens, step.logits != 0)) {
+                const State::Bound& launch = s.launches[index];
                 const std::uint64_t workgroups =
                     workgroups_for(launch.geometry, launch.workgroup_size, step.position, step.tokens, step.logits != 0);
                 if (workgroups == 0) continue;   // a combine, the step unsplit
