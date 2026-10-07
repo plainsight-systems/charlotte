@@ -348,3 +348,19 @@ TEST_CASE("a turn is refused, by name, when it cannot run") {
     CHECK(t.result->end == (t.result->stop ? TurnEnd::Stop : TurnEnd::Context));
     CHECK(t.result->emitted + (t.result->stop ? 1u : 0u) == 1);
 }
+
+TEST_CASE("a step that fails on a lost device is DeviceLost, and the runtime then refuses every turn") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    auto s = open(instance.get(), *device, "forward_model", {0});
+    const auto status = device->status();
+    wgpuDeviceDestroy(device->handle());
+    pump_until(instance.get(), status->lost, "the device-lost callback");
+    Turned t;
+    const std::vector<TokenId> ids(8, TokenId{7});
+    REQUIRE(s->runtime->start(ids, kSampled, on_token, on_turn, &t).error == StartError::Ok);
+    pump_turn(instance.get(), t);
+    CHECK(t.result->failure == TurnFailure::DeviceLost);
+    Turned again;
+    CHECK(s->runtime->start(ids, kSampled, on_token, on_turn, &again).error == StartError::DeviceLost);
+}

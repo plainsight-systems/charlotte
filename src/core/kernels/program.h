@@ -64,7 +64,10 @@ namespace bllm::kernels {
 //     ran it: a lost device resolves queued work as done and scopes clean
 //     (gpu/device.h). What a step computed is trusted only through a
 //     completed mapping, which a lost device refuses — the sampler's
-//     readback of the step's drawn token, as upload's witness is its.
+//     readback of the step's drawn token, as upload's witness is its. A step
+//     that fails once the device has said it is lost is reported DeviceLost;
+//     WebGPU does not order the lost callback before the failed mapping, so a
+//     failure that comes first is reported Step, and a later one DeviceLost.
 //   - It borrows: the upload, and so its buffers, outlives the program
 //     (I.11). Callbacks keep their state alive on their own, as upload's do,
 //     so destroying a program with a step in flight reports Cancelled.

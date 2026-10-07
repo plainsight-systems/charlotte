@@ -23,6 +23,9 @@ namespace bllm::kernels {
 struct Program::State {
     gpu::Instance instance;
     gpu::DeviceHandle device;
+    // Whether the device has been lost: a step that fails on a lost device
+    // is reported DeviceLost (program.h).
+    std::shared_ptr<const gpu::DeviceStatus> device_status;
     gpu::Queue queue;
     std::vector<gpu::ComputePipeline> pipelines;
     struct Bound {
@@ -354,6 +357,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     auto state = std::make_shared<State>();
     state->instance = gpu::retain(upload.instance());
     state->device = gpu::retain(upload.device());
+    state->device_status = upload.device_status();
     WGPUDevice device = state->device.get();
     state->queue = gpu::Queue(wgpuDeviceGetQueue(device));
     WGPULimits limits = WGPU_LIMITS_INIT;
@@ -495,7 +499,10 @@ void report(Program::State& s) {
     while (const std::optional<std::uint64_t> number = s.order.next()) {
         Program::State::Outstanding& o = s.steps[*number % Order::kOutstanding];
         if (s.order.idle()) s.in_flight.reset();
-        const ProgramError error = s.cancelled ? ProgramError::Cancelled : o.error;
+        const bool lost = s.device_status != nullptr && s.device_status->lost;
+        const ProgramError error = s.cancelled                                     ? ProgramError::Cancelled
+                                   : o.error == ProgramError::Step && lost ? ProgramError::DeviceLost
+                                                                           : o.error;
         const std::span<const std::byte> bytes =
             error == ProgramError::Ok && o.reads_back ? std::span<const std::byte>(o.bytes.data(), s.readback->size)
                                                       : std::span<const std::byte>{};
