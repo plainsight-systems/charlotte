@@ -217,7 +217,8 @@ def matmul_rows(seed=0x85EBCA6B):
     """Weights and input rows for the matrix products: each listed weight
     format at widths whose 32 ranges are one group (1,024), unequal (1,152)
     and three groups (3,072), with row counts that leave decode workgroups
-    and prefill tiles part full; a Q, K and V with a tensor between them in
+    and prefill tiles part full; three narrow weights whose row counts give
+    a decode set 2, 3 and 4 rows; a Q, K and V with a tensor between them in
     file order, as a fused group's span holds; and a gate and up. Weights
     are pseudo-random blocks, codes of every value and fp16 scales of either
     sign, small enough that sums stay well inside f32. Input rows are filled
@@ -262,6 +263,11 @@ def matmul_rows(seed=0x85EBCA6B):
         weight("qkv_v", T_Q4_0, 1024, 32),
         weight("ffn_gate", T_Q4_0, 1024, 72),
         weight("ffn_up", T_Q4_0, 1024, 72),
+        # Narrow weights with the row counts at which a decode set's rows
+        # change, so each count, 2 to 4, runs (kernels/matmul/matmul.h).
+        weight("w_set2", T_Q4_0, 64, 2047),
+        weight("w_set3", T_Q4_0, 64, 4088),
+        weight("w_set4", T_Q4_0, 64, 4096),
     ]
     return build(tensors)
 

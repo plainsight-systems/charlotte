@@ -15,8 +15,12 @@ namespace bllm::kernels {
 namespace {
 
 constexpr std::uint32_t kWorkgroupSize = 64;
-constexpr std::uint32_t kDecodeRows = 8;        // a decode workgroup's rows
+constexpr std::uint32_t kDecodeSets = 2;        // a decode workgroup's sets of 32
 constexpr std::uint32_t kDecodePairs = 4;       // or gate-and-up pairs
+// The workgroups a decode product should make at least: in the profile,
+// products of 512 and more read their weights at 260 to 383 GB/s, those of
+// 128 at 107 to 180 (matmul.h, decode).
+constexpr std::uint32_t kDecodeWorkgroups = 512;
 // Prefill's tiles, by tokens, and the steps each takes: the narrowest tile
 // that holds the step whole, or the widest when none does (matmul.h,
 // prefill) (GDSA.6).
@@ -55,6 +59,15 @@ Entry entry_of(Epilogue e) {
 
 std::uint32_t ceil_div(std::uint64_t a, std::uint32_t b) { return static_cast<std::uint32_t>((a + b - 1) / b); }
 
+// A Write or QKV decode set's rows: the most, of 4 down to 1, that still
+// makes kDecodeWorkgroups workgroups of kDecodeSets sets, or 1.
+std::uint32_t set_rows_for(std::uint64_t rows) {
+    for (std::uint32_t s = 4; s > 1; --s) {
+        if (ceil_div(rows, kDecodeSets * s) >= kDecodeWorkgroups) return s;
+    }
+    return 1;
+}
+
 // The product over one binding: its members, the launch pair (or the head's
 // one launch) that reads them.
 void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants& members, std::uint64_t rows,
@@ -75,15 +88,18 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     const Entry entry = entry_of(m.epilogue);
     const formats::Format* format = capability::find_format(head.format());
 
-    // Decode: a workgroup a kDecodeRows rows, or kDecodePairs pairs.
+    // Decode: a workgroup two sets of set_rows rows, or kDecodePairs pairs.
+    const std::uint32_t set_rows = gated ? 4 : set_rows_for(rows);
+    std::vector<Override> decode_overrides = overrides;
+    decode_overrides.push_back({"set_rows", static_cast<double>(set_rows)});
     Launch decode{shaders::matmul,
                   format,
                   std::vector<std::byte>(bytes.begin(), bytes.end()),
                   bindings,
-                  ceil_div(gated ? rows / 2 : rows, gated ? kDecodePairs : kDecodeRows) * kWorkgroupSize,
+                  ceil_div(gated ? rows / 2 : rows, gated ? kDecodePairs : kDecodeSets * set_rows) * kWorkgroupSize,
                   kWorkgroupSize,
                   m.rows,
-                  overrides};
+                  std::move(decode_overrides)};
     decode.entry_point = entry.decode;
     if (m.rows == Rows::LastToken) {
         out.push_back(std::move(decode));   // the head: every regime

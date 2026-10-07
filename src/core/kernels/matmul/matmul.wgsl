@@ -33,6 +33,7 @@ override columns: u32 = 1024;        // K
 override out_width: u32 = 1024;      // a write's output row width
 override activation: u32 = 0;       // 0 SiLU, 1 GELU in its tanh form
 override tile_tokens: u32 = 32;     // a prefill tile's tokens: 8, 16 or 32
+override set_rows: u32 = 4;         // a decode set's rows, Write and QKV: 1 to 4
 
 const kRanges = 32u;
 
@@ -176,17 +177,17 @@ fn slot_total(s: u32) -> f32 {
     return total;
 }
 
-// A workgroup's 8 rows of the product, slots team × 4 + j: invocation lane
-// of a team sums its range of the team's 4 rows; after one barrier the caller
-// adds each slot's ranges.
+// A workgroup's 2 × set_rows rows of the product, slots team × 4 + j for j
+// below set_rows: invocation lane of a team sums its range of the team's
+// rows; after one barrier the caller adds each slot's ranges.
 fn decode_rows(wg: u32, t: u32) {
     let team = t / 32u;
     let lane = t % 32u;
     var members = vec4<u32>(0u);
     var rows = vec4<u32>(0u);
     var live = vec4<bool>(false);
-    for (var j = 0u; j < 4u; j++) {
-        let at = locate(wg * 8u + team * 4u + j);
+    for (var j = 0u; j < set_rows; j++) {
+        let at = locate(wg * 2u * set_rows + team * set_rows + j);
         members[j] = at.x;
         rows[j] = at.y;
         live[j] = at.z == 1u;
@@ -198,13 +199,18 @@ fn decode_rows(wg: u32, t: u32) {
     workgroupBarrier();
 }
 
+// The slot holding the workgroup's row t, for t below 2 × set_rows.
+fn row_slot(t: u32) -> u32 {
+    return (t / set_rows) * 4u + t % set_rows;
+}
+
 @compute @workgroup_size(workgroup_size)
 fn decode_write(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
     decode_rows(wg.x, t);
-    if (t < 8u) {
-        let at = locate(wg.x * 8u + t);
+    if (t < 2u * set_rows) {
+        let at = locate(wg.x * 2u * set_rows + t);
         if (at.z == 1u) {
-            out0[matmul.members[at.x].z + at.y] = slot_total(t);
+            out0[matmul.members[at.x].z + at.y] = slot_total(row_slot(t));
         }
     }
 }
@@ -212,10 +218,10 @@ fn decode_write(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_
 @compute @workgroup_size(workgroup_size)
 fn decode_qkv(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
     decode_rows(wg.x, t);
-    if (t < 8u) {
-        let at = locate(wg.x * 8u + t);
+    if (t < 2u * set_rows) {
+        let at = locate(wg.x * 2u * set_rows + t);
         if (at.z == 1u) {
-            let total = slot_total(t);
+            let total = slot_total(row_slot(t));
             if (at.x == 0u) {
                 out0[at.y] = total;
             } else if (at.x == 1u) {

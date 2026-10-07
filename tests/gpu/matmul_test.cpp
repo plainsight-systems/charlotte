@@ -37,6 +37,7 @@ namespace {
 
 constexpr std::uint32_t kTokens = 64;
 constexpr std::uint64_t kWidest = 3072;
+constexpr std::uint64_t kMostRows = 4096;   // w_set4's
 
 // Test-only: copies rows first .. first + tokens of the source rows into
 // the input buffer, so a step's rows are any of the source's.
@@ -122,7 +123,7 @@ Uploaded upload_weights(WGPUInstance instance, const gpu::Device& device, bool s
     };
     u.source = alone(kTokens * kWidest * 4);
     u.input = alone(kTokens * kWidest * 4);
-    for (auto& o : u.out) o = alone(kTokens * 256 * 4);
+    for (auto& o : u.out) o = alone(kTokens * kMostRows * 4);
     Ready ready;
     residency::Upload::begin(device, u.model.index, plan, u.model.bytes.size(), capability::find_format, {}, kChunk,
                              on_ready, &ready);
@@ -211,7 +212,8 @@ TEST_CASE("each format's product is within its bound, decoded and prefilled, and
     const Uploaded u = upload_weights(instance.get(), *device);
     const auto source = source_rows(instance.get(), *device, u);
     double worst = 0;
-    for (const char* name : {"w_q4_0", "w_q4_1_1152", "w_q4_1_3072", "w_q8_0", "w_q6_k"}) {
+    // Then narrow weights whose decode sets take 2, 3 and 4 rows.
+    for (const char* name : {"w_q4_0", "w_q4_1_1152", "w_q4_1_3072", "w_q8_0", "w_q6_k", "w_set2", "w_set3", "w_set4"}) {
         CAPTURE(name);
         const residency::WeightView& w = u.view(name);
         const auto columns = static_cast<std::uint32_t>(w.shape().dimensions[0]);

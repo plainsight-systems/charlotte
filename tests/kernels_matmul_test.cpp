@@ -59,13 +59,13 @@ TEST_CASE("a product is a decode launch and a prefill launch a tile width; the h
         // A 4-token × 4-output micro-tile an invocation: 4 a tile's token.
         CHECK(launches[i + 1].workgroup_size == 4 * tiles[i].first);
     }
-    // Decode: 3,072 rows, 8 a workgroup. Prefill: 512 tokens in 16 tiles of
+    // Decode: 3,072 rows, 3 a set, 6 a workgroup. Prefill: 512 tokens in 16 tiles of
     // 32, 9 tokens in one of 16, 8 in one of 8; 48 output tiles of 64.
     const auto workgroups = [](const kernels::Launch& l, std::uint32_t tokens) {
         return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens},
                                        l.workgroup_size, 0, tokens, true);
     };
-    CHECK(workgroups(launches[0], 1) == 384);
+    CHECK(workgroups(launches[0], 1) == 512);
     CHECK(workgroups(launches[0], 512) == 0);
     CHECK(workgroups(launches[1], 8) == 48);
     CHECK(workgroups(launches[1], 9) == 0);
@@ -81,8 +81,38 @@ TEST_CASE("a product is a decode launch and a prefill launch a tile width; the h
     REQUIRE(head.size() == 1);
     CHECK(head[0].entry_point == "decode_write");
     CHECK(head[0].tokens == kernels::TokenRange{});
-    CHECK(workgroups(head[0], 1) == 384);
-    CHECK(workgroups(head[0], 512) == 384);
+    CHECK(workgroups(head[0], 1) == 512);
+    CHECK(workgroups(head[0], 512) == 512);
+}
+
+TEST_CASE("a decode set takes the most rows, of 4 down to 1, that still makes 512 workgroups") {
+    const auto set_rows = [](const kernels::Launch& l) {
+        for (const auto& o : l.overrides) {
+            if (o.name == "set_rows") return static_cast<std::uint32_t>(o.value);
+        }
+        return 0u;
+    };
+    // Rows, the set's rows, and the workgroups: Qwen3's output and down,
+    // Llama 3.2's output and down and its QKV, Qwen3's QKV; the edges, 4,095
+    // still 512 workgroups of 8 and 4,088 not, 2,047 still 512 of 4; and a
+    // product too small for 512 at any.
+    const std::array<std::array<std::uint32_t, 3>, 8> cases{{{1024, 1, 512},
+                                                             {2048, 2, 512},
+                                                             {3072, 3, 512},
+                                                             {4096, 4, 512},
+                                                             {4095, 4, 512},
+                                                             {4088, 3, 682},
+                                                             {2047, 2, 512},
+                                                             {1000, 1, 500}}};
+    for (const auto& [rows, want_rows, want_workgroups] : cases) {
+        CAPTURE(rows);
+        const auto w = q4_0(1024, rows, 0);
+        const auto l = kernels::matmul_launches({{&w, nullptr, nullptr}, 1, kIn, {kQ, kK, kV}, Epilogue::Write,
+                                                 model::FeedForwardActivation::SiLU, kernels::Rows::EveryToken})[0];
+        CHECK(set_rows(l) == want_rows);
+        CHECK(kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens},
+                                      l.workgroup_size, 0, 1, true) == want_workgroups);
+    }
 }
 
 TEST_CASE("a fused group binds the span of its members and reads each from its own first word") {
