@@ -1,7 +1,7 @@
-# Decode in Chrome, step by step: the GPU is kept fed
+# Decode in the app's Chromium, step by step: the GPU is kept fed
 
 **Date:** 2026-10-07
-**Device:** Apple M3 Max; the Claude desktop app's Chromium browser pane, WebGPU on Metal.
+**Device:** Apple M3 Max; the Claude desktop app's built-in Chromium browser pane, WebGPU on Metal. Not the project's Chrome target: its Chromium, Dawn and Tint, configuration and scheduling may differ from Chrome's, so what follows describes that runtime, and a Chrome run with its version recorded is what a Chrome claim needs.
 **Model:** Qwen3 0.6B Q4_0, the same file as the forward-pass profile; context offered 15,181.
 **Code:** commit `980df48`: the step profile (`web/dev/step_profile.js`, `runtime/runtime.h`) over the kernels of `479b2d9`, `5d2dc0f` and `e465632`.
 
@@ -14,8 +14,9 @@ figure here is the clean build's, from the page's own count.
 
 The forward-pass profile (`2026-10-07-forward-pass-profile.md`) put a
 pipelined decode step at 4.31 ms of GPU time natively while the page
-decoded a long reply at about 8 ms a token, and nothing said whether
-Chrome's step was slower on the GPU or the GPU waited between steps.
+decoded a long reply at about 8 ms a token, in this same pane, and nothing
+said whether the browser's step was slower on the GPU or the GPU waited
+between steps.
 
 ## Method
 
@@ -27,17 +28,17 @@ the in-pass time by position. Beside it is `make profile`'s pipelined run
 over the same kernels: 128 steps from position 64, 3.228 ms a step in its
 pass on average. It is not a matched reference: its steps drew with the
 sampler's settings unset, top_k 0, not the turn's; it is a mean where the
-Chrome figure is a median; and it was run at another time, under its own
+browser's figure is a median; and it was run at another time, under its own
 load. The profiler and the page's summary are matched from `a510721`.
 
-Chrome rounds each timestamp to 65.5 µs (2^16 ns, from the values seen),
+This browser rounds each timestamp to 65.5 µs (2^16 ns, from the values seen),
 so a step's in-pass time is good to about 2%. One pair of steps was left
 out of the cross-step figures: its GPU times ran backward, the conversion of
 ticks to nanoseconds having changed between them, as natively (below).
 
 ## Results
 
-| | Chrome | Native, unmatched (above) |
+| | App's Chromium | Native, unmatched (above) |
 |---|---|---|
 | In-pass time, positions 64–191 | 3.54 ms | 3.23 ms |
 | GPU period between steps | 3.93 ms | — |
@@ -49,10 +50,10 @@ In-pass time by position: 3.54 ms from 0 to 255, 3.60 ms from 256 to 511,
 
 The interval between reports equals the GPU's period, and the GPU spends
 8% of it outside the passes — each step's query resolve and copies, the
-next step's write and any idle, an upper bound on the idle. Chrome keeps
+next step's write and any idle, an upper bound on the idle. The browser keeps
 the GPU fed: a token costs its step's GPU time and 8%. Its step's pass is
 about 10% longer than the native figure, which is not a matched
-measurement (Method); how much of that is Chrome's Dawn and Tint, against
+measurement (Method); how much of that is this browser's Dawn and Tint, against
 the release the native build pins, awaits a matched run on a quiet
 machine.
 

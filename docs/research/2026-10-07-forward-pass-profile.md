@@ -13,7 +13,8 @@ change is built on is confirmed there by the page's whole-step rates first.
 ## Why
 
 Once generation ran end to end in the browser, a 24-token prefill took about
-1.2 s natively and a long reply decoded at about 8 ms a token in Chrome,
+1.2 s natively and a long reply decoded at about 8 ms a token in the page,
+in the Claude desktop app's built-in Chromium pane, not Chrome itself,
 against `graph/graph.h`'s floors of 32 ms for a 512-token prefill step and
 0.94 ms + 0.29 µs × p for a decode step at position p. The profile names the
 launches that take the difference.
@@ -116,8 +117,9 @@ passes — each step's query resolve and copies, the next step's write, and
 any idle, so the GPU idled at most that. Two earlier runs gave 19.1 and
 40.0 ms a step. All three runs' steps, this one's included, drew with the
 sampler's settings unset, top_k 0, not a turn's draw (corrected at
-`a510721`); what made the two earlier runs slower is not known. Chrome
-decoded a long reply at about 8 ms a token.
+`a510721`); what made the two earlier runs slower is not known. The page,
+in the desktop app's Chromium pane, decoded a long reply at about 8 ms a
+token.
 
 ## What follows
 
