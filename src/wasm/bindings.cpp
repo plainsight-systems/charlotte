@@ -530,8 +530,10 @@ void on_load_finished(bllm::residency::UploadError error, void* userdata) {
 }
 
 // A piece of a reply's text, read from the module's memory during the call.
+// One decoder for every piece, made at the first.
 EM_JS(void, bllm_text, (std::uint32_t request, const char* text, std::uint32_t length), {
-    globalThis.bllmOnText(request, new TextDecoder().decode(HEAPU8.subarray(text, text + length)));
+    globalThis.bllmTextDecoder ??= new TextDecoder();
+    globalThis.bllmOnText(request, globalThis.bllmTextDecoder.decode(HEAPU8.subarray(text, text + length)));
 });
 
 void on_turn_text(std::string_view text, void* userdata) {
