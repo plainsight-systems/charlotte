@@ -84,10 +84,12 @@ namespace bllm::runtime {
 //     ms median on the target (sampler/sampler.h); every later token arrives
 //     a step after it was drawn. A stop is reported once any step queued
 //     behind it has run — at most one; none at the limit or the context. A
-//     cancel waits for every step already run, at most two, since the next
-//     step is run before the token callback that may cancel: two decode
-//     steps, each at position p no less than its weights' and cache's reads,
-//     0.94 ms + 0.29 µs × p for Qwen3 (graph/graph.h), or two prefill blocks.
+//     cancel waits for what remains of every step already run, at most two,
+//     since the next step is run before the token callback that may cancel:
+//     at most two decode steps' time — each at position p reading its
+//     weights and cache, 0.94 ms + 0.29 µs × p for Qwen3 from device memory
+//     (graph/graph.h) — or two prefill blocks', less what they had already
+//     done when the cancel came.
 //   - Nothing is allocated after construction: the held tokens are reserved
 //     at the context offered plus one, the step is the runtime's own, and the
 //     turn is a value (MEM.9).

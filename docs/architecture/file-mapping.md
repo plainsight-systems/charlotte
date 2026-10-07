@@ -285,8 +285,10 @@ Four rules hold for every contract:
 11. **The boundary** — `web/worker.js` and `src/wasm/bindings.cpp`. Preflight a
     prefix and load a chunk, each under the model's load policy; generate
     from a rendered prompt and the turn's policy; cancel. The rendered prompt
-    crosses once a turn, as bytes; the reply's text one crossing per piece it
-    completes (WASM.2). A refusal names its cause, and one the page can act
+    crosses twice a turn: to the worker as a string, then into the module's
+    memory as UTF-8 bytes. The reply's text crosses twice a piece it
+    completes, from the module to the worker and from the worker to the page
+    (WASM.2). A refusal names its cause, and one the page can act
     on carries a code, as "prompt-too-long" does with both counts.
 12. **Policy** — `core/policy`. A model's measured configuration from
     `web/models.json`: cache precision, sampling settings per mode, and the

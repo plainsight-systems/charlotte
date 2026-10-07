@@ -56,8 +56,11 @@ namespace bllm::runtime {
 //     byte-level BPE with its piece cache warm, 43.3 for SentencePiece (their
 //     headers) — 4.6 to 5.6 ms for a conversation of a listed model's whole
 //     context — then the runtime's turn. The encoders allocate their working
-//     lists — segments, pieces, symbols — afresh each encode: a few heap
-//     allocations a turn, beside the turn's prefill.
+//     lists afresh each encode: for each span between special tokens its
+//     normalized text and its pieces, and for each piece too long for the
+//     piece cache its symbols and their merge queue — allocations a turn in
+//     proportion to the conversation's spans and long pieces, beside the
+//     turn's prefill, none a token.
 //   - A token: one decode, an indirect call that appends the token's bytes
 //     to a string reserved at load for the vocabulary's longest token; the
 //     stream's push over those bytes; and, when they complete a character,

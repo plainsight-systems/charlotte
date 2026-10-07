@@ -85,7 +85,9 @@ TEST_CASE("each listed model's tokenizer, loaded through the table, encodes and 
             std::vector<TokenId> want;
             REQUIRE((is_byte_level ? byte_level.encode(text, want) : sentencepiece.encode(text, want)) ==
                     EncodeError::Ok);
-            // Twice: the second encode finds what the first left in any cache.
+            // Twice: whatever the first left in a cache, the second's tokens are
+            // the same. A cache changes how long encoding takes, never what it
+            // returns, so this cannot see whether one was used.
             for (int pass = 0; pass < 2; ++pass) {
                 std::vector<TokenId> got;
                 REQUIRE(l.tokenizer->encode(text, got) == EncodeError::Ok);
