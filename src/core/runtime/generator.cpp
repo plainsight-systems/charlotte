@@ -70,9 +70,10 @@ GenerateResult Generator::start(std::string_view text, const policy::TurnPolicy&
     if (text.size() > bound) {
         const std::uint64_t least = (text.size() + longest - 1) / longest;
         return {{},
-                {StartError::PromptTooLong, "the prompt is " + std::to_string(text.size()) + " bytes, at least " +
-                                                std::to_string(least) + " tokens, and the context offered " +
-                                                std::to_string(s.capacity)}};
+                {StartError::PromptTooLong,
+                 "the prompt is " + std::to_string(text.size()) + " bytes, at least " + std::to_string(least) +
+                     " tokens, and the context offered " + std::to_string(s.capacity),
+                 least, s.capacity}};
     }
     s.tokens.clear();
     if (const tokenizer::EncodeError e = s.tokenizer->encode(text, s.tokens); e != tokenizer::EncodeError::Ok) {

@@ -332,6 +332,8 @@ TEST_CASE("a turn is refused, by name, when it cannot run") {
     CHECK(long_prompt.error == StartError::PromptTooLong);
     CHECK(long_prompt.subject.find("65 tokens") != std::string::npos);
     CHECK(long_prompt.subject.find("64") != std::string::npos);
+    CHECK(long_prompt.prompt_tokens == 65);
+    CHECK(long_prompt.context == 64);
     policy::TurnPolicy bad = kSampled;
     bad.sampling.top_k = 0;
     CHECK(start(4, bad).error == StartError::Settings);

@@ -221,6 +221,8 @@ TEST_CASE("the generator refuses text it cannot take, and a destroyed one ends i
     const auto too_long = g->start(huge, greedy(4), on_text, on_end, &s);
     CHECK(too_long.start.error == runtime::StartError::PromptTooLong);
     CHECK(too_long.start.subject.find(std::to_string(huge.size()) + " bytes") != std::string::npos);
+    CHECK(too_long.start.prompt_tokens == (huge.size() + longest - 1) / longest);
+    CHECK(too_long.start.context == m->upload->plan().context_offered);
     CHECK(!s.result);   // neither called back
     CHECK(s.pieces.empty());
     // Destroyed mid-turn.

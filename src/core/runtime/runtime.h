@@ -157,6 +157,11 @@ enum class StartError {
 struct StartResult {
     StartError error = StartError::Ok;
     std::string subject;
+    // For PromptTooLong, as numbers, so the page can shorten the
+    // conversation by the excess: the prompt's tokens — or, for text refused
+    // before it is encoded, the fewest it makes — and the context offered.
+    std::uint64_t prompt_tokens = 0;
+    std::uint32_t context = 0;
 };
 
 struct TurnResult {

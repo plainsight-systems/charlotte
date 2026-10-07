@@ -146,9 +146,10 @@ StartResult Runtime::start(std::span<const tokenizer::TokenId> prompt, const pol
     const auto length = static_cast<std::uint32_t>(std::min<std::size_t>(prompt.size(), UINT32_MAX));
     if (length == 0) return {StartError::EmptyPrompt, "the prompt is empty"};
     if (prompt.size() > s.cache.capacity()) {
-        return {StartError::PromptTooLong, "the prompt is " + std::to_string(prompt.size()) +
-                                               " tokens, and the context offered " +
-                                               std::to_string(s.cache.capacity())};
+        return {StartError::PromptTooLong,
+                "the prompt is " + std::to_string(prompt.size()) + " tokens, and the context offered " +
+                    std::to_string(s.cache.capacity()),
+                prompt.size(), s.cache.capacity()};
     }
     if (const sampler::SettingsResult checked = sampler::check(policy.sampling); !checked.ok) {
         return {StartError::Settings, checked.subject};
