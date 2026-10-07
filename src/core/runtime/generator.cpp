@@ -28,6 +28,11 @@ struct Generator::State {
 
 namespace {
 
+// NFC's greatest shrinking of UTF-8: a character's canonical decomposition is
+// at most 3 times its own bytes — U+0390's 6 to 2, a Hangul syllable's 9 to
+// 3 — in Unicode 16.0, the tables' version (tokenizer/nfc.h).
+constexpr std::uint64_t kNfcShrink = 3;
+
 void on_token(tokenizer::TokenId token, void* userdata) {
     Generator::State& s = *static_cast<Generator::State*>(userdata);
     if (const std::string_view text = s.text->push(token); !text.empty()) s.on_text(text, s.userdata);
@@ -69,12 +74,14 @@ GenerateResult Generator::start(std::string_view text, const policy::TurnPolicy&
                                 EndCallback on_end, void* userdata) {
     State& s = *state_;
     if (s.runtime == nullptr || s.in_flight != nullptr) return {{}, {StartError::Busy, "a turn is running"}};
-    // A token covers at most `longest` bytes, so text longer than the context
-    // × that makes more tokens than the context holds: refused unencoded.
+    // A token covers at most `longest` bytes of normalized text, and NFC
+    // shrinks text at most 3-fold, so text longer than 3 × the context × that
+    // makes more tokens than the context holds: refused unencoded.
     const std::uint64_t longest = s.text->longest();
-    const std::uint64_t bound = std::uint64_t{s.capacity} * longest;
+    const std::uint64_t covered = kNfcShrink * longest;
+    const std::uint64_t bound = std::uint64_t{s.capacity} * covered;
     if (text.size() > bound) {
-        const std::uint64_t least = (text.size() + longest - 1) / longest;
+        const std::uint64_t least = (text.size() + covered - 1) / covered;
         return {{},
                 {StartError::PromptTooLong,
                  "the prompt is " + std::to_string(text.size()) + " bytes, at least " + std::to_string(least) +

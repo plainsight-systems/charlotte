@@ -21,11 +21,14 @@ namespace bllm::runtime {
 //     the special tokens as text, and they encode as their identifiers —
 //     into tokens held for the generator's life, reserved at the context
 //     offered plus one. Then the runtime's turn starts over them.
-//   - A token covers at most the vocabulary's longest text, L bytes, so text
-//     longer than the context × L bytes encodes to more tokens than the
-//     context holds: it is refused before it is encoded, as PromptTooLong,
-//     naming its bytes and the least tokens they make, so no prompt's
-//     encode grows memory past what a prompt the context could hold needs.
+//   - A token covers at most the vocabulary's longest text, L bytes, of
+//     normalized text, and NFC shrinks UTF-8 at most 3-fold — a character's
+//     canonical decomposition is at most 3 times its bytes in Unicode 16.0 —
+//     so text longer than 3 × the context × L bytes encodes to more tokens
+//     than the context holds: it is refused before it is encoded, as
+//     PromptTooLong, naming its bytes and the least tokens they make, so no
+//     prompt's encode grows memory past what a prompt the context could hold
+//     needs.
 //     Shorter text encodes to at most its bytes in tokens; one too long for
 //     the context grows the tokens once, and the runtime refuses it, naming
 //     both counts.
