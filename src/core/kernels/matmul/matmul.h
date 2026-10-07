@@ -79,12 +79,14 @@ namespace bllm::kernels {
 //     a tile of τ tokens × 64 outputs, τ 8, 16 or 32, and steps along K 32
 //     at a time, a group a step. Its 4τ invocations — 32, 64 or 128, under
 //     WebGPU's default limit of 256 — each own a micro-tile of 4 consecutive
-//     tokens × 4 consecutive outputs: invocation t token quad t / 16 and
-//     output quad t % 16. So every tile's invocations run one inner loop,
-//     its bounds WGSL constants rather than the tile's override: for each of
-//     the step's 32 k, one vec4 read of its 4 tokens' inputs and one of its
-//     4 outputs' weights, then 4 vec4 fmas, a token each, into that token's
-//     4 range sums — 16 multiply-adds from 2 reads of workgroup memory. Each
+//     tokens × 4 outputs: invocation t token quad t / 16 and outputs —
+//     row slots — l + 16j for its lane l = t % 16. So every tile's
+//     invocations run one inner loop, its bounds WGSL constants rather than
+//     the tile's override: for each of the step's 8 k-quads, 4 vec4 reads of
+//     its outputs' weights and 4 of its tokens' inputs, the weights
+//     transposed in registers so each k's 4 weights are one vec4, then 16
+//     vec4 fmas, k in order, into each token's 4 range sums — 64
+//     multiply-adds from 8 reads of workgroup memory. Each
 //     token's range sums and totals are named vec4s, 8 of them, 32
 //     accumulators: the 4 × 4 micro-tile llama.cpp's and MLC's WebGPU
 //     kernels hold, never an array indexed by loop counters, which the
@@ -92,19 +94,19 @@ namespace bllm::kernels {
 //     range's last group each total adds its range sum, componentwise, and
 //     the range sum restarts from zero, so each output's order of addition
 //     is decode's.
-//     Before each step's products the tile is staged in workgroup memory,
-//     k-major, so those reads are whole vec4s (SIMD.2): the 64 rows' groups
-//     decoded, row slot r's weight k at component r % 4 of vec4
-//     16k + r / 4; and the τ tokens' 32 input floats, token i's input k at
-//     component i % 4 of vec4 (τ / 4)k + i / 4. The invocations stride over
+//     Before each step's products the tile is staged in workgroup memory as
+//     the decode and the input give it, along K, each invocation writing
+//     whole vec4s: a write to one component of a vector in workgroup memory
+//     may write all four, so two invocations never share one (SIMD.2). Row
+//     slot s's group, decoded, is its 8 k-quads at vec4 9s, a vec4 of
+//     padding a slot so the 16 slots a read takes fall in distinct banks;
+//     token i's 32 inputs are its 8 at vec4 8i. The invocations stride over
 //     both jobs together — 64 row decodes and 8τ input vec4s, each read
-//     coalesced along its row and written as 4 components — then a barrier,
-//     the products, a barrier. Within a read of the products the 16 output
-//     quads adjacent invocations take are 16 adjacent vec4s, and a 32-lane
-//     SIMD-group's token quads two vec4s, each broadcast, so no two lanes
-//     wait on one bank (GPU.5); the
-//     staging writes, 4 components a vec4, may, once a step. Workgroup
-//     memory: 8 KiB of weights and τ / 8 KiB of inputs, 9, 10 or 12 KiB.
+//     coalesced along its row — then a barrier, the products, a barrier.
+//     Within a read of the products the 16 lanes of a token quad take 16
+//     slots 9 vec4s apart, 8 to a bank cycle, and a 32-lane SIMD-group's
+//     two token quads two vec4s, each broadcast (GPU.5). Workgroup memory:
+//     9 KiB of weights and τ / 8 KiB of inputs, 10, 11 or 13 KiB.
 //     Workgroups are numbered token tile first, so the token tiles reading
 //     one weight tile are dispatched together and may find it in the GPU's
 //     caches (costs, below).
@@ -141,7 +143,7 @@ namespace bllm::kernels {
 //   - gated activation: the layer's gate and up weights as one product,
 //     likewise, rows gate then up; a decode set's 4 rows are 2 gate rows
 //     and the same 2 of up, a prefill tile's 64 outputs 32 and the same 32,
-//     staged so output quad c holds gate rows 2c and 2c + 1 and the same up
+//     staged so lane c's slots hold gate rows 2c and 2c + 1 and the same up
 //     rows, so the invocation that finishes an output holds both values, and writes
 //     activation(gate) × up — SiLU for Qwen3 and Llama 3.2, GELU's tanh
 //     form for Gemma 3, as the model description states — never gate or up
@@ -229,7 +231,8 @@ namespace bllm::kernels {
 //     memory, and 2 barriers a step of 32 along K — 64 for Qwen3's
 //     1,024-wide inputs — and the registers an invocation holds: 32
 //     accumulators, the range sum and total of its 16 outputs that batch
-//     invariance asks, and 8 operand floats, about 40 values; a kernel free
+//     invariance asks, and a k-quad's 32 operand floats, about 64 values,
+//     all at constant indices; a kernel free
 //     to add in its own order would keep the 16 totals alone, and more
 //     registers can mean fewer resident workgroups (GPU.3). Each input
 //     float is loaded once an output tile: MACs / 64 loads, 14 GB of f32
@@ -273,9 +276,9 @@ namespace bllm::kernels {
 // counters, took each launch of a 32-token step 13.7 to 16 times as long
 // as the 16-token tile's 2 × 8 took a 16-token step's, for twice the
 // tokens (docs/research/2026-10-07-forward-pass-profile.md) (GPU.3).
-// Optimization (practice): the staged tiles are k-major, so each k of the
-// products is 2 vec4 reads, where 4 tokens and 4 outputs read as scalars
-// would be 8 (SIMD.2, GPU.5).
+// Optimization (practice): the staged tiles are read as whole vec4s along
+// K, 8 for a k-quad's 64 multiply-adds, where 4 tokens and 4 outputs read
+// as scalars would be 32 (SIMD.2, GPU.5).
 // Optimization (practice): one order of addition for both forms, fixed by
 // K, so a token's projections do not depend on its step — the fixed split
 // Thinking Machines' batch-invariant kernels use (GDSA.2).
@@ -348,7 +351,7 @@ namespace bllm::kernels {
 //     GPU.6  Batch tiny GPU work — fused weights, fewer launches.
 //     GPU.3  Treat occupancy as latency-hiding budget — 32 accumulators an
 //            invocation, named, not 64 in arrays.
-//     SIMD.2 Lay out data so vector loads are linear — the k-major tiles.
+//     SIMD.2 Lay out data so vector loads are linear — whole vec4s along K.
 
 // What a product writes.
 enum class Epilogue {
