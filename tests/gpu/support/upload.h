@@ -63,8 +63,9 @@ inline Model load(const std::string& fixture, const policy::LoadPolicy& policy =
     REQUIRE(m.index.read_string("general.architecture", name) == gguf::MetadataError::Ok);
     model::ModelDescription description;
     REQUIRE(capability::find_architecture(name)->describe(m.index, description).ok());
-    (void)residency::plan_residency(m.index, description, residency::DeviceLimits{256ull << 20, 128ull << 20, 256},
-                                    policy, m.plan);
+    const residency::PlanResult planned = residency::plan_residency(
+        m.index, description, residency::DeviceLimits{256ull << 20, 128ull << 20, 256}, policy, m.plan);
+    REQUIRE_MESSAGE(planned.ok(), planned.subject);
     return m;
 }
 
