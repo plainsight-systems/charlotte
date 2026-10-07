@@ -6,8 +6,9 @@
 // prefix; load a cached model, which the worker streams through the module
 // itself (load.js); generate from a rendered prompt and the turn's policy;
 // and cancel, which stops a load or a generation by naming its request. Text
-// comes back one message per token, and a load's progress one message a
-// chunk (WASM.2).
+// comes back one message per piece the reply completes, and a load's progress
+// one message a chunk (WASM.2). A failure's code, where the runtime gives one,
+// crosses with its message, so the page can act on it by name.
 //
 // A plain Web Worker, deliberately: it needs no SharedArrayBuffer, so it works
 // on GitHub Pages, which cannot set the COOP/COEP headers that cross-origin

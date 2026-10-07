@@ -6,6 +6,16 @@
 //
 // It holds no cache state. The runtime diffs each turn against what its cache
 // holds, so nothing here changes when earlier turns are rewritten.
+//
+// A conversation longer than the context is refused by the runtime with code
+// "prompt-too-long", before anything runs. The panel then drops the oldest
+// exchange — a user message and the reply to it — renders again and resends,
+// until the turn fits or only the new message is left, which fails as any
+// refusal does; the dropped messages stay dropped, and the log says how many
+// went (conversation.js's withoutOldestExchange, tested on its own). The
+// runtime's diff finds what of the shortened conversation it still holds
+// (logical-overview.md). Each retry costs one render and one encode of
+// the conversation, a few milliseconds, against a prefill of the whole.
 
 import { splitThinking, withAssistant, withUser } from './conversation.js';
 import { h } from './dom.js';

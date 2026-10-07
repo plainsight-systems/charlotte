@@ -8,7 +8,19 @@
 // view kept (WASM.1), and finishes. A diagnostic module then checks every
 // byte the same way, through the same handle; the clean module has no check
 // (`canCheck`). The handle is closed however the load ends, so the file is
-// unlocked for the page to read again.
+// unlocked for the page to read again. Preflight and load carry the model's
+// load policy, written as the module reads it (src/wasm/bindings.cpp): a
+// field unset as its stand-in, the stop texts NUL-terminated in one buffer.
+//
+// generate encodes the prompt as UTF-8 into the module's memory, calls
+// bllm_generate, and frees the bytes once the call returns, the module
+// having encoded them; each piece of text arrives through bllmOnText with the
+// call's id, read from the module's memory at once, and goes to onText; the
+// turn's answer resolves the promise, or its failure rejects it, carrying the
+// module's code. One turn at a time, as the module allows. cancel names a
+// generate's request: the runtime keeps the call id each request was given,
+// and asks the module to end that turn; a request that is not running is
+// answered false.
 
 import createModule from './charlotte.mjs';
 import { streamFile } from './load.js';

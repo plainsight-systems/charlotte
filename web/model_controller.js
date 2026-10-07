@@ -5,6 +5,8 @@
 //
 // A model already in the cache is checked from its copy, not the network,
 // and a fresh download is read back from the cache before it is offered.
+// Preflight and load carry the model's load policy, the same at both
+// (web/protocol.js).
 
 import { cacheKey, downloadModel } from './download.js';
 import { confirmDuplicates } from './duplicates.js';

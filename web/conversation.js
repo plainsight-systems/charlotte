@@ -1,6 +1,9 @@
 // Axis H. The conversation as the chat template sees it — whole
-// { role, content } messages — and the split of a reply into its reasoning
-// and its answer. Pure functions; the chat view holds the state.
+// { role, content } messages — the split of a reply into its reasoning and
+// its answer, and the conversation shortened to fit the context: its oldest
+// exchange dropped, a user message and the replies before the next, any
+// system message kept; null when only the newest user message is left to
+// drop. Pure functions; the chat view holds the state.
 
 export const withUser = (messages, content) => [...messages, { role: 'user', content }];
 

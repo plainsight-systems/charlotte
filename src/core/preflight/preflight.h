@@ -2,14 +2,17 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "core/gguf/byte_source.h"
 #include "core/gguf/index.h"
 #include "core/policy/policy.h"
 #include "core/residency/plan.h"
+#include "core/tokenizer/tokenizer.h"
 
 namespace bllm::preflight {
 
@@ -123,6 +126,16 @@ struct Verdict {
 [[nodiscard]] std::string plan_load(const gguf::TensorIndex& index, const residency::DeviceLimits& limits,
                                     const policy::LoadPolicy& policy, model::ModelDescription& description,
                                     residency::ResidencyPlan& plan);
+
+// What a load uses to tokenize: the algorithm the file's
+// tokenizer.ggml.model names and the pre-tokenizer its tokenizer.ggml.pre
+// names, found in the capability table, loaded from the bytes the index was
+// read from — the vocabulary and merges lie in the header, which the load is
+// given (tokenizer.h's LoadFn). Returns what stops it, worded as preflight's
+// Run blocker would be, or the load's own failure named; an empty string,
+// and `out` set, otherwise.
+[[nodiscard]] std::string load_tokenizer(gguf::ByteSource& source, const gguf::TensorIndex& index,
+                                         std::unique_ptr<tokenizer::Tokenizer>& out);
 
 [[nodiscard]] Verdict preflight(const gguf::TensorIndex& index,
                                 const residency::DeviceLimits& limits,

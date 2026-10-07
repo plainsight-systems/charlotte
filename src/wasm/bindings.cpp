@@ -10,7 +10,13 @@
 //     released, so the model loads onto the device that was checked;
 //   - a load: the index read from the prefix begin was given, the plan made
 //     for it, the Upload carrying it out (residency/upload.h), and one chunk
-//     buffer, allocated at begin and reused for every chunk (WASM.1).
+//     buffer, allocated at begin and reused for every chunk (WASM.1); and,
+//     made at begin from the same prefix, the description, the tokenizer and
+//     the stop set;
+//   - the loaded model: its Upload, which owns the weights' buffers, and the
+//     generator over it (runtime/generator.h), which owns the tokenizer, the
+//     program and the cache; the generator is released first, since its
+//     program borrows the Upload.
 // Every decision about that state is core's; this file only holds it and
 // translates.
 //
@@ -18,23 +24,71 @@
 // places JavaScript and C++ meet. The crossings are preflight a header prefix;
 // begin a load, load a chunk of the file, and finish the load (web/load.js);
 // generate from a rendered prompt and the turn's policy; and cancel. Text goes
-// back one crossing per token (WASM.2).
+// back one crossing per piece the reply completes (WASM.2).
+//
+// The model's load policy (policy/policy.h) crosses with preflight and with
+// begin, the same at both, so Fit is judged against the plan the load makes:
+// the cache precision as its index in CachePrecision, or −1; the memory
+// budget as a double, an exact integer, or NaN; the rollback reserve, or
+// 2^32 − 1; and the stop texts as one buffer, each text followed by a NUL,
+// which no token's text holds. −1, NaN and 2^32 − 1 stand for the field
+// unset — an unmeasured model's, which runs on the default.
+//
+//   bllm_preflight(request, prefix, prefix_length, file_size, limits...,
+//                  policy...)
+//     Reads the index from `prefix` and answers with how far this build
+//     takes the model, judged under the model's load policy, or with the
+//     bytes the reader still needs.
 //
 //   bllm_load_begin(request, prefix, prefix_length, file_size, confirmed,
-//                   confirmed_count)
+//                   confirmed_count, max_chunk, policy...)
 //     Reads the index from `prefix` — the bytes preflight read — describes
-//     the model, plans it for the kept device, and begins the Upload with the
+//     the model, plans it for the kept device, loads its tokenizer from the
+//     prefix, where its vocabulary and merges lie (preflight.h's
+//     load_tokenizer), and resolves its stop set from the file and the
+//     policy's stop texts (runtime/stops.h); then begins the Upload with the
 //     duplicates the page confirmed (web/duplicates.js). Answers once the
 //     device holds the buffers: the chunk buffer's address and size, or the
-//     failure, named.
+//     failure, named. A model already loaded is released first — its
+//     generator, so a turn running finishes cancelled, then its buffers — so
+//     two models are never on the device together.
 //   bllm_load_chunk(request, file_offset, length)
 //     The page has copied `length` bytes at `file_offset` into the chunk
 //     buffer. Answers when the page may send the next (residency/upload.h).
 //   bllm_load_finish(request)
-//     Answers once every write has completed, shown by the witness, or with
-//     the failure that stopped them.
+//     Once every write has completed, shown by the witness: builds the
+//     architecture's graph over the plan, builds its program — every
+//     pipeline compiled together, asynchronously (kernels/program.h) —
+//     reading back the draw's record, and makes the cache at the context
+//     offered and the generator. Answers then, with the context offered, or
+//     with the failure that stopped any of it, named.
 // A load already begun is refused, by name, until it finishes or fails; a
 // chunk or finish without a load is refused the same way.
+//
+//   bllm_generate(request, text, text_length, sampled, temperature, top_k,
+//                 top_p, min_p, seed, max_tokens)
+//     Starts a turn over `text`, the rendered conversation as UTF-8 bytes in
+//     the module's memory, which the page frees once the call returns: the
+//     generator encodes them before it does. Sampling settings are the
+//     model's for the turn's mode when `sampled` is 1, else the defaults;
+//     the seed is a double, an exact integer below 2^53; max_tokens 2^32 − 1
+//     asks for no limit but the context. A refusal answers at once, named:
+//     no model loaded, a turn running, text that does not encode, a prompt
+//     longer than the context — with code "prompt-too-long" and both counts,
+//     so the page can drop its oldest messages and render again
+//     (logical-overview.md) — or a setting out of range. Otherwise each
+//     piece of text goes back through bllm_text(request, pointer, length), a
+//     view of the module's memory valid for that call, and the turn answers
+//     once: its stop reason — "stop", "limit", "context" or "cancelled" —
+//     the reply's tokens, the prompt's, and how many of those the cache
+//     already held; or its failure, named: the draw's logits not finite, a
+//     step's failure with WebGPU's message, or the device lost, after which
+//     every turn is refused.
+//   bllm_cancel(request)
+//     Ends the turn `request` started, at its next report; its answer then
+//     comes as any turn's, stop reason "cancelled". Answers at once whether
+//     that turn was running.
+// One turn at a time: the page waits for a turn's answer before the next.
 //
 // A diagnostic build adds the check of a finished load, the same three
 // crossings over the file streamed a second time (residency/upload_check.h);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -82,5 +83,31 @@ extern const Algorithm kByteLevel;
 // a marker naming the character. `out` is left untouched unless it succeeds.
 [[nodiscard]] LoadResult load_byte_level_bpe(gguf::ByteSource& source, const gguf::TensorIndex& index,
                                              const PreTokenizer& pretokenizer, ByteLevelBpe& out);
+
+// The algorithm as a Tokenizer (tokenizer.h): the encoder and its piece
+// cache, kept for the tokenizer's life, so a turn's encode of the whole
+// conversation finds the pieces earlier turns merged. Warm, that cache took
+// Qwen3's encode of the bench corpus, 428 KB, from 15.7 ms to 11.1 ms and
+// Llama 3.2's from 20.9 to 11.7 (piece_cache.h): about 26 ns a byte, so a
+// conversation of Qwen3's whole context, near 160 KB, encodes in about 4 ms
+// a turn.
+class ByteLevelTokenizer final : public Tokenizer {
+public:
+    [[nodiscard]] const Vocabulary& vocabulary() const noexcept override;
+    [[nodiscard]] EncodeError encode(std::string_view text, std::vector<TokenId>& out) override;
+    void decode(TokenId token, std::string& out) const override;
+
+private:
+    friend LoadResult load_byte_level_tokenizer(gguf::ByteSource& source, const gguf::TensorIndex& index,
+                                                const PreTokenizer* pretokenizer, std::unique_ptr<Tokenizer>& out);
+    ByteLevelBpe bpe_;
+    PieceCache cache_;
+};
+
+// kByteLevel's load (tokenizer.h's LoadFn). Precondition: `pretokenizer` is
+// not null, the algorithm requiring one.
+[[nodiscard]] LoadResult load_byte_level_tokenizer(gguf::ByteSource& source, const gguf::TensorIndex& index,
+                                                   const PreTokenizer* pretokenizer,
+                                                   std::unique_ptr<Tokenizer>& out);
 
 }  // namespace bllm::tokenizer::bpe

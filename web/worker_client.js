@@ -1,6 +1,8 @@
 import { Notice, Reply } from './protocol.js';
 
-// A request the worker could not complete. `stage` names where it failed.
+// A request the worker could not complete. `stage` names where it failed;
+// `code`, where the runtime gives one, what the page can act on, as
+// "prompt-too-long".
 export class WorkerError extends Error {
   constructor({ stage, message }) {
     super(message);

@@ -1,5 +1,5 @@
 {
-  "$comment": "Axis J: the models offered. An entry with a `policy` has been measured and runs with it; one without runs on the defaults and is shown as unmeasured. Each entry: id, name, url, sizeBytes, sha256, and optionally policy (cache precision, memory budget, sampling settings per mode, template variables). Contract 12 in docs/architecture/file-mapping.md; the C++ side is src/core/policy/policy.h.",
+  "$comment": "Axis J: the models offered. An entry with a `policy` has been measured and runs with it; one without runs on the defaults and is shown as unmeasured. Each entry: id, name, url, sizeBytes, sha256, and optionally policy: load (cachePrecision, memoryBudget, rollbackReserve, stop — the stop tokens' texts beyond the file's), sampling per mode ({ temperature, topK, topP, minP }), and template variables. Contract 12 in docs/architecture/file-mapping.md; the C++ side is src/core/policy/policy.h.",
   "models": [
     {
       "id": "qwen3-0.6b-q4_0",
