@@ -5,6 +5,11 @@
    "name": "unicode/NormalizationTest-16.0.0.txt",
    "url": "https://www.unicode.org/Public/16.0.0/ucd/NormalizationTest.txt",
    "sha256": "d811971453e7075e1ad56fb1b301eece5aa80757b81f6156e74a1bfb3ae5ceb1"
+  },
+  {
+   "name": "models/qwen3-0.6b-q4_0.gguf",
+   "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf",
+   "sha256": "33bcc57074ec7b6eada5a90651ee546ec0c2b271002c22baf9f1b2dd1e8f75cb"
   }
  ]
 }

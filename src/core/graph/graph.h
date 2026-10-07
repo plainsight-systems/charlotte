@@ -136,8 +136,14 @@ namespace bllm::graph {
 //   - Bytes, a decode step at position p: the weights once, 376 MB
 //     (kernels/matmul/matmul.h); the cache, 4 KiB a position a layer — 8
 //     key-value heads of 128 F16 keys and values — 112 KiB a position, read
-//     by attention; activations under 1 MiB. At 400 GB/s, 0.94 ms + 0.29 µs
-//     × p: 2.1 ms at p = 4,096, before the dispatches.
+//     by attention. From device memory at 400 GB/s, 0.94 ms + 0.29 µs × p:
+//     2.1 ms at p = 4,096, before the dispatches. The activations are a
+//     working set under 1 MiB, but read many times over: each matrix
+//     product's invocations read its whole input again, 15 MiB a layer and
+//     148 MiB for the head — 568 MiB of storage reads a step, from the GPU's
+//     caches (matmul.h) — and the norms move 1.1 MiB (norm.h). The floor
+//     above prices device memory alone; those cached reads are counted, not
+//     priced in it.
 //   - A 512-token prefill step: about 32 ms of the products' arithmetic at
 //     the M3 Max's peak (matmul.h), 1.46 ms of norms (norm.h), attention as
 //     attention.h counts it; the same dispatches.
