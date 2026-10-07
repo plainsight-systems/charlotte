@@ -56,6 +56,8 @@ TEST_CASE("a product is a decode launch and a prefill launch a tile width; the h
         CHECK(launches[i + 1].entry_point == "prefill_write");
         CHECK(launches[i + 1].rows_per_tile == tiles[i].first);
         CHECK(launches[i + 1].tokens == tiles[i].second);
+        // A 4-token × 4-output micro-tile an invocation: 4 a tile's token.
+        CHECK(launches[i + 1].workgroup_size == 4 * tiles[i].first);
     }
     // Decode: 3,072 rows, 8 a workgroup. Prefill: 512 tokens in 16 tiles of
     // 32, 9 tokens in one of 16, 8 in one of 8; 48 output tiles of 64.

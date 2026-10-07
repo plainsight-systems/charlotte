@@ -27,6 +27,10 @@ struct Tile {
 constexpr std::array<Tile, 3> kTiles{{{8, {2, 8}}, {16, {9, 16}}, {32, {17, UINT32_MAX}}}};
 constexpr std::uint32_t kTileOutputs = 64;      // and outputs
 constexpr std::uint32_t kTilePairs = 32;        // or gate-and-up pairs
+// A prefill invocation's micro-tile: kMicro tokens × kMicro outputs, so a
+// tile of τ tokens × kTileOutputs takes (τ / kMicro) × (kTileOutputs /
+// kMicro) invocations, 4τ (matmul.h, prefill).
+constexpr std::uint32_t kMicro = 4;
 
 // Binding 1, as matmul.wgsl's Matmul lays it out: for each member its first
 // word in the binding, its blocks, its first output row and its rows.
@@ -89,17 +93,18 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     out.push_back(std::move(decode));
 
     // Prefill: a launch a tile width, each workgroup a token tile an output
-    // tile.
+    // tile, of a micro-tile an invocation.
     const std::uint32_t out_tiles = gated ? ceil_div(rows / 2, kTilePairs) : ceil_div(rows, kTileOutputs);
     for (const auto [tile, steps] : kTiles) {
         std::vector<Override> with_tile = overrides;
         with_tile.push_back({"tile_tokens", static_cast<double>(tile)});
+        const std::uint32_t invocations = (tile / kMicro) * (kTileOutputs / kMicro);
         Launch prefill{shaders::matmul,
                        format,
                        std::vector<std::byte>(bytes.begin(), bytes.end()),
                        bindings,
-                       out_tiles * kWorkgroupSize / tile,
-                       kWorkgroupSize,
+                       out_tiles * invocations / tile,
+                       invocations,
                        Rows::EveryToken,
                        std::move(with_tile)};
         prefill.entry_point = entry.prefill;
