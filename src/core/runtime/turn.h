@@ -122,6 +122,7 @@ struct Planned {
 
 // What becomes of a draw.
 enum class Draw {
+    None,       // the step asked for no logits: nothing was drawn
     Emit,       // accepted and emitted
     Stop,       // accepted, not emitted; the turn has ended
     Discard,    // neither: the turn ended before it
@@ -140,7 +141,8 @@ public:
 
     // The earliest outstanding step reported done: for one that asked for
     // logits, `record` is its draw, and the result says what becomes of it;
-    // `stop` is whether its token is a stop token. Precondition: a step is
+    // `stop` is whether its token is a stop token. For one that did not, the
+    // result is None. Precondition: a step is
     // outstanding; `record` is given exactly when that step asked for logits.
     Draw report(const std::optional<sampler::SampledRecord>& record, bool stop) noexcept;
 
@@ -175,6 +177,7 @@ private:
     std::uint32_t prompt_;
     std::uint32_t capacity_;
     std::uint32_t max_tokens_;
+    std::uint32_t blocks_;           // prefill blocks; the last, and every step after, asks for logits
     std::uint32_t prefilled_ = 0;    // prompt tokens planned past `cached`
     std::uint32_t decodes_ = 0;      // decode steps planned
     std::uint32_t drawn_ = 0;        // draws reported, whatever became of them
