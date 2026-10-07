@@ -20,6 +20,19 @@
 // Every decision about that state is core's; this file only holds it and
 // translates.
 //
+// Diagnostic builds only, for a page served with ?profile from the
+// diagnostic site (web/dev/step_profile.js), never the deployed one's:
+//   bllm_run_profile_check()
+//     The self-check, on a device asked for timestamp queries
+//     (gpu/device.h's DiagnosticRequest); the failure named when the
+//     adapter grants none.
+//   bllm_observe_steps(on)
+//     Sets or clears the loaded runtime's step observer
+//     (runtime/runtime.h), between turns. Each step's report crosses as
+//     bllm_step_times(prefill, position, tokens, begin_ns, end_ns), the GPU
+//     times as doubles, exact below 2^53 ns, about 104 days: one crossing a
+//     step, the profile's whole cost at the boundary (WASM.2).
+//
 // Contract 11, the boundary: this file and web/worker.js are the only two
 // places JavaScript and C++ meet. The crossings are preflight a header prefix;
 // begin a load, load a chunk of the file, and finish the load (web/load.js);

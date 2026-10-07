@@ -68,6 +68,20 @@ namespace bllm::runtime {
 //     turn Cancelled, its callback called. The upload the program borrows
 //     outlives the runtime (I.11).
 //
+// Diagnostic builds only (core/diagnostics.h, TLM.6): observe_steps sets a
+// step observer, or clears it, between turns. While one is set every step
+// runs profiled — kernels/program.h's run_profiled, through all its
+// launches — timed by the GPU at its one pass's beginning and end and
+// reading back its record as run() does, so the turn's tokens are the same.
+// As each step reports, before the turn's work on it, the observer is
+// called with the step's kind, position and tokens and its two GPU times.
+// The runtime reads no clock: a caller wanting the CPU's time of each
+// report reads its own clock in the observer, and the two clocks are never
+// subtracted (TLM.11). What it perturbs: each step also writes two
+// timestamps and resolves and reads back two queries, within its one
+// submit. The clean build has none of it, which
+// tools/check_diagnostics_excluded.sh checks.
+//
 // What it costs, counted:
 //   - A decoded token, on the CPU: one report from the program, the turn's
 //     constant work, at most kMaxStops comparisons, one run of the program —
@@ -99,6 +113,8 @@ namespace bllm::runtime {
 //     reply may draw, checked at least 1; the context offered bounds it
 //     first. LoadPolicy carries the stop texts the model's generation config
 //     lists beyond its file's (stops.h); none, for an unmeasured model.
+//   - kernels/program.h: in diagnostic builds, its launch count, the
+//     profiled step's bound.
 //   - sampler/sampler.h: the cache after a step queued behind a turn's end
 //     keeps each position whose input token is accepted (turn.h), the stop
 //     token's among them, where it said the queued step's position is
@@ -142,6 +158,10 @@ namespace bllm::runtime {
 //   C++ performance guidelines
 //     GPU.7  Pipeline CPU and GPU work — two steps in flight; the next run
 //            before the CPU's work on a token.
+//     TLM.6  Label measurement modes — the step observer is diagnostic
+//            builds' alone.
+//     TLM.11 Never align clocks without a calibrated pair — GPU times out,
+//            the caller's CPU clock its own.
 //     GPU.1  Keep data on the device — the token is fed on the GPU, and only
 //            its 16-byte record is read back.
 //     MEM.9  Allocate at init — every buffer the turn touches, at

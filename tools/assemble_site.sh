@@ -5,6 +5,9 @@
 #
 #   assemble_site.sh         the deployable site, in dist/, without web/dev/
 #   assemble_site.sh --dev   a development site, in dist-dev/, with web/dev/
+#   assemble_site.sh --diag  a diagnostic site, in dist-diag/, with web/dev/
+#                            and the wasm-diag module, for ?profile
+#                            (web/dev/step_profile.js); never deployed
 #
 # tools/check_site.sh proves dist/ carries no development tooling.
 set -eu
