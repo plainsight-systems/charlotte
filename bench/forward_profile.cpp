@@ -29,7 +29,10 @@
 //      the products change form between decode and prefill, and with the
 //      tile a step's token count selects (kernels/matmul/matmul.h).
 //   3. Pipelined decode: 128 whole steps fed on the GPU, two outstanding, as
-//      the runtime runs them (runtime/runtime.h), each profiled, so the run
+//      the runtime runs them (runtime/runtime.h) — positions 64 to 191, each
+//      with the default sampling applied as step_at's — each profiled, and
+//      their mean time in a pass reported, the page's step profile's
+//      reference (web/dev/step_profile.js). So the run
 //      is timed as it runs: the time outside the steps' passes on the GPU's
 //      own clock — the last step's end less the first's beginning, less the
 //      passes' times — which holds each step's query resolve and copies, the
@@ -659,10 +662,9 @@ void profile_pipeline(WGPUInstance instance, Loaded& l) {
     } p{&program, all};
     p.origin = std::chrono::steady_clock::now();
     const auto submit = [](Pipeline& q) {
-        kernels::Step step{};
-        step.position = kPrompt + q.submitted;
-        step.tokens = 1;
-        step.logits = 1;
+        // As the runtime's: its sampling applied, so the draw does a turn's
+        // work, and the token fed on the GPU.
+        kernels::Step step = step_at(kPrompt + q.submitted, 1);
         step.fed = 1;
         ++q.submitted;
         q.program->run_profiled(

@@ -16,10 +16,12 @@
 // summarize(steps) — for the turn's decode steps, all but the first two,
 // which fill the pipeline. A decode step's time grows with its position, so
 // its in-pass time is given by position, never as one median over a turn:
-//   reference    the median in-pass time of steps at positions 64 to 191,
-//                the native profiler's pipelined run's — 128 steps from 64,
-//                a step's sampling as the runtime's — or null when the turn
-//                did not reach them
+//   reference    the mean in-pass time of steps at positions 64 to 191, as
+//                the native profiler's pipelined run reports its 128 steps
+//                from 64, each sampled as the runtime's; null unless the
+//                turn's decode steps cover all 128 — a prompt under 63
+//                tokens, the first two decode steps left out, and a reply
+//                reaching 191
 //   byPosition   for each 128-position bucket reached, its steps and their
 //                median in-pass time
 //   decodeSteps  how many were summarized
@@ -74,6 +76,7 @@ export function summarize(steps) {
   const decode = steps.filter((s) => !s.prefill).slice(FILLING);
 
   const reached = decode.filter((s) => s.position >= REFERENCE_FIRST && s.position <= REFERENCE_LAST);
+  const covered = reached.length === REFERENCE_LAST - REFERENCE_FIRST + 1;
   const buckets = new Map();
   for (const step of decode) {
     const from = Math.floor(step.position / BUCKET) * BUCKET;
@@ -103,7 +106,7 @@ export function summarize(steps) {
 
   return {
     decodeSteps: decode.length,
-    reference: median(reached.map(inPassMs)),
+    reference: covered ? reached.reduce((sum, s) => sum + inPassMs(s), 0) / reached.length : null,
     byPosition,
     periodMs: median(periods),
     outsidePct: pairedPeriods > 0 ? 100 * (1 - pairedInPass / pairedPeriods) : null,

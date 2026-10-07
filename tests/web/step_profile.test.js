@@ -16,20 +16,25 @@ function turn({ prompt, decodes, pass, period, report }) {
   return steps;
 }
 
-test('the reference is the in-pass median of positions 64 to 191, the pipeline\'s first two steps left out', () => {
+test('the reference is the in-pass mean of positions 64 to 191, the pipeline\'s first two steps left out', () => {
   // In-pass time grows with position; only 64 to 191 count.
   const steps = turn({ prompt: 20, decodes: 300, pass: (p) => 2 + p / 1000, period: 4, report: 4 });
   const s = summarize(steps);
   assert.equal(s.decodeSteps, 298);
-  assert.equal(s.reference, 2 + 127.5 / 1000);
+  assert.ok(Math.abs(s.reference - (2 + 127.5 / 1000)) < 1e-12);
   assert.deepEqual(s.byPosition.map((b) => [b.from, b.steps]), [[0, 106], [128, 128], [256, 64]]);
   assert.deepEqual(s.prefill, [{ tokens: 20, inPassMs: 20 }]);
 });
 
-test('a turn that never reaches position 64 has no reference', () => {
+test('a turn whose decode steps do not cover all of 64 to 191 has no reference', () => {
   const s = summarize(turn({ prompt: 10, decodes: 20, pass: () => 3, period: 4, report: 4 }));
   assert.equal(s.reference, null);
   assert.equal(s.decodeSteps, 18);
+  // A prompt of 63 leaves 64 and 65 to fill the pipeline: not covered.
+  assert.equal(summarize(turn({ prompt: 63, decodes: 200, pass: () => 3, period: 4, report: 4 })).reference, null);
+  // A reply that stops at 190: not covered.
+  assert.equal(summarize(turn({ prompt: 20, decodes: 171, pass: () => 3, period: 4, report: 4 })).reference, null);
+  assert.equal(summarize(turn({ prompt: 20, decodes: 172, pass: () => 3, period: 4, report: 4 })).reference, 3);
 });
 
 test('period, the GPU\'s share outside passes, and the reports\' interval', () => {
