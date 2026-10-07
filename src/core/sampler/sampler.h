@@ -26,16 +26,19 @@ namespace bllm::sampler {
 // The draw, one workgroup of 64 invocations, over the candidates sorted
 // largest first, in llama.cpp's order (common.h's default chain, at the
 // commit tools/make_reference_logits.sh pins). Invocation i works candidate
-// i — its exponentials and its min-p test, side by side — and invocation 0
-// alone takes the sums and running sums, in candidate order, so the draw
-// does not depend on how the other invocations are scheduled:
+// i — its two exponentials and its min-p test — and the last invocation
+// Philox, all side by side; one barrier; then invocation 0 alone takes the
+// sums and running sums, in candidate order, so the draw does not depend on
+// how the others are scheduled:
 //   1. top-k: the first top_k candidates.
-//   2. top-p: below 1, their weights exp(logit − first's) at temperature 1,
-//      and the shortest prefix whose running sum reaches top_p × their total
-//      — the softmax's prefix, without dividing each weight — one candidate
-//      at least; at 1, nothing — as llama.cpp's top-p returns at once for p of
-//      1 or more — since an f32 softmax would round a far tail to zero and
-//      drop it.
+//   2. top-p: below 1, their softmax at temperature 1 in f32 — each weight
+//      exp(logit − first's) divided by their total, as llama.cpp's does —
+//      and the shortest prefix whose probabilities, summed in order, reach
+//      top_p, one candidate at least; at 1, nothing — as llama.cpp's top-p
+//      returns at once for p of 1 or more — since an f32 softmax would round
+//      a far tail to zero and drop it. Dividing first, not comparing a
+//      running weight with top_p × the total, keeps llama.cpp's survivors:
+//      the two round differently in f32 near the edge.
 //   3. min-p: of those, each whose logit is at least the first's + ln
 //      min_p.
 //   4. temperature: zero draws the first candidate; otherwise each
@@ -120,15 +123,20 @@ namespace bllm::sampler {
 //     runtime's tests can hold it.
 //
 // What it costs, a sampled step: the draw is one launch, 1.5 µs, over 512
-// bytes, writing 16. Each invocation computes at most two exponentials, its
-// candidate's at temperature 1 and at the turn's, side by side; invocation 0
-// then takes four passes of at most 64 dependent adds — top-p's total and
-// its running sum, the draw's total and its running sum — with Philox's 10
-// rounds and ln min_p beside them, between 5 barriers. At an estimated 4
-// cycles a dependent add, 20 an exponential and 50 a barrier, on cores near
-// 1.4 GHz — estimates, to be calibrated as the selection's stages are —
-// about 1,300 cycles, near 1 µs. With the selection, about 14 µs
-// (kernels/topk/topk.h), under 1% of a decode step.
+// bytes, writing 16. Side by side, each invocation loads its candidate and
+// the first, from device memory, computes two exponentials, ln min_p and
+// its min-p test, and writes them to workgroup memory; the last also runs
+// Philox's 10 rounds. One barrier, the only point where one invocation reads
+// what another wrote. Then invocation 0 runs three loops of at most 64
+// iterations, each a dependent add: top-p's total; its running sum of
+// probabilities, each weight divided by that total off the add's chain,
+// with the draw's total over the survivors carried beside it; and the
+// draw's running sum to u × that total. Estimated, to be calibrated as the
+// selection's stages are, on cores near 1.4 GHz: about 400 cycles for the
+// loads, 40 for the exponentials, 50 for the barrier, and 8 an iteration —
+// a workgroup-memory read, a compare, the add's latency, the loop's control
+// — 1,536 for the 192: about 2,000 cycles, near 1.4 µs. With the selection,
+// about 15 µs (kernels/topk/topk.h), under 1% of a decode step.
 // The readback copies 16 bytes and maps them while the next step runs, so a
 // decode step's critical path no longer holds the map's round trip, 0.5 ms
 // median and 0.8 ms at p95 on the target. On the CPU, a token costs one
