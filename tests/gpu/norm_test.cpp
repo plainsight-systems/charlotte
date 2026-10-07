@@ -35,10 +35,8 @@ constexpr float kEpsilon = 1e-6f;
 // from the fixture's activations. Working buffers are written only by
 // kernels.
 constexpr std::string_view kCopy = R"(
-struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
 struct Copy { vec4s: u32 }
 override workgroup_size: u32;
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> copy: Copy;
 @group(0) @binding(2) var<storage, read> copy_from: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> copy_to: array<vec4<f32>>;

@@ -17,10 +17,8 @@ namespace bllm::testing {
 // Test-only: fills a buffer with deterministic pseudo-random values in
 // [−amplitude, amplitude): f32, or pairs of halves.
 inline constexpr std::string_view kFill = R"(
-struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
 struct Fill { seed: u32, count: u32, amplitude: f32, halves: u32 }
 override workgroup_size: u32;
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> fill: Fill;
 @group(0) @binding(2) var<storage, read_write> out: array<u32>;
 fn hash(x: u32) -> u32 {

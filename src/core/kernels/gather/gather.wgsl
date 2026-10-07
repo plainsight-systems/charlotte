@@ -3,12 +3,6 @@
 // of a step's row: it decodes its token's group, scales it, and writes the
 // group's 32 floats into the hidden buffer.
 
-struct Step {
-    position: u32,
-    tokens: u32,
-    ids: array<vec4<u32>, 128>,
-}
-
 struct Gather {
     first_row: u32,
     row_count: u32,
@@ -21,7 +15,6 @@ struct Gather {
 // default only lets a tool that reads this file alone size what uses it.
 override workgroup_size: u32 = 64;
 
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> gather: Gather;
 @group(0) @binding(2) var<storage, read> weights: array<u32>;
 @group(0) @binding(3) var<storage, read_write> hidden: array<vec4<f32>>;

@@ -131,13 +131,15 @@ inline constexpr std::uint32_t kStepBinding = 0;
 inline constexpr std::uint32_t kLaunchBinding = 1;
 inline constexpr std::uint32_t kFirstWeightBinding = 2;
 
-// Binding 0, a uniform buffer. As WGSL declares it:
+// Binding 0, a uniform buffer, declared once in WGSL, kernels/step.wgsl,
+// which the program composes before every kernel, as it composes a format's
+// unpack (program.h):
 //
-//   struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
+//   struct Step { position: u32, tokens: u32, logits: u32, ids: array<vec4<u32>, 128> }
 //
-// with two words before `ids`, which a uniform array needs on a 16-byte
-// stride: the first is `logits`, which the program reads and no kernel does,
-// the second padding. Token i's identifier is ids[i / 4][i % 4]. A step
+// and one word of padding after `logits`, since a uniform array needs a
+// 16-byte stride; `logits` is the program's, read by no kernel. Token i's
+// identifier is ids[i / 4][i % 4]. A step
 // writes its 16-byte head and only the identifier words it uses: 32 bytes
 // for a decode step.
 // Optimization (browser): the identifiers ride in the uniform every launch

@@ -15,12 +15,6 @@
 // inverseSqrt, dot, select and workgroupBarrier are WGSL built-ins; reduce is
 // below.
 
-struct Step {
-    position: u32,
-    tokens: u32,
-    ids: array<vec4<u32>, 128>,
-}
-
 struct Norm {
     epsilon: f32,
 }
@@ -35,7 +29,6 @@ override post_norm: bool = false;
 // pipeline that is not given it fails to build.
 override width: u32;
 
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> norm: Norm;
 @group(0) @binding(2) var<storage, read> gain: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read> post_gain: array<vec4<f32>>;

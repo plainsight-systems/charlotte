@@ -85,6 +85,7 @@ bllm_embed_shaders(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/formats/q4_1/q4_1.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/formats/q6_k/q6_k.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/formats/q8_0/q8_0.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/step.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/gather/gather.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/matmul/matmul.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/norm/norm.wgsl"

@@ -50,10 +50,8 @@ constexpr Shape kGemma{"gemma", 4, 1, 256, model::RotaryPairing::Halves, true, f
 // Test-only: copies rows first .. first + tokens of a tensor into a working
 // buffer, so a step starts from the fixture's activations.
 constexpr std::string_view kCopy = R"(
-struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
 struct Copy { vec4s: u32, first: u32 }
 override workgroup_size: u32;
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> copy: Copy;
 @group(0) @binding(2) var<storage, read> copy_from: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> copy_to: array<vec4<f32>>;

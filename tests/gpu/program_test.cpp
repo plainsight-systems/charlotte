@@ -25,10 +25,8 @@ namespace {
 
 // Test-only: writes its 528 bytes of constants, as 33 vec4s, to `out`.
 constexpr std::string_view kWide = R"(
-struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
 struct Wide { words: array<vec4<f32>, 33> }
 override workgroup_size: u32;
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> wide: Wide;
 @group(0) @binding(2) var<storage, read_write> out: array<vec4<f32>>;
 @compute @workgroup_size(workgroup_size)
@@ -41,10 +39,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 // Test-only: writes pack(1, 2, 3, 4), the two words a format's pack returns.
 constexpr std::string_view kPacks = R"(
-struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
 struct Nothing { unused: u32 }
 override workgroup_size: u32;
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> nothing: Nothing;
 @group(0) @binding(2) var<storage, read_write> out: array<u32>;
 @compute @workgroup_size(workgroup_size)
@@ -83,11 +79,9 @@ std::vector<std::byte> wide_constants(float first) {
 // Test-only: each workgroup adds 1 (main) or 1,000 (other) to its counter,
 // so a step's counts are the workgroups each launch ran, and which entry.
 constexpr std::string_view kCounts = R"(
-struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
 struct Nothing { unused: u32 }
 override workgroup_size: u32;
 override counter: u32 = 0;
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> nothing: Nothing;
 @group(0) @binding(2) var<storage, read_write> counts: array<atomic<u32>>;
 @compute @workgroup_size(workgroup_size)

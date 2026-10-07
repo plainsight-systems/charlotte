@@ -8,6 +8,7 @@
 #include <tuple>
 #include <utility>
 
+#include "bllm/shaders_generated.h"
 #include "core/gpu/callback_mode.h"
 #include "core/gpu/userdata.h"
 #include "core/kernels/schedule.h"
@@ -370,7 +371,11 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         // Optimization (practice): each distinct kernel is composed and
         // compiled once, whatever its launches, and every pipeline is asked
         // for at once, so the browser compiles them together (WASM.7).
-        std::string source(launch.kernel);
+        // The step's declaration first, binding 0 of every kernel
+        // (step.wgsl), then the kernel, then the formats it composes with.
+        std::string source(shaders::step);
+        source += '\n';
+        source += launch.kernel;
         if (launch.format != nullptr) {
             source += '\n';
             source += launch.format->unpack_wgsl();

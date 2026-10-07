@@ -12,12 +12,6 @@
 // unpack4 is the KV cache format's (format.h); exp2, max, select, dot and
 // workgroupBarrier are WGSL built-ins.
 
-struct Step {
-    position: u32,
-    tokens: u32,
-    ids: array<vec4<u32>, 128>,
-}
-
 struct Attention {
     slots: u32,
     window: u32,
@@ -42,7 +36,6 @@ override lanes_per_query: u32 = workgroup_size / queries_per_tile;     // 64 / M
 const kChunkKeys = 256u;
 const kPartialRows = 512u;
 
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> attention: Attention;
 
 // main's bindings.

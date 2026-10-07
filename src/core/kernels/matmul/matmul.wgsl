@@ -18,12 +18,6 @@
 // unpack is the weight format's (format.h); exp, tanh-free activations and
 // workgroupBarrier as below are WGSL built-ins.
 
-struct Step {
-    position: u32,
-    tokens: u32,
-    ids: array<vec4<u32>, 128>,
-}
-
 // Each member: x its first word in the binding, y its blocks, z its first
 // output row, w its rows.
 struct Matmul {
@@ -42,7 +36,6 @@ override tile_tokens: u32 = 32;     // a prefill tile's tokens: 8, 16 or 32
 
 const kRanges = 32u;
 
-@group(0) @binding(0) var<uniform> step: Step;
 @group(0) @binding(1) var<uniform> matmul: Matmul;
 @group(0) @binding(2) var<storage, read> weights: array<u32>;
 @group(0) @binding(3) var<storage, read> input: array<vec4<f32>>;
