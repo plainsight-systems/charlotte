@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -9,6 +11,7 @@
 #include "core/preflight/preflight.h"
 #include "core/residency/routes.h"
 #include "support/gguf_fixture.h"
+#include "support/metadata_file.h"
 #include "support/model_headers.h"
 
 using namespace bllm;
@@ -23,7 +26,7 @@ Verdict preflight_fixture(const std::string& name) {
     gguf::MemoryByteSource source{bytes};
     gguf::TensorIndex index;
     REQUIRE(gguf::read_index(source, index).error == gguf::ReadError::Ok);
-    return preflight::preflight(index, residency::DeviceLimits{}, policy::LoadPolicy{});
+    return preflight::preflight(source, index, residency::DeviceLimits{}, policy::LoadPolicy{});
 }
 
 bool blocked(const Verdict& verdict, Stage stage, const std::string& detail) {
@@ -103,19 +106,27 @@ TEST_CASE("a file that names no architecture, or names it wrongly, says which") 
 }
 
 TEST_CASE("the tokenizer and the pre-tokenizer are judged separately, each by name") {
-    // gpt2 and qwen2 are both implemented: neither blocks.
+    // gpt2 and qwen2 are both implemented: neither is named unsupported. The
+    // fixture carries no vocabulary, so the tokenizer, listed, does not load.
     const auto verdict = preflight_fixture("tokenizer_named");
     CHECK(std::none_of(verdict.blockers.begin(), verdict.blockers.end(),
-                       [](const Blocker& b) { return b.detail.find("tokenizer") != std::string::npos; }));
+                       [](const Blocker& b) { return b.detail.find("not supported") != std::string::npos; }));
+    CHECK(std::any_of(verdict.blockers.begin(), verdict.blockers.end(), [](const Blocker& b) {
+        return b.stage == Stage::Run && b.detail.starts_with("tokenizer \"gpt2\" does not load from this file: ");
+    }));
     CHECK(blocked(preflight_fixture("unknown_pretokenizer"), Stage::Run,
                   "pre-tokenizer \"no-such-split\" is not supported"));
 }
 
 TEST_CASE("a tokenizer that splits no text first ignores the pre-tokenizer named") {
-    // llama names "default", which no row lists: it is not judged.
+    // llama names "default", which no row lists: it is not judged. The
+    // fixture carries no vocabulary, so the tokenizer does not load.
     const auto verdict = preflight_fixture("sentencepiece_default_pre");
     CHECK(std::none_of(verdict.blockers.begin(), verdict.blockers.end(),
-                       [](const Blocker& b) { return b.detail.find("tokenizer") != std::string::npos; }));
+                       [](const Blocker& b) { return b.detail.find("pre-tokenizer") != std::string::npos; }));
+    CHECK(std::any_of(verdict.blockers.begin(), verdict.blockers.end(), [](const Blocker& b) {
+        return b.stage == Stage::Run && b.detail.starts_with("tokenizer \"llama\" does not load from this file: ");
+    }));
 }
 
 TEST_CASE("a tokenizer that splits text first is blocked without its pre-tokenizer") {
@@ -142,14 +153,14 @@ TEST_CASE("with a device's limits, a model that describes reaches fit and says h
     REQUIRE(gguf::read_index(source, index).error == gguf::ReadError::Ok);
 
     const residency::DeviceLimits defaults{256ull << 20, 128ull << 20, 256};
-    const auto verdict = preflight::preflight(index, defaults, policy::LoadPolicy{});
+    const auto verdict = preflight::preflight(source, index, defaults, policy::LoadPolicy{});
     CHECK(verdict.reached() == Stage::Upload);   // Run needs a tokenizer the fixture lacks
     REQUIRE(verdict.fit.has_value());
     CHECK(verdict.fit->context_offered == 64);
     CHECK(verdict.fit->total_bytes <= verdict.fit->memory_budget);
 
     // Without a device there are no limits, and fit cannot be judged.
-    const auto blind = preflight::preflight(index, residency::DeviceLimits{}, policy::LoadPolicy{});
+    const auto blind = preflight::preflight(source, index, residency::DeviceLimits{}, policy::LoadPolicy{});
     CHECK(blind.reached() == Stage::Describe);
     CHECK(blocked(blind, Stage::Fit, "no GPU device was acquired, so fit cannot be judged"));
 }
@@ -161,20 +172,22 @@ TEST_CASE("a model that fits is judged for Run by its architecture's graph, whic
     gguf::MemoryByteSource source{bytes};
     gguf::TensorIndex index;
     REQUIRE(gguf::read_index(source, index).error == gguf::ReadError::Ok);
-    CHECK(blocked(preflight::preflight(index, defaults, policy::LoadPolicy{}), Stage::Run,
+    CHECK(blocked(preflight::preflight(source, index, defaults, policy::LoadPolicy{}), Stage::Run,
                   "architecture \"qwen3\" cannot run this file: a layer's shape is outside the kernels "
                   "(layer 0: head dimension 32 is not 64, 128 or 256)"));
     // A cache precision no kernel writes.
     policy::LoadPolicy bf16;
     bf16.cache_precision = policy::CachePrecision::BF16;
     const testing::ReadHeader qwen3 = testing::read_model_header("qwen3-0.6b-q4_0");
-    CHECK(blocked(preflight::preflight(qwen3.index, defaults, bf16), Stage::Run,
+    gguf::MemoryByteSource qwen3_source{std::as_bytes(std::span{qwen3.bytes}), qwen3.file_size};
+    CHECK(blocked(preflight::preflight(qwen3_source, qwen3.index, defaults, bf16), Stage::Run,
                   "the cache format BF16 cannot be written by this build"));
     // Each listed model: the only Run blocker is the stage this build lacks.
     for (const char* id : {"qwen3-0.6b-q4_0", "llama-3.2-1b-instruct-q4_0", "gemma-3-1b-it-q4_0"}) {
         CAPTURE(id);
         const testing::ReadHeader header = testing::read_model_header(id);
-        const Verdict verdict = preflight::preflight(header.index, defaults, policy::LoadPolicy{});
+        gguf::MemoryByteSource header_source{std::as_bytes(std::span{header.bytes}), header.file_size};
+        const Verdict verdict = preflight::preflight(header_source, header.index, defaults, policy::LoadPolicy{});
         CHECK(verdict.reached() == Stage::Upload);
         std::vector<std::string> run;
         for (const Blocker& b : verdict.blockers) {
@@ -190,7 +203,7 @@ TEST_CASE("a model that fits reports its duplicate candidates with both byte ran
         const auto bytes = testing::load_gguf_fixture(name);
         gguf::MemoryByteSource source{bytes};
         REQUIRE(gguf::read_index(source, index).error == gguf::ReadError::Ok);
-        return preflight::preflight(index, limits, policy::LoadPolicy{});
+        return preflight::preflight(source, index, limits, policy::LoadPolicy{});
     };
 
     gguf::TensorIndex index;
@@ -221,7 +234,7 @@ TEST_CASE("a load plans what preflight judged Fit, or says what stops it as pref
     model::ModelDescription description;
     residency::ResidencyPlan plan;
     REQUIRE(preflight::plan_load(index, limits, policy::LoadPolicy{}, description, plan).empty());
-    const auto verdict = preflight::preflight(index, limits, policy::LoadPolicy{});
+    const auto verdict = preflight::preflight(source, index, limits, policy::LoadPolicy{});
     REQUIRE(verdict.fit.has_value());
     CHECK(plan.total_bytes == verdict.fit->total_bytes);
     CHECK(plan.buffers.size() == verdict.fit->buffer_count);
@@ -246,7 +259,41 @@ TEST_CASE("preflight reaches Upload exactly when routes would let the upload beg
         residency::ResidencyPlan carried;
         const auto routed = residency::plan_routes(index, plan, bytes.size(), capability::find_format, {}, routes,
                                                    carried);
-        const auto verdict = preflight::preflight(index, limits, policy::LoadPolicy{});
+        const auto verdict = preflight::preflight(source, index, limits, policy::LoadPolicy{});
         CHECK((verdict.reached() >= Stage::Upload) == routed.ok());
     }
+}
+
+TEST_CASE("Run is blocked, by name, when the tokenizer does not load or a stop token does not resolve") {
+    const residency::DeviceLimits defaults{256ull << 20, 128ull << 20, 256};
+    // Each listed model's tokenizer loads and its file's stop resolves: no
+    // Run blocker names either (the test above).
+    const testing::ReadHeader qwen3 = testing::read_model_header("qwen3-0.6b-q4_0");
+    gguf::MemoryByteSource source{std::as_bytes(std::span{qwen3.bytes}), qwen3.file_size};
+    policy::LoadPolicy stops;
+    stops.stop = {"<|endoftext|>"};
+    const Verdict measured = preflight::preflight(source, qwen3.index, defaults, stops);
+    CHECK(measured.reached() == Stage::Upload);
+    CHECK(measured.blockers.size() == 1);   // the stage this build lacks
+    // A stop text the vocabulary does not hold.
+    stops.stop = {"<nope>"};
+    CHECK(blocked(preflight::preflight(source, qwen3.index, defaults, stops), Stage::Run,
+                  "the stop tokens cannot be resolved: stop \"<nope>\" is not a token of this vocabulary"));
+    // A byte-level vocabulary missing the byte tokens: listed, and
+    // supported, but it does not load.
+    const auto bytes = testing::MetadataFile{}
+                           .text("tokenizer.ggml.model", "gpt2")
+                           .text("tokenizer.ggml.pre", "qwen2")
+                           .strings("tokenizer.ggml.tokens", {"a"})
+                           .int32s("tokenizer.ggml.token_type", {1})
+                           .strings("tokenizer.ggml.merges", {})
+                           .bytes();
+    gguf::MemoryByteSource broken{bytes};
+    gguf::TensorIndex index;
+    REQUIRE(gguf::read_index(broken, index).error == gguf::ReadError::Ok);
+    const Verdict verdict = preflight::preflight(broken, index, defaults, policy::LoadPolicy{});
+    const bool named = std::any_of(verdict.blockers.begin(), verdict.blockers.end(), [](const Blocker& b) {
+        return b.stage == Stage::Run && b.detail.starts_with("tokenizer \"gpt2\" does not load from this file: ");
+    });
+    CHECK(named);
 }

@@ -10,7 +10,9 @@
 #include "core/graph/graph.h"
 #include "core/kernels/interface.h"
 #include "core/model/model_description.h"
+#include "core/runtime/stops.h"
 #include "core/tokenizer/tokenizer.h"
+#include "core/tokenizer/vocabulary.h"
 
 namespace bllm::preflight {
 namespace {
@@ -230,7 +232,43 @@ void check_tokenizer(const gguf::TensorIndex& index, Verdict& verdict) {
     }
 }
 
+// Run needs the tokenizer to load from the header, and the stop set to
+// resolve over its vocabulary; checked only where the algorithm and the
+// pre-tokenizer it needs are listed, the blockers above having named
+// whichever is not.
+void check_tokenizer_loads(gguf::ByteSource& source, const gguf::TensorIndex& index,
+                           const policy::LoadPolicy& policy, Verdict& verdict) {
+    std::unique_ptr<tokenizer::Tokenizer> loaded;
+    if (const std::string stop = load_tokenizer(source, index, loaded); !stop.empty()) {
+        verdict.blockers.push_back({Stage::Run, stop});
+        return;
+    }
+    runtime::StopSet stops;
+    if (const runtime::StopsResult r = runtime::resolve_stops(index, loaded->vocabulary(), policy.stop, stops);
+        r.error != runtime::StopsError::Ok) {
+        verdict.blockers.push_back({Stage::Run, "the stop tokens cannot be resolved: " + r.subject});
+    }
+}
+
 }  // namespace
+
+std::string load_tokenizer(gguf::ByteSource& source, const gguf::TensorIndex& index,
+                           std::unique_ptr<tokenizer::Tokenizer>& out) {
+    Verdict verdict;
+    check_tokenizer(index, verdict);
+    if (!verdict.blockers.empty()) return verdict.blockers.front().detail;
+    std::string_view model_name, pre_name;
+    (void)index.read_string("tokenizer.ggml.model", model_name);
+    const tokenizer::Algorithm* algorithm = capability::find_tokenizer(model_name);
+    const tokenizer::PreTokenizer* pretokenizer = nullptr;
+    if (algorithm->requires_pretokenizer) {
+        (void)index.read_string("tokenizer.ggml.pre", pre_name);
+        pretokenizer = capability::find_pretokenizer(pre_name);
+    }
+    const tokenizer::LoadResult r = algorithm->load(source, index, pretokenizer, out);
+    if (!r.ok()) return "tokenizer " + quoted(model_name) + " does not load from this file: " + r.subject;
+    return {};
+}
 
 std::string plan_load(const gguf::TensorIndex& index, const residency::DeviceLimits& limits,
                       const policy::LoadPolicy& policy, model::ModelDescription& description,
@@ -244,7 +282,7 @@ std::string plan_load(const gguf::TensorIndex& index, const residency::DeviceLim
     return {};
 }
 
-Verdict preflight(const gguf::TensorIndex& index, const residency::DeviceLimits& limits,
+Verdict preflight(gguf::ByteSource& source, const gguf::TensorIndex& index, const residency::DeviceLimits& limits,
                   const policy::LoadPolicy& policy) {
     Verdict verdict;
     if (const auto described = check_architecture(index, verdict)) {
@@ -254,7 +292,9 @@ Verdict preflight(const gguf::TensorIndex& index, const residency::DeviceLimits&
     }
     check_formats(index, verdict);
     check_rows(index, verdict);
+    const std::size_t before = verdict.blockers.size();
     check_tokenizer(index, verdict);
+    if (verdict.blockers.size() == before) check_tokenizer_loads(source, index, policy, verdict);
 
     for (int s = static_cast<int>(kImplementedThrough) + 1;
          s <= static_cast<int>(Stage::Run); ++s) {

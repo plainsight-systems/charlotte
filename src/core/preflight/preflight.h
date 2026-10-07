@@ -144,7 +144,9 @@ struct Verdict {
 [[nodiscard]] std::string load_tokenizer(gguf::ByteSource& source, const gguf::TensorIndex& index,
                                          std::unique_ptr<tokenizer::Tokenizer>& out);
 
-[[nodiscard]] Verdict preflight(const gguf::TensorIndex& index,
+// `source` is the bytes the index was read from: the header, where the
+// tokenizer's arrays lie.
+[[nodiscard]] Verdict preflight(gguf::ByteSource& source, const gguf::TensorIndex& index,
                                 const residency::DeviceLimits& limits,
                                 const policy::LoadPolicy& policy);
 

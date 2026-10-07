@@ -290,7 +290,7 @@ std::string preflight_json(bllm::gguf::ByteSource& source, const bllm::gguf::Rea
     }
     // Every listed model is unmeasured, so each runs on the load policy's
     // defaults.
-    const auto verdict = bllm::preflight::preflight(index, limits, bllm::policy::LoadPolicy{});
+    const auto verdict = bllm::preflight::preflight(source, index, limits, bllm::policy::LoadPolicy{});
     std::string_view architecture;
     const bool named = index.read_string("general.architecture", architecture) ==
                        bllm::gguf::MetadataError::Ok;

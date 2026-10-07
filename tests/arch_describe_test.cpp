@@ -214,7 +214,7 @@ TEST_CASE("a model that describes reaches the describe stage, and preflight name
     gguf::MemoryByteSource source{bytes};
     gguf::TensorIndex index;
     REQUIRE(gguf::read_index(source, index).error == gguf::ReadError::Ok);
-    const auto verdict = preflight::preflight(index, residency::DeviceLimits{}, policy::LoadPolicy{});
+    const auto verdict = preflight::preflight(source, index, residency::DeviceLimits{}, policy::LoadPolicy{});
     CHECK(verdict.reached() == preflight::Stage::Describe);
 }
 
@@ -223,7 +223,7 @@ TEST_CASE("a describe failure reaches preflight with its subject named") {
     gguf::MemoryByteSource source{bytes};
     gguf::TensorIndex index;
     REQUIRE(gguf::read_index(source, index).error == gguf::ReadError::Ok);
-    const auto verdict = preflight::preflight(index, residency::DeviceLimits{}, policy::LoadPolicy{});
+    const auto verdict = preflight::preflight(source, index, residency::DeviceLimits{}, policy::LoadPolicy{});
     CHECK(verdict.reached() == preflight::Stage::Download);
     const bool named = std::any_of(verdict.blockers.begin(), verdict.blockers.end(), [](const auto& b) {
         return b.detail == "architecture \"qwen3\" cannot read this file: a required tensor is "
