@@ -20,6 +20,7 @@ add_executable(charlotte_tests
     test_data_test.cpp
     tokenizer_bpe_test.cpp
     tokenizer_interface_test.cpp
+    tokenizer_detokenizer_test.cpp
     tokenizer_merge_table_test.cpp
     tokenizer_merge_test.cpp
     tokenizer_nfc_test.cpp
