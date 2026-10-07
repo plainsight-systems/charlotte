@@ -118,16 +118,17 @@ namespace bllm::kernels {
 //     32 along K, does 2,048τ multiply-adds and 256τ vec4 reads of
 //     workgroup memory, loads 32τ input floats, decodes 64 weight blocks and
 //     passes two barriers: a narrower tile holding the step does fewer
-//     multiply-adds, reads and loads, and the same decodes and barriers. Past
-//     32 tokens three 16-token tiles would do fewer multiply-adds than two
-//     32-token ones at 33 to 48 tokens, at a third more weight passes,
-//     decodes and barriers; the rule keeps the passes. The 32-token tile's
-//     last tile holds the step's remainder and runs all 32 slots, as
-//     llama.cpp's mul_mm does: 1.88 times the useful products at 17 tokens,
-//     1.94 at 33, none extra at 64 or 512. The 8-token tile runs 4 times at 2
-//     tokens, where the 32-token tile would run 16; the 16-token tile 1.78 at
-//     9. Tile width changes no output's order of addition, so every tile's
-//     bits are the others' and decode's.
+//     multiply-adds, reads and loads, and the same decodes and barriers.
+//     A step's last token tile holds its remainder: an invocation whose token
+//     quad lies wholly past the step stages and passes both barriers, as
+//     every invocation must, but skips the products, so a tile runs the
+//     products of its live quads alone — at most 3 padded tokens a step, at
+//     33 tokens the second tile's first quad, one 32-lane SIMD-group of its
+//     four; at 2 tokens the 8-token tile's first quad of two. Past 32 tokens
+//     the 32-token tile keeps a step to the fewest weight passes, decodes
+//     and barriers, and the guard its multiply-adds to the step's. Tile
+//     width and the guard change no output's order of addition, so every
+//     tile's bits are the others' and decode's.
 //
 // Epilogues — what a product writes — are variants, override constants:
 //   - write: y to one buffer: the output projection and down projection
