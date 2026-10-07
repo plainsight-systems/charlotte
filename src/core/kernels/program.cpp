@@ -597,8 +597,8 @@ void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, 
     if (fits) {
         const gpu::CommandEncoder encoder(wgpuDeviceCreateCommandEncoder(device, nullptr));
         {
-            WGPUComputePassDescriptor pass_desc = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
 #if BLLM_DIAGNOSTICS_ENABLED
+            WGPUComputePassDescriptor pass_desc = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
             // The pass's beginning and end, in queries 0 and 1 (program.h).
             WGPUPassTimestampWrites writes = WGPU_PASS_TIMESTAMP_WRITES_INIT;
             if (timer != nullptr) {
@@ -608,11 +608,15 @@ void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, 
                 pass_desc.timestampWrites = &writes;
                 o.queries = 2;
             }
-#endif
             const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), &pass_desc));
+#else
+            const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), nullptr));
+#endif
             std::size_t current = s.pipelines.size();
             for (const std::uint32_t index : s.schedules.of(step.tokens, step.logits != 0)) {
+#if BLLM_DIAGNOSTICS_ENABLED
                 if (index >= limit) break;   // a prefix ends here; indices ascend
+#endif
                 const State::Bound& launch = s.launches[index];
                 const std::uint64_t workgroups =
                     workgroups_for(launch.geometry, launch.workgroup_size, step.position, step.tokens, step.logits != 0);
