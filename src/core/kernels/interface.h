@@ -137,10 +137,11 @@ inline constexpr std::uint32_t kFirstWeightBinding = 2;
 //
 //   struct Step { position: u32, tokens: u32, logits: u32, fed: u32,
 //                 seed: vec2<u32>, top_k: u32, temperature: f32, top_p: f32,
-//                 min_p: f32, ids: array<vec4<u32>, 128> }
+//                 min_p: f32, log_min_p: f32, ids: array<vec4<u32>, 128> }
 //
 // A 48-byte head: WGSL places `ids` at 48, a uniform array's 16-byte stride,
-// leaving two words of padding after `min_p`. `logits` is the program's,
+// leaving one word of padding after `log_min_p`. sampler::apply writes the
+// seed and settings. `logits` is the program's,
 // read by no kernel; `fed` is gather's; the seed and the settings are the
 // draw's (sampler/sampler.h), the turn's, written with every step. Token i's
 // identifier is ids[i / 4][i % 4]. A step writes its head and only the
@@ -167,7 +168,8 @@ struct Step {
     float temperature;
     float top_p;
     float min_p;
-    std::uint32_t padding1[2];
+    float log_min_p;   // ln min_p, once a turn: the draw's min-p threshold
+    std::uint32_t padding1;
     std::array<std::uint32_t, residency::kPrefillBlock> ids;
 };
 static_assert(sizeof(Step) == 48 + 4 * residency::kPrefillBlock);

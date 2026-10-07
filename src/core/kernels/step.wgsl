@@ -15,6 +15,7 @@ struct Step {
     temperature: f32,
     top_p: f32,
     min_p: f32,
+    log_min_p: f32,        // ln min_p, once a turn on the CPU
     ids: array<vec4<u32>, 128>,
 }
 

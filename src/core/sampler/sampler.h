@@ -40,7 +40,8 @@ namespace bllm::sampler {
 //      running weight with top_p × the total, keeps llama.cpp's survivors:
 //      the two round differently in f32 near the edge.
 //   3. min-p: of those, each whose logit is at least the first's + ln
-//      min_p.
+//      min_p — ln min_p taken once a turn, on the CPU in f32 as llama.cpp's
+//      logf does, and carried in the step, not once a candidate.
 //   4. temperature: zero draws the first candidate; otherwise each
 //      survivor's weight is exp((logit − first's) / temperature) — a second
 //      pass of exponentials, since top-p's were at temperature 1 — and the
@@ -127,7 +128,7 @@ namespace bllm::sampler {
 // 256 bytes more, logically, which the GPU's caches serve — and writes 16.
 // Its work, in order:
 //   - side by side: each invocation loads its candidate and the first from
-//     device memory, computes ln min_p, two exponentials and its min-p test,
+//     device memory, computes two exponentials and its min-p test,
 //     and writes them to workgroup memory; the last runs Philox's 10 rounds
 //     and writes u;
 //   - a barrier; invocation 0 sums top-p's weights, at most 64 dependent
@@ -240,6 +241,10 @@ struct SettingsResult {
 };
 
 [[nodiscard]] SettingsResult check(const policy::SamplingSettings& settings);
+
+// Writes the draw's fields of `step`: the seed, the settings, and ln min_p.
+// Precondition: check(settings) passed.
+void apply(const policy::SamplingSettings& settings, policy::Seed seed, kernels::Step& step);
 
 // The draw's launch: over `candidates`, kernels::kCandidates (logit, token)
 // pairs sorted largest first, into `sampled`, one SampledRecord; the

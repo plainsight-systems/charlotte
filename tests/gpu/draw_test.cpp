@@ -80,12 +80,7 @@ Drawn draw(WGPUInstance instance, const gpu::Device& device, const Drawing& d, c
     step.position = position;
     step.tokens = 1;
     step.logits = 1;
-    step.seed[0] = static_cast<std::uint32_t>(seed);
-    step.seed[1] = static_cast<std::uint32_t>(seed >> 32);
-    step.top_k = s.top_k;
-    step.temperature = s.temperature;
-    step.top_p = s.top_p;
-    step.min_p = s.min_p;
+    sampler::apply(s, policy::Seed{seed}, step);
     const StepOutcome ran = try_step(instance, *d.program, step);
     REQUIRE_MESSAGE(ran.error == kernels::ProgramError::Ok, ran.message);
     const auto words = read_floats(instance, device, d.upload->buffer(d.sampled.buffer), 0, 4);

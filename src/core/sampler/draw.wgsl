@@ -84,7 +84,7 @@ fn main(@builtin(local_invocation_index) t: u32) {
         if (step.temperature > 0.0) {
             tempered[t] = exp((mine - first) / step.temperature);
         }
-        above_min_p[t] = select(0u, 1u, step.min_p == 0.0 || mine >= first + log(step.min_p));
+        above_min_p[t] = select(0u, 1u, step.min_p == 0.0 || mine >= first + step.log_min_p);
     }
     if (t == workgroup_size - 1u) {
         u = unit_interval(philox(vec4<u32>(step.position, 0u, 0u, 0u), step.seed).x);

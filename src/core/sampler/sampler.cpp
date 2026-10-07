@@ -36,6 +36,17 @@ SettingsResult check(const policy::SamplingSettings& s) {
     return {};
 }
 
+void apply(const policy::SamplingSettings& settings, policy::Seed seed, kernels::Step& step) {
+    const auto bits = static_cast<std::uint64_t>(seed);
+    step.seed[0] = static_cast<std::uint32_t>(bits);
+    step.seed[1] = static_cast<std::uint32_t>(bits >> 32);
+    step.top_k = settings.top_k;
+    step.temperature = settings.temperature;
+    step.top_p = settings.top_p;
+    step.min_p = settings.min_p;
+    step.log_min_p = settings.min_p > 0 ? std::log(settings.min_p) : 0.0f;
+}
+
 kernels::Launch draw_launch(const residency::BufferRange& candidates, const residency::BufferRange& sampled) {
     const Constants constants{kernels::kCandidates};
     std::vector<std::byte> bytes(sizeof constants);
