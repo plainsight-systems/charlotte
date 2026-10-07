@@ -66,6 +66,15 @@ namespace bllm::kernels {
 //     for Qwen3's 3,072-wide down projection, 8 for Llama 3.2's 8,192 —
 //     each line's rest read by the same invocation's next n − 1 steps, from
 //     the GPU's caches. The bytes from device memory are the weights, once.
+//     A product of fewer than 4,096 rows — under 512 workgroups of 8 —
+//     gives each set 1 row instead of 4, so a workgroup takes 2 and the
+//     product runs 4 times the workgroups: the Write and QKV epilogues,
+//     by an override constant, `set_rows`. Qwen3's output and down
+//     projections, 1,024 rows, run 512 workgroups, not 128; Llama 3.2's
+//     QKV, output and down, and Gemma 3's, likewise. Each row is still
+//     summed by 32 invocations, a range each, in the same order. The gated
+//     product keeps its 4, which its epilogue needs in one set; the listed
+//     ones run 768 workgroups or more.
 //   - Prefill, two to 512 tokens: a tiled matrix product. A workgroup takes
 //     a tile of τ tokens × 64 outputs, τ 8, 16 or 32, and steps along K 32
 //     at a time, a group a step. Its 4τ invocations — 32, 64 or 128, under
@@ -203,13 +212,13 @@ namespace bllm::kernels {
 //     8.9 MB, 248 MB across 28 layers, 3 of whose down projections are Q4_1
 //     — and the head's 127.6 MB: 376 MB, 0.94 ms at 400 GB/s, the weights'
 //     share of interface.h's 380 MB file. Arithmetic, 2 × 0.6 × 10⁹ operations, is far below
-//     it. Workgroups: QKV 512, output 128, gate and up 768, down 128, head
+//     it. Workgroups: QKV 512, output 512, gate and up 768, down 512, head
 //     18,992. Each set of 32 invocations reads its whole input once, from the
-//     GPU's caches, two a workgroup: 15 MiB a layer — QKV 4, output 2, gate
-//     and up 6, down 3 — and 148 MiB for the head, against device memory's
+//     GPU's caches, two a workgroup: 30 MiB a layer — QKV 4, output 8, gate
+//     and up 6, down 12 — and 148 MiB for the head, against device memory's
 //     8.9 MB and 127.6 MB of weights, each input being at most 12 KiB for
-//     Qwen3. Each workgroup's 256 range sums pass through 1 KiB of
-//     workgroup memory. Launches: 4 a layer and
+//     Qwen3. Each workgroup's range sums, 256 or 64, pass through at most
+//     1 KiB of workgroup memory. Launches: 4 a layer and
 //     the head's one, 113 a step, about 170 µs at 1.5 µs.
 //   - Prefill, 512 tokens. 15.7 × 10⁶ weights a layer, 440 × 10⁶ across
 //     the layers, each multiplied by 512 tokens: 450 × 10⁹ operations,
@@ -247,6 +256,14 @@ namespace bllm::kernels {
 // Optimization (practice): decode reuses each input value it loads for 4
 // rows, and prefill each decoded weight for its tile's 32 tokens, or 16 or
 // 8, and each input for 64 outputs (GPU.2, GPU.5).
+// Optimization (practice): a decode product of fewer than 4,096 rows takes
+// 1 row a set, 4 times the workgroups, as llama.cpp's WebGPU mat-vec gives
+// a row 64 invocations and ONNX Runtime's 16, where 4 rows a set gives it
+// 8: in the profile (docs/research/2026-10-07-forward-pass-profile.md)
+// Qwen3's products of 128 workgroups read their weights at 107 to 180
+// GB/s, those of 512 and 768 at 260 to 340, and the head's 18,992 at 349
+// to 383 (GPU.3). Its cost is each set reading its input for one row, not
+// four, from the GPU's caches: 15 MiB more a layer.
 // Optimization (practice): a prefill invocation's micro-tile is 4 tokens ×
 // 4 outputs, its accumulators named vec4s and its loops' bounds constants,
 // as llama.cpp's, MLC's and ONNX Runtime's WebGPU kernels keep 16 to 32
@@ -296,7 +313,8 @@ namespace bllm::kernels {
 //
 // Verification the implementation is held to, on the GPU against f64 over
 // the format's CPU-decoded weights: each form, each epilogue, each listed
-// format, at each listed model's widths; prefill steps of 2 and 8 tokens,
+// format, at each listed model's widths; decode with 4 rows a set and 1, a
+// product of 4,096 rows and one fewer; prefill steps of 2 and 8 tokens,
 // in the 8-token tile of 32 invocations, 9 and 16, in the 16-token of 64,
 // and 17, 33 and 64, in the 32-token of 128 — every token quad and output
 // quad of each; a weight
