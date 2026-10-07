@@ -103,10 +103,15 @@ fn fold_factors(live: bool, m: f32, chunk_is_live: bool, chunk_max: f32) -> vec3
     if (!live) {
         return vec3<f32>(0.0, 1.0, chunk_max);
     }
-    let top = max(m, chunk_max);
-    let a = select(exp2(m - top), 1.0, m == top);
-    let b = select(exp2(chunk_max - top), 1.0, chunk_max == top);
-    return vec3<f32>(a, b, top);
+    // The side holding the maximum keeps factor 1, exactly; only the other's
+    // factor is an exponential, so a fold evaluates one.
+    if (m == chunk_max) {
+        return vec3<f32>(1.0, 1.0, m);
+    }
+    if (m > chunk_max) {
+        return vec3<f32>(1.0, exp2(chunk_max - m), m);
+    }
+    return vec3<f32>(exp2(m - chunk_max), 1.0, chunk_max);
 }
 
 fn fold_sum(l: f32, a: f32, chunk_sum: f32, b: f32) -> f32 {

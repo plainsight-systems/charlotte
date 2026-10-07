@@ -187,8 +187,8 @@ namespace bllm::kernels {
 //     of keys and values, 7.9%. Workgroups: 8 × ceil(L / 64), 128
 //     at 1,024 and 512 at 4,096. The combine's d / 4 invocations a query
 //     each fold its count of partials in order, a chain of that many merges:
-//     64 at 4,096, 128 at 8,192, each two exp2s and a vec4 multiply and
-//     multiply-add.
+//     64 at 4,096, 128 at 8,192, each one exp2 — the side holding the
+//     maximum keeps factor 1 — and a vec4 multiply and multiply-add.
 //     Launches: one a layer, and the combine's a layer once L passes 64 —
 //     56 a step, 84 µs at 1.5 µs (interface.h).
 //   - Prefill, 512 tokens from position 0: query-key pairs under the causal
