@@ -29,8 +29,8 @@ namespace bllm::preflight {
 //              written to the GPU, every write confirmed on a live device
 //              (residency/upload.h); a diagnostic build reads every byte back
 //              (residency/upload_check.h)
-//   Run        it generates: the graph builds (graph/graph.h), and the
-//              tokenizer
+//   Run        it generates: its architecture's graph builds
+//              (arch/architecture.h), and the tokenizer
 //
 // The verdict lists blockers, each naming the stage it stops and why: the
 // architecture, each unsupported format with how many tensors use it and the

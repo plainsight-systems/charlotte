@@ -11,7 +11,7 @@ files. It does not list the files; that is [`file-mapping.md`](file-mapping.md).
 
 | Axis | Triggered by | May change |
 |---|---|---|
-| **A** | a new architecture | its describe; the graph, when it brings a structure the graph lacks |
+| **A** | a new architecture | its graph |
 | **B** | a new weight format | its device layout, pack and unpack |
 | **C** | a GGUF format revision, or our parse contract | reader, its types, its errors |
 | **D** | the WebGPU surface, or granted device limits | device, planner, buffer writer |
@@ -40,7 +40,7 @@ measuring a model never looks like a code change.
 
 **Architecture and tokenizer are separate axes.** Adding an architecture that
 reuses an existing tokenizer touches no tokenizer; adding a tokenizer under an
-existing architecture touches no architecture. That is the test below, and it is why
+existing architecture touches no graph. That is the test below, and it is why
 K is not part of A. Examples that happen to differ in both architecture and
 tokenizer do not show that the two change together; they are the coincidence
 the test exists to catch.
@@ -64,8 +64,7 @@ regime.
 
 Kernels include every operation that differs in kind. Each activation, each
 norm type and each position encoding is its own kernel (principle 6 in the
-logical overview), dispatched by the graph wherever a description calls for
-it. None belongs to an
+logical overview), dispatched by whichever graph needs it. None belongs to an
 architecture.
 
 The test is mechanical: **optimizing a kernel for one regime must produce a
@@ -130,7 +129,7 @@ writer would make the compatibility gate impossible.
 ## Cases that look wrong and are not
 
 **The capability table has one owner and several readers.** The picker's gates,
-the unpack dispatch, the tokenizer selector and the architecture selector all consult
+the unpack dispatch, the tokenizer selector and the graph selector all consult
 it. That is not a violation: the table changes for exactly one reason, and its
 readers do not change when it does. Adding a weight format means one new
 unpack file and one new row.
@@ -143,7 +142,7 @@ enforcement; review is not.
 **The capability table and the curated list are two files, not one.** Both
 describe what the harness can run, which makes merging them tempting. But the
 capability table changes when code is written — a new unpack, a new
-tokenizer or pre-tokenizer, a new architecture — and the curated list changes when a model is measured: its cache
+tokenizer or pre-tokenizer, a new graph — and the curated list changes when a model is measured: its cache
 precision, its sampling settings, the controls it offers. Different reasons,
 different files. Merging them would make measuring a model look like a code
 change, and adding a format look like a policy change.

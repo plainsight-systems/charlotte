@@ -61,7 +61,7 @@ drawn as state rather than as a step, because that is what it is — see below.
 
 ```mermaid
 flowchart TD
-    sched["Graph<br/>from the description"]
+    sched["Graph<br/>per architecture"]
     sched --> mm["matmul<br/>GEMM · GEMV"]
     sched --> nrm["norm"]
     sched --> pos["position encoding"]
@@ -75,10 +75,9 @@ flowchart TD
     class mm,att regime
 ```
 
-**Inside Prefill and Decode.** The graph chooses which shared kernels run, in
-what order, with what parameters, from the model description, where the
-architecture's describe has stated everything about it. One graph serves
-every architecture, and the kernels do not know which model they serve.
+**Inside Prefill and Decode.** The graph is the only thing that knows the
+architecture. It chooses which shared kernels run, in what order, with what
+parameters. The kernels do not know which model they serve.
 
 ```mermaid
 flowchart TD
@@ -153,18 +152,14 @@ the output projection maps them back to the hidden width.
 These decide how any difference between models is handled. Each was tested
 against real files, but none is specific to the files tested.
 
-1. **Kernels never know the family, and neither does the graph.** A kernel
-   is parameterized by shape, stride, weight format and regime. Knowledge of
-   a family lives in exactly one place: its describe, which states every way
-   the family differs — which weights exist, windows, rotary bases, pairing,
-   activation, scales — in the model description. The graph reads structure
-   from the description and decides which kernels run in what order with what
-   parameters; it changes when a family brings a structure it lacks, never
-   because of a family's name. A kernel or graph that branches on family must
-   be re-verified for every family added.
+1. **Kernels never know the family.** A kernel is parameterized by shape,
+   stride, weight format and regime. Knowledge of a family lives in exactly one
+   place: the graph, which decides which kernels run in what order with what
+   parameters. A kernel that branches on family must be re-verified for every
+   family added.
 
 2. **Each identifier in the file selects exactly one implementation.**
-   `general.architecture` selects a describe. A tensor's type selects its device
+   `general.architecture` selects a graph. A tensor's type selects its device
    layout, pack and unpack. `tokenizer.ggml.model` selects a
    tokenization algorithm, and `tokenizer.ggml.pre`, where present, selects the
    pre-tokenizer that splits text before the algorithm runs. These are
@@ -191,13 +186,12 @@ against real files, but none is specific to the files tested.
    load. No architecture is assumed to have or to lack one.
 
 6. **What differs in kind is a shared kernel.** A new activation, norm type or
-   position encoding is a new kernel the graph dispatches wherever a
-   description calls for it. It is not a
+   position encoding is a new kernel that any graph can dispatch. It is not a
    branch inside an existing kernel, and it does not belong to the family that
    first needed it.
 
 7. **Support is declared, and judged stage by stage.** One capability table
-   lists the architectures, weight formats, tokenization algorithms and
+   lists the graphs, weight formats, tokenization algorithms and
    pre-tokenizers implemented. Preflight reports how far the build can take a
    model — read, download, describe, fit, upload, run — and names what stops
    each stage it cannot reach: *"format Q4_1 is not supported (3 tensors,
@@ -224,7 +218,7 @@ What varies across decoder-only transformers, and which principle handles it.
 | What varies | Examples | Handled as |
 |---|---|---|
 | Norm type | RMSNorm, LayerNorm | shared kernel (6) |
-| Norm placement | before, after, or both | detected (5) |
+| Norm placement | before, after, or both | graph |
 | Norm weight convention | `w`, `1 + w` | normalized by the file's converter (4) |
 | Heads, head dimension, θ, ε, scale | numbers | file parameter (3) |
 | Attention sharing | multi-head, grouped, multi-query | file parameter |
@@ -232,9 +226,9 @@ What varies across decoder-only transformers, and which principle handles it.
 | QK-norm, QKV biases | present or absent | detected (5) |
 | Position encoding | RoPE and its pairing and scaling variants, ALiBi, none | shared kernel and parameters |
 | Logit softcapping | present or absent | shared kernel and parameter |
-| MLP | gated or plain, and which activation | description and shared kernel |
+| MLP | gated or plain, and which activation | graph and shared kernel |
 | Mixture of experts | a router and experts | graph and new shared kernels |
-| Embedding scale | none, √d | description |
+| Embedding scale | none, √d | graph |
 | Output head | tied to the embedding, or separate | detected |
 | Tokenization algorithm | BPE, SentencePiece, WordPiece | its own implementation (2) |
 | Pre-tokenizer | a split pattern, named per lineage | selected by name; the file names it but does not carry it (2) |
