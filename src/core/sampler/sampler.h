@@ -168,8 +168,9 @@ namespace bllm::sampler {
 //
 // Levers not taken:
 //   - The draw folded into the selection's last pass, whose one workgroup
-//     already holds the 64 candidates: one launch fewer, about 1.5 µs, two
-//     calls out of the module and a 512-byte read a sampled step — 0.09% of
+//     already holds the 64 candidates: one launch fewer, about 1.5 µs, three
+//     calls out of the module — its pipeline, bind group and dispatch — and
+//     a 512-byte read a sampled step — 0.09% of
 //     a decode step — at the cost of the sampling method living inside the
 //     selection kernel, so that a new method would change the selection
 //     (docs/architecture/change-axes.md: axis F apart from E).
