@@ -76,9 +76,13 @@ std::vector<std::uint32_t> prompt(std::size_t length, std::uint32_t vocabulary) 
 }
 
 // Runs `ids` in steps of `steps` tokens from position 0, logits asked of the
-// last step alone, and returns the last token's logits.
-std::vector<float> stepped(WGPUInstance instance, const gpu::Device& device, Running& r,
-                           std::span<const std::uint32_t> ids, std::span<const std::uint32_t> steps) {
+// last step alone, and returns the last token's logits. Each run uploads
+// the model afresh, so its buffers start zeroed and nothing an earlier run
+// wrote — logits, cache, working buffers — can stand in for work this one
+// omits.
+std::vector<float> stepped(WGPUInstance instance, const gpu::Device& device, std::span<const std::uint32_t> ids,
+                           std::span<const std::uint32_t> steps) {
+    Running r = run_model(instance, device);
     std::uint32_t position = 0;
     for (std::size_t s = 0; s < steps.size(); ++s) {
         const bool last = s + 1 == steps.size();
@@ -95,12 +99,11 @@ std::vector<float> stepped(WGPUInstance instance, const gpu::Device& device, Run
 TEST_CASE("a token's logits are the same bits however its prompt is stepped") {
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
-    Running r = run_model(instance.get(), *device);
     // 300 tokens: its keys span two 256-key chunks.
-    const auto ids = prompt(300, r.description.vocabulary_size);
+    const auto ids = prompt(300, 256);
 
     const std::vector<std::uint32_t> whole{300};
-    const auto want = stepped(instance.get(), *device, r, ids, whole);
+    const auto want = stepped(instance.get(), *device, ids, whole);
     REQUIRE(want.size() == 256);
     CHECK(std::all_of(want.begin(), want.end(), [](float f) { return std::isfinite(f); }));
     CHECK(*std::max_element(want.begin(), want.end()) > *std::min_element(want.begin(), want.end()));
@@ -114,7 +117,7 @@ TEST_CASE("a token's logits are the same bits however its prompt is stepped") {
     const std::vector<std::uint32_t> decoded(300, 1);
     for (const auto* steps : {&tiles, &then_decode, &decoded}) {
         CAPTURE(steps->size());
-        const auto got = stepped(instance.get(), *device, r, ids, *steps);
+        const auto got = stepped(instance.get(), *device, ids, *steps);
         CHECK(std::equal(got.begin(), got.end(), want.begin(), want.end()));
     }
 }
