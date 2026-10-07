@@ -105,18 +105,35 @@ TEST_CASE("a profiled step leaves run()'s results, and its timestamps are in ord
             for (std::size_t i = 0; i < p.launches.size(); ++i) {
                 CHECK(p.launches[i].second >= p.begin_ns);
                 CHECK(p.launches[i].second <= p.end_ns);
-                if (i > 0) CHECK(p.launches[i].first > p.launches[i - 1].first);
+                if (i > 0) {
+                    CHECK(p.launches[i].first > p.launches[i - 1].first);
+                    CHECK(p.launches[i].second >= p.launches[i - 1].second);
+                }
             }
         } else {
             CHECK(p.launches.empty());
         }
     }
-    // A prefix — none of the launches, then the first ten — runs and is timed.
+    // A prefix runs the step's first launches alone: none of them leaves the
+    // last step's logits, and reads nothing back; the whole step, with other
+    // tokens, changes them.
+    const auto before = bits(read_floats(instance.get(), *device, r.upload->buffer(r.logits.buffer), r.logits.offset, 256));
+    const auto other = ids_of(41);
+    const auto changed = step_of(std::span{other}.last(40), 0);
     for (const std::uint32_t prefix : {0u, 10u}) {
-        const Profiled p = profile(instance.get(), *r.program, step_of(ids, 0), prefix);
+        CAPTURE(prefix);
+        const Profiled p = profile(instance.get(), *r.program, changed, prefix);
         REQUIRE_MESSAGE(p.error == kernels::ProgramError::Ok, p.message);
         CHECK(p.end_ns >= p.begin_ns);
+        CHECK(p.readback.empty());
+        CHECK(bits(read_floats(instance.get(), *device, r.upload->buffer(r.logits.buffer), r.logits.offset, 256)) ==
+              before);
     }
+    const Profiled whole = profile(instance.get(), *r.program, changed, all);
+    REQUIRE(whole.error == kernels::ProgramError::Ok);
+    CHECK(!whole.readback.empty());
+    CHECK(bits(read_floats(instance.get(), *device, r.upload->buffer(r.logits.buffer), r.logits.offset, 256)) !=
+          before);
 }
 
 TEST_CASE("profiled steps pipeline, two in flight, reported in the order run") {
@@ -127,12 +144,25 @@ TEST_CASE("profiled steps pipeline, two in flight, reported in the order run") {
     const auto ids = ids_of(8);
     run_step(instance.get(), *r.program, 8, ids, 0, true);
     Profiled first, second;
+    std::vector<int> arrived;   // which step each report was, in order
+    struct Tagged {
+        Profiled* profiled;
+        std::vector<int>* arrived;
+        int tag;
+    } ta{&first, &arrived, 1}, tb{&second, &arrived, 2};
+    const auto tagged = [](kernels::ProgramError e, std::string_view message, std::span<const std::byte> readback,
+                           const kernels::Program::Timestamps& times, void* ud) {
+        auto& t = *static_cast<Tagged*>(ud);
+        t.arrived->push_back(t.tag);
+        on_profiled(e, message, readback, times, t.profiled);
+    };
     kernels::Step a = step_of(std::span{ids}.first(1), 8);
     kernels::Step b = step_of(std::span{ids}.first(1), 9);
-    r.program->run_profiled(a, all, on_profiled, &first);
-    r.program->run_profiled(b, all, on_profiled, &second);
+    r.program->run_profiled(a, all, tagged, &ta);
+    r.program->run_profiled(b, all, tagged, &tb);
     pump_until(instance.get(), second.done, "two profiled steps");
     REQUIRE(first.done);
+    CHECK(arrived == std::vector<int>{1, 2});
     REQUIRE(first.error == kernels::ProgramError::Ok);
     REQUIRE(second.error == kernels::ProgramError::Ok);
     CHECK(second.begin_ns >= first.begin_ns);

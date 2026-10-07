@@ -65,7 +65,8 @@ namespace bllm::kernels {
 //     (gpu/device.h). What a step computed is trusted only through a
 //     completed mapping, which a lost device refuses — the sampler's
 //     readback of the step's drawn token, as upload's witness is its. A step
-//     that fails once the device has said it is lost is reported DeviceLost;
+//     that ran and fails once the device has said it is lost is reported
+//     DeviceLost — a run refused at once, unrun, is not;
 //     WebGPU does not order the lost callback before the failed mapping, so a
 //     failure that comes first is reported Step, and a later one DeviceLost.
 //   - It borrows: the upload, and so its buffers, outlives the program
@@ -94,8 +95,12 @@ namespace bllm::kernels {
 // pipeline as run()'s do, and a run of them is timed as it runs. A profiled
 // step runs only on a device that granted the timestamp-query feature
 // (gpu/device.h's DiagnosticRequest), and not beside an unprofiled one;
-// otherwise it is refused at once, named. Its results are run()'s: no
-// timestamp writes a buffer a kernel reads.
+// otherwise it is refused at once, named. A whole profiled step's results
+// are run()'s: no timestamp writes a buffer a kernel reads. A prefix leaves
+// the step's later launches undone — the draw among them, so it reads
+// nothing back, and the cache holds the step's positions for the layers it
+// ran alone — so a step at those positions runs whole before any result is
+// read from them.
 //
 // What a step costs, counted: calls into WebGPU are 1 writeBuffer of 48
 // bytes for a fed step and 48 + 16 × ceil(tokens / 4) for another, 1

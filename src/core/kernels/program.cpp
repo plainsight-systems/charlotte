@@ -566,7 +566,8 @@ void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, 
     o.pending = kStepScopes.size();
     o.error = ProgramError::Ok;
     o.message.clear();
-    o.reads_back = s.readback.has_value() && step.logits != 0;
+    // A prefix leaves the draw undone: it reads nothing back (program.h).
+    o.reads_back = s.readback.has_value() && step.logits != 0 && limit == s.launches.size();
     o.done = done;
     o.userdata = userdata;
     s.in_flight = self;
