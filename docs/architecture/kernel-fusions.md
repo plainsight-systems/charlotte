@@ -73,14 +73,15 @@ For one layer, in order:
 | 8 | matmul | the down projection, writing the block's output |
 
 Around the layers: the gather, one launch for each piece of the embedding
-table; after them, the final norm, adding the last block's output, and the
-output head, both on the step's last token only.
+table; after them, the final norm, adding the last block's output, the
+output head, top-k selection's three passes and the draw, all on the step's
+last token only (`core/kernels/topk/topk.h`, `core/sampler/sampler.h`).
 
-| Model | Layers | Gather | Layers × 8 | Final norm, head | Launches a pass | At 1.5 µs each |
+| Model | Layers | Gather | Layers × 8 | Final norm, head, selection, draw | Launches a pass | At 1.5 µs each |
 |---|---|---|---|---|---|---|
-| Qwen3 0.6B | 28 | 1 | 224 | 2 | 227 | 0.34 ms |
-| Llama 3.2 1B | 16 | 2 | 128 | 2 | 132 | 0.20 ms |
-| Gemma 3 1B | 26 | 3 | 208 | 2 | 213 | 0.32 ms |
+| Qwen3 0.6B | 28 | 1 | 224 | 6 | 231 | 0.35 ms |
+| Llama 3.2 1B | 16 | 2 | 128 | 6 | 136 | 0.20 ms |
+| Gemma 3 1B | 26 | 3 | 208 | 6 | 217 | 0.33 ms |
 
 A layer split across the context — a step whose rows times the layer's
 256-token chunks of keys fit the partial buffers, as a decode step's do once

@@ -25,12 +25,12 @@ namespace bllm::kernels {
 //   - Invariant: for every step, the list holds every launch workgroups_for
 //     gives workgroups, in order, and only launches whose token range and
 //     rows allow the step.
-//   - What it costs, for Qwen3 0.6B's 591 launches (graph/graph.h): 4
+//   - What it costs, for Qwen3 0.6B's 595 launches (graph/graph.h): 4
 //     intervals — 1, 2 to 8, 9 to 16, 17 to 512 — each 2 lists, of 253 and
-//     255 indices: 2,032 indices, 7.9 KiB, and the bounds, built once at
-//     build from all 673 range ends before duplicates go. A
-//     step searches 4 bounds and walks 253 to 255 launches, where it walked
-//     591; the calls out of the module are unchanged.
+//     259 indices: 2,048 indices, 8 KiB, and the bounds, built once at build
+//     from all 673 range ends before duplicates go. A step searches 4 bounds
+//     and walks 253 to 259 launches, where it would walk 595; the calls out
+//     of the module are unchanged.
 // Optimization (practice): the launches a step can run planned once, by
 // token count and logits, and reused by every step (GDSA.17).
 //

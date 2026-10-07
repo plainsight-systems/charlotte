@@ -21,6 +21,8 @@
 #include "core/kernels/norm/norm.h"
 #include "core/kernels/rope/rope.h"
 #include "core/kernels/schedule.h"
+#include "core/kernels/topk/topk.h"
+#include "core/sampler/sampler.h"
 #include "core/residency/plan.h"
 #include "support/model_headers.h"
 
@@ -149,6 +151,9 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
     out.push_back(kernels::norm_launch({&view(m.output_norm), carried, true, output, hidden, normed, m.norm_epsilon,
                                         kernels::Rows::LastToken}));
     write(&view(m.output_head.value_or(m.token_embedding)), normed, logits, kernels::Rows::LastToken);
+    add(kernels::topk_launches(logits, m.vocabulary_size, buffer("partials_a"), buffer("partials_b"),
+                               buffer("candidates")));
+    out.push_back(sampler::draw_launch(buffer("candidates"), buffer("sampled")));
     return out;
 }
 
@@ -187,22 +192,23 @@ TEST_CASE("every listed architecture supplies its describe and its graph") {
     }
 }
 
-TEST_CASE("Qwen3's graph is the stated order, 591 launches, 227 dispatched a step") {
+TEST_CASE("Qwen3's graph is the stated order, 595 launches, 231 dispatched a step") {
     const Loaded l = load("qwen3-0.6b-q4_0");
     const auto launches = graph_of(l);
     check_stated_order(launches, stated_order(l.model, l.plan, 1.0f));
-    CHECK(launches.size() == 591);
-    CHECK(dispatched(launches, 0, 1, true) == 227);
-    CHECK(dispatched(launches, 0, 512, true) == 227);
-    // A prefill step that does not end the prompt: no final norm, no head.
+    CHECK(launches.size() == 595);
+    CHECK(dispatched(launches, 0, 1, true) == 231);
+    CHECK(dispatched(launches, 0, 512, true) == 231);
+    // A prefill step that does not end the prompt: no final norm, head,
+    // selection or draw.
     CHECK(dispatched(launches, 0, 512, false) == 225);
     // Decode once its keys span two chunks: every layer's combine.
-    CHECK(dispatched(launches, 300, 1, true) == 255);
+    CHECK(dispatched(launches, 300, 1, true) == 259);
     // No post-norms: no norm normalizes `output` before adding it.
     CHECK(count_override(launches, "post_norm", 1.0) == 0);
 }
 
-TEST_CASE("each step's schedule holds every launch the step dispatches, and walks 253 to 255") {
+TEST_CASE("each step's schedule holds every launch the step dispatches, and walks 253 to 259") {
     const auto launches = graph_of(load("qwen3-0.6b-q4_0"));
     std::vector<kernels::Geometry> geometries;
     for (const kernels::Launch& l : launches) {
@@ -212,7 +218,7 @@ TEST_CASE("each step's schedule holds every launch the step dispatches, and walk
     for (std::uint32_t tokens = 1; tokens <= residency::kPrefillBlock; ++tokens) {
         for (const bool logits : {false, true}) {
             const auto list = schedules.of(tokens, logits);
-            CHECK(list.size() == (logits ? 255u : 253u));
+            CHECK(list.size() == (logits ? 259u : 253u));
             for (const std::uint32_t position : {0u, 255u, 300u, 4095u, 40000u}) {
                 std::vector<std::uint32_t> runs, listed;
                 for (std::uint32_t i = 0; i < geometries.size(); ++i) {
@@ -259,10 +265,15 @@ TEST_CASE("the head reads the token embedding where the file ties them") {
         std::find_if(l.plan.tensors.begin(), l.plan.tensors.end(), [&](const auto& t) {
             return t.tensor == l.model.token_embedding;
         })->view.pieces().front();
-    const kernels::Binding& head = launches.back().bindings.front();
+    // The head: the last matrix product, before selection and the draw.
+    const auto product = std::find_if(launches.rbegin(), launches.rend(), [](const kernels::Launch& l) {
+        return l.entry_point.starts_with("decode_");
+    });
+    REQUIRE(product != launches.rend());
+    const kernels::Binding& head = product->bindings.front();
     CHECK(head.buffer == embedding.buffer);
     CHECK(head.offset == embedding.offset);
-    CHECK(launches.back().rows == kernels::Rows::LastToken);
+    CHECK(product->rows == kernels::Rows::LastToken);
 }
 
 TEST_CASE("Q, K and V the plan did not group are three products, each into its own buffer") {
@@ -271,7 +282,7 @@ TEST_CASE("Q, K and V the plan did not group are three products, each into its o
     const auto launches = graph_of(l);
     check_stated_order(launches, stated_order(l.model, l.plan, 1.0f));
     // 3 products of 4 launches where one was: 8 more a layer.
-    CHECK(launches.size() == 591 + 8 * l.model.layers.size());
+    CHECK(launches.size() == 595 + 8 * l.model.layers.size());
     CHECK(std::none_of(launches.begin(), launches.end(),
                        [](const kernels::Launch& x) { return x.entry_point == "decode_qkv"; }));
 }

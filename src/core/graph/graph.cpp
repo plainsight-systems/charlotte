@@ -8,6 +8,8 @@
 #include "core/kernels/matmul/matmul.h"
 #include "core/kernels/norm/norm.h"
 #include "core/kernels/rope/rope.h"
+#include "core/kernels/topk/topk.h"
+#include "core/sampler/sampler.h"
 
 namespace bllm::graph {
 namespace {
@@ -78,7 +80,8 @@ Builder::Builder(const model::ModelDescription& model, const residency::Residenc
     buffers_ = {scratch(plan, "hidden"),   scratch(plan, "normed"),        scratch(plan, "query"),
                 scratch(plan, "key"),      scratch(plan, "value"),         scratch(plan, "attention"),
                 scratch(plan, "partials"), scratch(plan, "partial_stats"), scratch(plan, "output"),
-                scratch(plan, "activation"), scratch(plan, "logits"), scratch(plan, "sampled")};
+                scratch(plan, "activation"), scratch(plan, "logits"), scratch(plan, "partials_a"),
+                scratch(plan, "partials_b"), scratch(plan, "candidates"), scratch(plan, "sampled")};
 }
 
 const residency::WeightView& Builder::view(gguf::TensorId tensor) const {
@@ -182,12 +185,20 @@ GraphResult Builder::gated_feed_forward(std::uint32_t layer) {
     return {};
 }
 
-void Builder::output() {
+GraphResult Builder::output() {
+    if (model_->vocabulary_size < kernels::kCandidates) {
+        return {GraphError::UnsupportedShape, "a vocabulary of " + std::to_string(model_->vocabulary_size) +
+                                                  " is under the " + std::to_string(kernels::kCandidates) +
+                                                  " candidates selection keeps"};
+    }
     const Buffers& b = buffers_;
     out_->push_back(kernels::norm_launch({&view(model_->output_norm), pending_.post_gain, pending_.written, b.output,
                                           b.hidden, b.normed, model_->norm_epsilon, kernels::Rows::LastToken}));
     const residency::WeightView& head = view(model_->output_head.value_or(model_->token_embedding));
     product(head, b.normed, b.logits, kernels::Rows::LastToken);
+    append(*out_, kernels::topk_launches(b.logits, model_->vocabulary_size, b.partials_a, b.partials_b, b.candidates));
+    out_->push_back(sampler::draw_launch(b.candidates, b.sampled));
+    return {};
 }
 
 }  // namespace bllm::graph

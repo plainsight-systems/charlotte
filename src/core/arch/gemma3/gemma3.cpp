@@ -101,8 +101,7 @@ graph::GraphResult graph(const model::ModelDescription& model, const residency::
         if (auto r = b.attention(layer); !r.ok()) return r;
         if (auto r = b.gated_feed_forward(layer); !r.ok()) return r;
     }
-    b.output();
-    return {};
+    return b.output();
 }
 
 }  // namespace

@@ -59,8 +59,11 @@ namespace bllm::graph {
 //   - output(): the final norm, `output` added into `hidden` and normalized
 //     with the output norm's gain; then the head, `normed` into `logits` —
 //     the output head's weight, or the token embedding's where the file ties
-//     them. Both cover the step's last token only, and run only in a step
-//     that asks for logits.
+//     them; then top-k selection, `logits` to `candidates` through the
+//     partials (kernels/topk/topk.h), and the draw, `candidates` to the
+//     record in `sampled` (sampler/sampler.h). All cover the step's last
+//     token only, and run only in a step that asks for logits. A vocabulary
+//     under the 64 candidates selection keeps is refused.
 // A matrix product is all its launcher's launches — a decode launch and one
 // a prefill tile width, for each piece — and attention its main launch and
 // its combine; the program dispatches those a step's token count, position
@@ -117,22 +120,23 @@ namespace bllm::graph {
 // What a step costs, counted, for Qwen3 0.6B at Q4_0 with an F16 cache:
 //   - Launches in the graph: 21 a layer — the two norms, rope, attention and
 //     its combine, and 4 for each of the 4 products — 588, with the gather,
-//     the final norm and the head 591. Each is a bind group and a 256-byte
-//     constants slot, rope's 3: 647 slots, 162 KiB, written once at load
-//     (kernels/program.h). 28 pipelines: the gather, 3 norm variants, rope,
-//     attention and its combine, 4 forms of each of the 4 products, 4 more
-//     for the Q4_1 down projections, and the head.
-//   - Dispatched a step: 8 a layer, and the gather, final norm and head: 227
-//     (kernel-fusions.md); 255 once a decode step's keys span two 256-key
-//     chunks and every layer's combine runs; 225 in a prefill step that does
-//     not end the prompt. The program walks the 253 to 255 launches its
-//     schedule lists for the step (kernels/schedule.h), a constant-time
+//     the final norm, the head, selection's 3 passes and the draw 595. Each
+//     is a bind group and a 256-byte constants slot, rope's 3: 651 slots,
+//     163 KiB, written once at load (kernels/program.h). 31 pipelines: the
+//     gather, 3 norm variants, rope, attention and its combine, 4 forms of
+//     each of the 4 products, 4 more for the Q4_1 down projections, the
+//     head, selection's two entry points and the draw.
+//   - Dispatched a step: 8 a layer, and the gather, final norm, head,
+//     selection and draw: 231 (kernel-fusions.md); 259 once a decode step's
+//     keys span two 256-key chunks and every layer's combine runs; 225 in a
+//     prefill step that does not end the prompt, which runs neither the
+//     output block nor the draw. The program walks the 253 to 259 launches
+//     its schedule lists for the step (kernels/schedule.h), a constant-time
 //     workgroups_for each, and calls out of the module 14 times and 3 a
-//     dispatch — a bind group, the dispatch, and a pipeline,
-//     which changes at every dispatch since no two consecutive launches
-//     share one: 695 calls a step, 779 when split, 689 without logits. At
-//     about 1.5 µs a dispatch (kernels/interface.h), 0.34 to 0.38 ms of GPU
-//     time.
+//     dispatch — a bind group, the dispatch, and a pipeline, which changes at
+//     every dispatch but between selection's two merge passes: 706 calls a
+//     step, 790 when split, 689 without logits. At about 1.5 µs a dispatch
+//     (kernels/interface.h), 0.35 to 0.39 ms of GPU time.
 //   - Bytes, a decode step at position p: the weights once, 376 MB
 //     (kernels/matmul/matmul.h); the cache, 4 KiB a position a layer — 8
 //     key-value heads of 128 F16 keys and values — 112 KiB a position, read
@@ -231,7 +235,7 @@ public:
     void embed(float scale);
     [[nodiscard]] GraphResult attention(std::uint32_t layer);
     [[nodiscard]] GraphResult gated_feed_forward(std::uint32_t layer);
-    void output();
+    [[nodiscard]] GraphResult output();
 
 private:
     // What `output` holds when the next norm adds it.
@@ -243,7 +247,7 @@ private:
     // The plan's working buffers, by what they hold.
     struct Buffers {
         residency::BufferRange hidden, normed, query, key, value, attention, partials, partial_stats, output,
-            activation, logits, sampled;
+            activation, logits, partials_a, partials_b, candidates, sampled;
     };
 
     [[nodiscard]] const residency::WeightView& view(gguf::TensorId tensor) const;
