@@ -137,15 +137,16 @@ namespace bllm::sampler {
 //     adds, carrying the draw's total over the survivors as a second chain
 //     beside it, then the draw's running sum to u × that total, at most 64
 //     more, and writes the record.
-// Three barriers, and at most 192 adds in sequence on one invocation with
-// at most 64 more interleaved beside them. A lower bound on its latency, on
+// Three barriers, and in sequence on one invocation 3 × top_k adds at most
+// — 192 at a top_k of 64, 60 at Qwen3's 20 — with as many interleaved
+// beside them. An estimate of its latency at the worst, a top_k of 64, on
 // cores near 1.4 GHz from about 400 cycles for the loads, 50 a barrier and
-// 8 an add with its read, compare and loop control: 2,086 cycles, 1.5 µs.
-// It leaves out the exponentials' and the divisions' latency, each on the
+// 8 an add with its read, compare and loop control: 2,086 cycles, 1.5 µs,
+// leaving out the exponentials' and the divisions' latency, each on the
 // path between two barriers, and the issue slots Philox and the second
-// chain take; the selection's stages and this are calibrated together once
-// they run. With the selection, 15 µs or more (kernels/topk/topk.h), under
-// 1% of a 1.7 ms decode step until that measure says otherwise.
+// chain take. An estimate, partial, not a bound: the selection's stages and
+// this are measured together once they run, and that measure, not this,
+// says what share of a decode step they take.
 // The readback copies 16 bytes and maps them while the next step runs, so a
 // decode step's critical path no longer holds the map's round trip, 0.5 ms
 // median and 0.8 ms at p95 on the target. On the CPU, a token costs one
