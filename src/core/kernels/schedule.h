@@ -26,8 +26,9 @@ namespace bllm::kernels {
 //     gives workgroups, in order, and only launches whose token range and
 //     rows allow the step.
 //   - What it costs, for Qwen3 0.6B's 591 launches (graph/graph.h): 4
-//     intervals — 1, 2 to 8, 9 to 16, 17 to 512 — each 2 lists, of at most
-//     255 indices: 1,020 bytes a list, under 8 KiB in all, once at build. A
+//     intervals — 1, 2 to 8, 9 to 16, 17 to 512 — each 2 lists, of 253 and
+//     255 indices: 2,032 indices, 7.9 KiB, and the bounds, built once at
+//     build from all 673 range ends before duplicates go. A
 //     step searches 4 bounds and walks 253 to 255 launches, where it walked
 //     591; the calls out of the module are unchanged.
 // Optimization (practice): the launches a step can run planned once, by
