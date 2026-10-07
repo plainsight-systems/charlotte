@@ -61,7 +61,11 @@ namespace bllm::residency {
 //     second's, kCandidates for every kSelectionTile of those, 5 KB and
 //     8 KB; each later pass writes fewer than the one two before it, into the
 //     same buffer — `candidates`, the kCandidates kept, 512 bytes; and
-//     `sampled`, the draw's 16-byte record.
+//     `sampled`, the draw's 16-byte record. Selection's last pass writes
+//     `candidates` in place of a partials buffer, so for a vocabulary of
+//     16,384 or fewer — none listed — no pass writes `partials_b`, and for
+//     one of 1,024 or fewer none writes `partials_a`; each is still planned,
+//     512 bytes at least, so every plan holds the same working buffers.
 //   - The working buffers hold a prefill block of kPrefillBlock tokens at f32.
 //     Attention never stores a block-by-context matrix of scores: at 512
 //     tokens, 32 heads and a 40,000-token context that is 2.6 GB. Kernels work
