@@ -305,6 +305,7 @@ struct AttentionLaunch {
     residency::BufferRange attention;          // the output
     residency::BufferRange partials;           // a split's unnormalized O
     residency::BufferRange partial_stats;      // and its m and l
+    std::uint32_t partial_rows;                // the query rows they hold
 };
 
 // The layer's attention launch and its combine, in that order.

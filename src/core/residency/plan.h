@@ -93,6 +93,19 @@ namespace bllm::residency {
 // worth offering.
 inline constexpr std::uint32_t kPrefillBlock = 512;
 
+// The keys an attention chunk holds (kernels/attention/attention.h), by
+// which the partial buffers are sized.
+inline constexpr std::uint32_t kChunkKeys = 64;
+
+// The query rows a split step's partial buffers hold for a model of
+// `trained_context`: a prefill block's, or every chunk of the context where
+// that is more, so a decode step splits at every position any context the
+// plan offers reaches.
+[[nodiscard]] constexpr std::uint32_t partial_rows_for(std::uint32_t trained_context) noexcept {
+    const std::uint32_t chunks = trained_context / kChunkKeys + (trained_context % kChunkKeys != 0 ? 1 : 0);
+    return chunks > kPrefillBlock ? chunks : kPrefillBlock;
+}
+
 // The candidates top-k selection keeps for the draw, and the entries one of
 // its workgroups reduces to them (kernels/topk/topk.h): what its working
 // buffers are sized by.
@@ -167,6 +180,8 @@ struct ResidencyPlan {
     // plan_residency before anything else, so a failed plan has it too.
     gguf::TensorType cache_type{};
     std::vector<PlannedScratch> scratch;
+    // The partial buffers' query rows, partial_rows_for the trained context.
+    std::uint32_t partial_rows = 0;
     std::uint32_t context_offered = 0;
     // Bytes in each pool, alignment padding included, and their sum. On
     // ExceedsBudget, total_bytes is what the shortest context worth offering

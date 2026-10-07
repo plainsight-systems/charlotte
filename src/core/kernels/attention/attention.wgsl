@@ -1,6 +1,6 @@
 // Attention (kernels/attention/attention.h). Two entry points share this
 // module: main, FlashAttention-2's online softmax over the layer's KV cache
-// in 256-key chunks fixed by position; and combine, which folds a split
+// in 64-key chunks fixed by position; and combine, which folds a split
 // step's chunks. Both fold chunks with the same functions, fold_factors,
 // fold and finish, in chunk order, so a query's output is the same bits
 // however its step was shaped.
@@ -33,8 +33,9 @@ override group: u32 = query_heads / key_value_heads;                   // G
 override rows_per_tile: u32 = queries_per_tile / group;                // R
 override lanes_per_query: u32 = workgroup_size / queries_per_tile;     // 64 / M
 
-const kChunkKeys = 256u;
-const kPartialRows = 512u;
+override partial_rows: u32 = 512u;   // the partial buffers' query rows
+
+const kChunkKeys = 64u;
 
 @group(0) @binding(1) var<uniform> attention: Attention;
 
@@ -75,7 +76,7 @@ fn key_chunks() -> vec3<u32> {
     let first = earliest / kChunkKeys;
     let count = (step.position + step.tokens - 1u) / kChunkKeys - first + 1u;
     var splits = 1u;
-    if (step.tokens * count <= kPartialRows) {
+    if (step.tokens * count <= partial_rows) {
         splits = count;
     }
     return vec3<u32>(first, count, splits);

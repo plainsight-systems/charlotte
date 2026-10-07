@@ -36,7 +36,8 @@ std::array<Launch, 2> attention_launches(const AttentionLaunch& a) {
     const auto bytes = std::as_bytes(std::span(&constants, 1));
     const std::vector<Override> shape{{"head_dimension", static_cast<double>(d)},
                                       {"query_heads", static_cast<double>(layer.query_heads)},
-                                      {"key_value_heads", static_cast<double>(layer.key_value_heads)}};
+                                      {"key_value_heads", static_cast<double>(layer.key_value_heads)},
+                                      {"partial_rows", static_cast<double>(a.partial_rows)}};
 
     Launch attend{shaders::attention,
                   nullptr,
@@ -52,6 +53,7 @@ std::array<Launch, 2> attention_launches(const AttentionLaunch& a) {
     attend.rows_per_tile = rows_per_tile;
     attend.key_split = KeySplit::PerChunk;
     attend.window = layer.attention_window;
+    attend.partial_rows = a.partial_rows;
 
     Launch combine{shaders::attention,
                    nullptr,
@@ -64,6 +66,7 @@ std::array<Launch, 2> attention_launches(const AttentionLaunch& a) {
                    a.cache_format};
     combine.key_split = KeySplit::WhenSplit;
     combine.window = layer.attention_window;
+    combine.partial_rows = a.partial_rows;
     combine.entry_point = "combine";
     return {std::move(attend), std::move(combine)};
 }

@@ -38,7 +38,7 @@ TEST_CASE("attention launches its tiles split by chunk, and a combine that runs 
         const residency::PlannedCacheLayer cache{range(6), {residency::BufferIndex{6}, 8192, 4096}, 600};
         const float scale = 1.0f / std::sqrt(static_cast<float>(c.d));
         const auto [attend, combine] = kernels::attention_launches(
-            {layer, scale, range(2), cache, &formats::kF16, range(3), range(4), range(5)});
+            {layer, scale, range(2), cache, &formats::kF16, range(3), range(4), range(5), 640});
 
         CHECK(attend.kernel == shaders::attention);
         CHECK(attend.entry_point == "main");
@@ -58,6 +58,10 @@ TEST_CASE("attention launches its tiles split by chunk, and a combine that runs 
         CHECK(override_of(attend, "head_dimension") == c.d);
         CHECK(override_of(attend, "query_heads") == c.query_heads);
         CHECK(override_of(attend, "key_value_heads") == c.key_value_heads);
+        // The partial buffers' rows, to the kernel and to the dispatch alike.
+        CHECK(override_of(attend, "partial_rows") == 640);
+        CHECK(attend.partial_rows == 640);
+        CHECK(combine.partial_rows == 640);
         std::uint32_t slots = 0, window = 0;
         float scale_log2e = 0;
         std::memcpy(&slots, attend.constants.data(), 4);

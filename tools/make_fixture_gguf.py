@@ -275,8 +275,8 @@ def matmul_rows(seed=0x85EBCA6B):
 def forward_model(seed=0x9E3779B9, arch="qwen3"):
     """The smallest Qwen3-shaped model a whole forward pass runs: two layers,
     width 128, heads of 64 — 4 query and 2 key-value — feed-forward 256, a
-    vocabulary of 256 and a context of 512, so a step can cross a 256-key
-    chunk. Weights are pseudo-random Q4_0 blocks, codes of every value and
+    vocabulary of 256 and a context of 512, so a step can cross attention's
+    key chunks. Weights are pseudo-random Q4_0 blocks, codes of every value and
     fp16 scales of either sign, the embedding tied to the head; gains are F32
     near 1. For the GPU test that a token's logits are the same bits however
     its prompt is stepped.

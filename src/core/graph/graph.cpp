@@ -176,7 +176,7 @@ GraphResult Builder::attention(std::uint32_t layer) {
 
     for (kernels::Launch& a : kernels::attention_launches({l, model_->attention_scale, b.query, plan_->cache[layer],
                                                            cache_format_, b.attention, b.partials,
-                                                           b.partial_stats})) {
+                                                           b.partial_stats, plan_->partial_rows})) {
         at = out_->size();
         const bool combine = a.entry_point == "combine";
         out_->push_back(std::move(a));

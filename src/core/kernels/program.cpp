@@ -240,7 +240,8 @@ void Build::bind() {
         desc.entries = entries.data();
         s.launches.push_back({p, gpu::BindGroup(wgpuDeviceCreateBindGroup(device, &desc)),
                               Geometry{launches[i].rows, launches[i].invocations_per_row, launches[i].rows_per_tile,
-                                       launches[i].key_split, launches[i].window, launches[i].tokens},
+                                       launches[i].key_split, launches[i].window, launches[i].tokens,
+                                       launches[i].partial_rows},
                               launches[i].workgroup_size});
     }
     std::vector<Geometry> geometries;

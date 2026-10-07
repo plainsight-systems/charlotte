@@ -138,7 +138,7 @@ namespace bllm::graph {
 //     head, selection's two entry points and the draw.
 //   - Dispatched a step: 8 a layer, and the gather, final norm, head,
 //     selection and draw: 231 (kernel-fusions.md); 259 once a decode step's
-//     keys span two 256-key chunks and every layer's combine runs; 225 in a
+//     keys span two 64-key chunks and every layer's combine runs; 225 in a
 //     prefill step that does not end the prompt, which runs neither the
 //     output block nor the draw. The program walks the 253 to 259 launches
 //     its schedule lists for the step (kernels/schedule.h), a constant-time
@@ -184,7 +184,7 @@ namespace bllm::graph {
 //   - On the GPU, a generated two-layer Qwen3-shaped model with Q4_0
 //     weights: the last token's logits the same bits prefilled in one step,
 //     in steps that change prefill tile width and attention's split, and
-//     decoded a token at a time, at positions either side of a 256-key
+//     decoded a token at a time, at positions either side of a 64-key
 //     chunk boundary. The test reads `logits` back through a mapping of its
 //     own; the harness reads only the sampler's drawn token
 //     (sampler/sampler.h).

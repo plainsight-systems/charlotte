@@ -67,7 +67,7 @@ std::vector<float> stepped(WGPUInstance instance, const gpu::Device& device, std
 TEST_CASE("a token's logits are the same bits however its prompt is stepped") {
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
-    // 300 tokens: its keys span two 256-key chunks.
+    // 300 tokens: its keys span five 64-key chunks.
     const auto ids = prompt(300, 256);
 
     const std::vector<std::uint32_t> whole{300};
@@ -77,11 +77,11 @@ TEST_CASE("a token's logits are the same bits however its prompt is stepped") {
     CHECK(*std::max_element(want.begin(), want.end()) > *std::min_element(want.begin(), want.end()));
 
     // Steps of 5 and 12, in the 8- and 16-token tiles, then 240 and 43 in
-    // the 32-token tile, the last split across the two chunks.
+    // the 32-token tile, the last split across its five chunks.
     const std::vector<std::uint32_t> tiles{5, 12, 240, 43};
     // A prefill, then a decode step, split across the chunks.
     const std::vector<std::uint32_t> then_decode{299, 1};
-    // A token at a time, every step past position 255 split.
+    // A token at a time, every step past position 63 split.
     const std::vector<std::uint32_t> decoded(300, 1);
     for (const auto* steps : {&tiles, &then_decode, &decoded}) {
         CAPTURE(steps->size());

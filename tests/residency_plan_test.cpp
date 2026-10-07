@@ -318,7 +318,7 @@ TEST_CASE("an output head stored as a copy of the embedding gets buffers of its 
     }
 }
 
-TEST_CASE("attention's partial buffers hold 512 query rows of outputs and of maxima and sums") {
+TEST_CASE("attention's partial buffers hold 512 query rows, or a row a chunk of the trained context") {
     const auto p = describe("tiny_qwen3");   // 2 query heads of 32
     ResidencyPlan plan;
     REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
@@ -331,6 +331,19 @@ TEST_CASE("attention's partial buffers hold 512 query rows of outputs and of max
     };
     CHECK(length("partials") == 512 * 2 * 32 * 4);
     CHECK(length("partial_stats") == 512 * 2 * 2 * 4);
+    CHECK(plan.partial_rows == 512);
+
+    // A trained context of more than 512 chunks: a row for each, so a decode
+    // step at any position splits (kernels/attention/attention.h).
+    auto model = p.model;
+    model.trained_context = 40960;
+    ResidencyPlan longer;
+    REQUIRE(residency::plan_residency(p.index, model, kDefaults, policy::LoadPolicy{}, longer).ok());
+    CHECK(longer.partial_rows == 640);
+    for (const auto& s : longer.scratch) {
+        if (s.purpose == "partials") CHECK(s.range.length == 640 * 2 * 32 * 4);
+        if (s.purpose == "partial_stats") CHECK(s.range.length == 640 * 2 * 2 * 4);
+    }
 }
 
 TEST_CASE("selection's buffers hold 64 pairs a tile of the vocabulary, and the draw's its record") {

@@ -74,6 +74,7 @@ bool same(const kernels::Launch& a, const kernels::Launch& b) {
            a.invocations_per_row == b.invocations_per_row && a.workgroup_size == b.workgroup_size &&
            a.rows == b.rows && a.overrides == b.overrides && a.pack_format == b.pack_format &&
            a.rows_per_tile == b.rows_per_tile && a.key_split == b.key_split && a.window == b.window &&
+           a.partial_rows == b.partial_rows &&
            a.entry_point == b.entry_point && a.tokens == b.tokens;
 }
 
@@ -136,7 +137,7 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
                                             m.rotary_factors ? &view(*m.rotary_factors) : nullptr, m.norm_epsilon,
                                             query, key, value, p.cache[i], &f16()}));
         for (auto& a : kernels::attention_launches(
-                 {l, m.attention_scale, query, p.cache[i], &f16(), attention, partials, stats})) {
+                 {l, m.attention_scale, query, p.cache[i], &f16(), attention, partials, stats, p.partial_rows})) {
             out.push_back(std::move(a));
         }
         write(at(i, Role::AttentionOutput), attention, output, kernels::Rows::EveryToken);

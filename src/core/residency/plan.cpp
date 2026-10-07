@@ -264,10 +264,11 @@ PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimit
         Need{"key", kPrefillBlock, key_value},
         Need{"value", kPrefillBlock, key_value},
         Need{"attention", kPrefillBlock, query},
-        // A split step's unnormalized outputs and their maxima and sums,
-        // 512 query rows (kernels/attention/attention.h).
-        Need{"partials", kPrefillBlock, query},
-        Need{"partial_stats", kPrefillBlock, 2 * query_heads},
+        // A split step's unnormalized outputs and their maxima and sums, a
+        // prefill block's query rows or the context's chunks
+        // (kernels/attention/attention.h).
+        Need{"partials", partial_rows_for(model.trained_context), query},
+        Need{"partial_stats", partial_rows_for(model.trained_context), 2 * query_heads},
         // A block's last matmul writes its result here; the norm after it
         // adds it into hidden (kernels/norm/norm.h).
         Need{"output", kPrefillBlock, model.embedding_width},
@@ -282,6 +283,7 @@ PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimit
         Need{"candidates", 1, 2ull * kCandidates},
         Need{"sampled", 1, 4},
     };
+    out.partial_rows = partial_rows_for(model.trained_context);
     Packer packer{out.buffers, Pool::Scratch, limits};
     for (const Need& need : needs) {
         std::uint64_t bytes = 0;

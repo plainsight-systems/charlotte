@@ -372,14 +372,14 @@ TEST_CASE("launches run their tiles and key splits, a combine only when split, e
         return std::array<std::uint32_t, 3>{c[0], c[1], c[2]};
     };
 
-    // Decode at 4,096: one tile of 4 rows, 8 workgroups; 16 chunks, each a
+    // Decode at 4,096: one tile of 4 rows, 8 workgroups; 64 chunks, each a
     // workgroup of the other entry; the step splits, so the combine runs.
     run_step(instance.get(), *program, 1, {}, 4095);
-    CHECK(read() == std::array<std::uint32_t, 3>{8, 16000, 1});
+    CHECK(read() == std::array<std::uint32_t, 3>{8, 64000, 1});
 
-    // Five rows at 100: two tiles; one chunk, so no split and no combine.
-    run_step(instance.get(), *program, 5, {}, 100);
-    CHECK(read() == std::array<std::uint32_t, 3>{8 + 16, 16000 + 5000, 1});
+    // Five rows at 10: two tiles; one chunk, so no split and no combine.
+    run_step(instance.get(), *program, 5, {}, 10);
+    CHECK(read() == std::array<std::uint32_t, 3>{8 + 16, 64000 + 5000, 1});
 }
 
 TEST_CASE("a step past position 2^24 is refused, saying so") {

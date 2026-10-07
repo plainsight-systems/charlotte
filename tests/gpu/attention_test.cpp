@@ -92,8 +92,10 @@ Uploaded upload_buffers(WGPUInstance instance, const gpu::Device& device) {
     u.source = alone(rows);
     u.query = alone(rows);
     u.attended = alone(rows);
-    u.partials = alone(rows);
-    u.stats = alone(512 * 32 * 2 * 4);
+    // Partial buffers of 1,024 rows, so a step's partial rows can be set
+    // past the prefill block's.
+    u.partials = alone(2 * rows);
+    u.stats = alone(1024 * 32 * 2 * 4);
     const std::uint64_t layer = std::uint64_t{kSlots} * 8 * 128 * 2;   // the widest key-value heads
     const residency::BufferRange cache = alone(2 * layer);
     u.cache = {{cache.buffer, 0, layer}, {cache.buffer, layer, layer}, kSlots};
@@ -128,12 +130,14 @@ double scale_of(const Shape& s) { return 1.0 / std::sqrt(static_cast<double>(s.d
 // A step of `tokens` query rows of the source from row `first`, at
 // `position`: its attention output, rows of H_q × d.
 std::vector<float> run_attention(WGPUInstance instance, const gpu::Device& device, const Uploaded& u,
-                                 const Shape& s, std::uint32_t position, std::uint32_t tokens, std::uint32_t first) {
+                                 const Shape& s, std::uint32_t position, std::uint32_t tokens, std::uint32_t first,
+                                 std::uint32_t partial_rows = residency::kPrefillBlock) {
     const std::uint32_t width = s.query_heads * s.d;
     residency::PlannedCacheLayer cache = u.cache;
     cache.slots = s.slots;
     const auto launches = kernels::attention_launches({layer_of(s), static_cast<float>(scale_of(s)), u.query, cache,
-                                                       &formats::kF16, u.attended, u.partials, u.stats});
+                                                       &formats::kF16, u.attended, u.partials, u.stats,
+                                                       partial_rows});
     const auto program = build_program(
         instance, *u.upload,
         {kernels::Launch{kCopy, nullptr, words({width / 4, first}),
@@ -223,10 +227,10 @@ TEST_CASE("each listed shape attends within the bound, decoded and prefilled, sp
     for (const Shape& s : {kQwen, kLlama, kGemma}) {
         for (const Step& step : {
                  // Decode: one chunk, then split across two, then many.
-                 Step{0, 1, 0}, Step{255, 1, 3}, Step{256, 1, 5}, Step{700, 1, 7}, Step{1023, 1, 9},
+                 Step{0, 1, 0}, Step{63, 1, 3}, Step{64, 1, 5}, Step{700, 1, 7}, Step{1023, 1, 9},
                  // Prefill: one chunk; split across a boundary; a partial
                  // tile at the end; folded within each workgroup.
-                 Step{0, 4, 0}, Step{254, 3, 11}, Step{1019, 5, 20}, Step{0, 300, 0},
+                 Step{0, 4, 0}, Step{62, 3, 11}, Step{1019, 5, 20}, Step{0, 300, 0},
              }) {
             CAPTURE(s.name);
             CAPTURE(step.position);
@@ -244,16 +248,35 @@ TEST_CASE("a query decoded alone and prefilled among 300 gives the same bits") {
     const Uploaded u = upload_buffers(instance.get(), *device);
     for (const Shape& s : {kQwen, kLlama, kGemma}) {
         CAPTURE(s.name);
-        // 300 rows from 0 fold within each workgroup: 2 chunks × 300 rows
+        // 300 rows from 0 fold within each workgroup: 5 chunks × 300 rows
         // overflow the partial buffers.
-        REQUIRE(kernels::key_chunks(0, 300, s.window).splits == 1);
+        REQUIRE(kernels::key_chunks(0, 300, s.window, residency::kPrefillBlock).splits == 1);
         const auto prefilled = run_attention(instance.get(), *device, u, s, 0, 300, 0);
         const std::size_t width = std::size_t{s.query_heads} * s.d;
-        for (const std::uint32_t r : {0u, 1u, 255u, 256u, 299u}) {
+        for (const std::uint32_t r : {0u, 1u, 63u, 64u, 255u, 256u, 299u}) {
             CAPTURE(r);
-            // Alone at its position: split across its chunks from 256 on.
+            // Alone at its position: split across its chunks from 64 on.
             const auto decoded = run_attention(instance.get(), *device, u, s, r, 1, r);
             CHECK(std::equal(decoded.begin(), decoded.end(), prefilled.begin() + r * width));
         }
+    }
+}
+
+TEST_CASE("a step's partial rows decide whether it splits, and split or folded its bits are the same") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_buffers(instance.get(), *device);
+    for (const Shape& s : {kQwen, kLlama, kGemma}) {
+        CAPTURE(s.name);
+        // 33 rows at 990 reach 16 chunks of a full-attention layer, 528
+        // partial rows: folded with 512, split with 1,024.
+        const auto chunks = [&](std::uint32_t rows) { return kernels::key_chunks(990, 33, s.window, rows); };
+        if (s.window >= 1023) {
+            REQUIRE(chunks(512).splits == 1);
+            REQUIRE(chunks(1024).splits == 16);
+        }
+        const auto folded = run_attention(instance.get(), *device, u, s, 990, 33, 40, 512);
+        const auto split = run_attention(instance.get(), *device, u, s, 990, 33, 40, 1024);
+        CHECK(std::equal(folded.begin(), folded.end(), split.begin()));
     }
 }

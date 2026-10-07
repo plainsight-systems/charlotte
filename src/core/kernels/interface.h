@@ -199,21 +199,20 @@ enum class Rows {
 // The positions a step may reach: position + tokens <= 2^24. Rope forms a
 // position as an f32, exact only below 2^24 (kernels/rope/rope.h), and
 // below it every intermediate of the chunk arithmetic — position + 1,
-// tokens × count, at most 512 × 65,537 — stays far below 2^32. Every listed
+// tokens × count, at most 512 × 262,145 — stays far below 2^32. Every listed
 // model's context, at most 131,072, is well inside. The program refuses a
 // step past it.
 inline constexpr std::uint32_t kMaxPositions = 1u << 24;
 
-// Keys a chunk holds, fixed by position: chunk c is positions 256c ..
-// 256c + 255 (kernels/attention/attention.h). And the query rows a split
-// step's partial buffers hold, the prefill block's.
-inline constexpr std::uint32_t kChunkKeys = 256;
-inline constexpr std::uint32_t kPartialRows = residency::kPrefillBlock;
+// Keys a chunk holds, fixed by position: chunk c is positions 64c ..
+// 64c + 63 (kernels/attention/attention.h), as the plan sizes the partial
+// buffers by.
+inline constexpr std::uint32_t kChunkKeys = residency::kChunkKeys;
 
 // A layer's chunks of keys for a step, and how it splits them: from the
 // chunk holding its first row's earliest key, position − window + 1, to the
 // chunk holding its last row; split one workgroup a chunk when every row's
-// partials fit, else not at all. The program dispatches by it and the
+// partials fit the partial buffers' `partial_rows`, else not at all. The program dispatches by it and the
 // attention kernel computes the same in WGSL.
 struct KeyChunks {
     std::uint32_t first;
@@ -221,14 +220,14 @@ struct KeyChunks {
     std::uint32_t splits;   // count, or 1
 };
 
-// Preconditions: tokens >= 1, window >= 1, position + tokens <=
-// kMaxPositions.
-[[nodiscard]] constexpr KeyChunks key_chunks(std::uint32_t position, std::uint32_t tokens,
-                                             std::uint32_t window) noexcept {
+// Preconditions: tokens >= 1, at most kPrefillBlock; window >= 1;
+// position + tokens <= kMaxPositions.
+[[nodiscard]] constexpr KeyChunks key_chunks(std::uint32_t position, std::uint32_t tokens, std::uint32_t window,
+                                             std::uint32_t partial_rows) noexcept {
     const std::uint32_t earliest = position + 1 > window ? position + 1 - window : 0;
     const std::uint32_t first = earliest / kChunkKeys;
     const std::uint32_t count = (position + tokens - 1) / kChunkKeys - first + 1;
-    return {first, count, tokens * count <= kPartialRows ? count : 1};
+    return {first, count, tokens * count <= partial_rows ? count : 1};
 }
 
 // How a launch uses the step's key chunks.
@@ -250,6 +249,8 @@ struct Geometry {
     std::uint32_t window;
     // The steps it runs in, by token count; every step by default.
     TokenRange tokens = {};
+    // A key split's partial buffers' query rows (key_chunks).
+    std::uint32_t partial_rows = residency::kPrefillBlock;
 };
 
 // The workgroups a launch of `workgroup_size` runs in a step of `tokens`
@@ -271,7 +272,7 @@ struct Geometry {
                                    g.invocations_per_row;
     const std::uint64_t workgroups = (covered + workgroup_size - 1) / workgroup_size;
     if (g.key_split == KeySplit::None) return workgroups;
-    const std::uint32_t splits = key_chunks(position, tokens, g.window).splits;
+    const std::uint32_t splits = key_chunks(position, tokens, g.window, g.partial_rows).splits;
     if (g.key_split == KeySplit::WhenSplit) return splits > 1 ? workgroups : 0;
     return workgroups * splits;
 }
@@ -311,9 +312,11 @@ struct Launch {
     // dispatches ceil(rows / rows_per_tile) tiles, each rows_per_tile ×
     // invocations_per_row invocations, a whole number of workgroups.
     std::uint32_t rows_per_tile = 0;
-    // Its use of the step's key chunks, for a layer of this window.
+    // Its use of the step's key chunks, for a layer of this window, and the
+    // partial buffers' query rows.
     KeySplit key_split = KeySplit::None;
     std::uint32_t window = 0;
+    std::uint32_t partial_rows = residency::kPrefillBlock;
     // The WGSL entry point: one module may hold two roles, which share its
     // functions and not each other's workgroup memory.
     std::string_view entry_point = "main";
