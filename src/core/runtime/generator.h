@@ -20,11 +20,18 @@ namespace bllm::runtime {
 //   - A turn: the text, UTF-8, is encoded whole — the chat template wrote
 //     the special tokens as text, and they encode as their identifiers —
 //     into tokens held for the generator's life, reserved at the context
-//     offered plus one; a prompt that encodes longer grows them once, and
-//     the runtime refuses it, naming both counts. Then the runtime's turn
-//     starts over them.
+//     offered plus one. Then the runtime's turn starts over them.
+//   - A token covers at most the vocabulary's longest text, L bytes, so text
+//     longer than the context × L bytes encodes to more tokens than the
+//     context holds: it is refused before it is encoded, as PromptTooLong,
+//     naming its bytes and the least tokens they make, so no prompt's
+//     encode grows memory past what a prompt the context could hold needs.
+//     Shorter text encodes to at most its bytes in tokens; one too long for
+//     the context grows the tokens once, and the runtime refuses it, naming
+//     both counts.
 //   - Refused at once, without a callback: text the tokenizer cannot encode,
-//     named; and whatever the runtime refuses (runtime.h).
+//     named; text over that bound; and whatever the runtime refuses
+//     (runtime.h).
 //   - Each token the runtime emits is decoded into bytes and pushed through
 //     a UTF-8 stream (tokenizer.h's Utf8Stream), and the characters it
 //     completes are passed to the text callback; a token that completes
@@ -42,15 +49,17 @@ namespace bllm::runtime {
 //     turn Cancelled (runtime.h), and its end callback is still called.
 //
 // What it costs, counted:
-//   - A turn, once: the text's bytes encoded, about 26 ns a byte for
-//     byte-level BPE with its piece cache warm, 39 for SentencePiece (their
-//     headers) — 4 to 5 ms for a conversation of a listed model's whole
-//     context — then the runtime's turn.
+//   - A turn, once: the text's bytes encoded, 28.8 to 30.4 ns a byte for
+//     byte-level BPE with its piece cache warm, 43.3 for SentencePiece (their
+//     headers) — 4.6 to 5.6 ms for a conversation of a listed model's whole
+//     context — then the runtime's turn. The encoders allocate their working
+//     lists — segments, pieces, symbols — afresh each encode: a few heap
+//     allocations a turn, beside the turn's prefill.
 //   - A token: one decode, an indirect call that appends the token's bytes
 //     to a string reserved at load for the vocabulary's longest token; the
 //     stream's push over those bytes; and, when they complete a character,
 //     one text callback — the boundary's one crossing a token (WASM.2).
-//     Nothing is allocated.
+//     Nothing is allocated a token.
 //
 // Verification the implementation is held to, on the GPU with Qwen3's file:
 //   - A turn over a rendered chat prompt streams text whose concatenation is
@@ -71,7 +80,7 @@ namespace bllm::runtime {
 //            once a turn, as bytes; text, once a token that completes some.
 //     WASM.4 Reduce indirect dispatch in hot paths — one decode a token.
 //     MEM.9  Allocate at init — the tokens, the decode buffer and the stream,
-//            at load.
+//            at load; a token's path allocates nothing.
 
 // Each piece of the reply's text, whole characters, in order. Valid only
 // during the call.

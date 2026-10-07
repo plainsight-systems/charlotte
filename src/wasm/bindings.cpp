@@ -30,26 +30,31 @@
 // begin, the same at both, so Fit is judged against the plan the load makes:
 // the cache precision as its index in CachePrecision, or −1; the memory
 // budget as a double, an exact integer, or NaN; the rollback reserve, or
-// 2^32 − 1; and the stop texts as one buffer, each text followed by a NUL,
-// which no token's text holds. −1, NaN and 2^32 − 1 stand for the field
-// unset — an unmeasured model's, which runs on the default.
+// 2^32 − 1; and the stop texts as one buffer of their UTF-8 bytes with an
+// array of their lengths, so a text may hold any byte. −1, NaN and 2^32 − 1
+// stand for the field unset — an unmeasured model's, which runs on the
+// default.
 //
 //   bllm_preflight(request, prefix, prefix_length, file_size, limits...,
 //                  policy...)
 //     Reads the index from `prefix` and answers with how far this build
-//     takes the model, judged under the model's load policy, or with the
-//     bytes the reader still needs.
+//     takes the model, judged under the model's load policy — its tokenizer
+//     loaded from the prefix and its stop set resolved, each failure a Run
+//     blocker (preflight.h) — or with the bytes the reader still needs.
 //
 //   bllm_load_begin(request, prefix, prefix_length, file_size, confirmed,
 //                   confirmed_count, max_chunk, policy...)
 //     Reads the index from `prefix` — the bytes preflight read — describes
-//     the model, plans it for the kept device, loads its tokenizer from the
-//     prefix, where its vocabulary and merges lie (preflight.h's
-//     load_tokenizer), and resolves its stop set from the file and the
-//     policy's stop texts (runtime/stops.h); then begins the Upload with the
-//     duplicates the page confirmed (web/duplicates.js). Answers once the
-//     device holds the buffers: the chunk buffer's address and size, or the
-//     failure, named. A model already loaded is released first — its
+//     the model, plans it for the kept device, and begins the Upload with the
+//     duplicates the page confirmed (web/duplicates.js). Then, while the
+//     device creates the buffers, it loads the tokenizer from the prefix,
+//     where its vocabulary and merges lie (preflight.h's load_tokenizer), and
+//     resolves the stop set from the file and the policy's stop texts
+//     (runtime/stops.h): 20 to 56 ms of the CPU's for the listed models,
+//     overlapped with the GPU's work rather than ahead of it. Answers once
+//     the device holds the buffers: the chunk buffer's address and size, or
+//     the failure, named — the tokenizer's or the stop set's included, the
+//     buffers then released. A model already loaded is released first — its
 //     generator, so a turn running finishes cancelled, then its buffers — so
 //     two models are never on the device together.
 //   bllm_load_chunk(request, file_offset, length)

@@ -8,14 +8,24 @@
 // holds, so nothing here changes when earlier turns are rewritten.
 //
 // A conversation longer than the context is refused by the runtime with code
-// "prompt-too-long", before anything runs. The panel then drops the oldest
-// exchange — a user message and the reply to it — renders again and resends,
-// until the turn fits or only the new message is left, which fails as any
-// refusal does; the dropped messages stay dropped, and the log says how many
-// went (conversation.js's withoutOldestExchange, tested on its own). The
-// runtime's diff finds what of the shortened conversation it still holds
-// (logical-overview.md). Each retry costs one render and one encode of
-// the conversation, a few milliseconds, against a prefill of the whole.
+// "prompt-too-long", before anything runs, carrying the prompt's tokens and
+// the context's. The panel then drops the oldest exchanges — a user message
+// and the reply to it, each — whose share of the rendered text covers the
+// excess, estimated from those counts, renders again and resends; should the
+// estimate fall short, one more exchange at a time, until the turn fits or
+// only the new message is left, which fails as any refusal does. So a
+// shortening costs one render and one encode, a few milliseconds, and
+// another only where the estimate missed, rather than one an exchange
+// dropped. The dropped messages stay dropped, and the log says how many went
+// (conversation.js's shortening, tested on its own). The runtime's diff
+// finds what of the shortened conversation it still holds
+// (logical-overview.md).
+//
+// A reply's text is rendered at most once a frame: pieces arriving between
+// frames are joined, and the reply redrawn when the browser next paints.
+// Redrawing it a piece at a time reparses the whole reply each time, work
+// that grows with the square of its length; a frame at a time, with the
+// frames' count, about 60 a second, not the tokens', several hundred.
 
 import { splitThinking, withAssistant, withUser } from './conversation.js';
 import { h } from './dom.js';

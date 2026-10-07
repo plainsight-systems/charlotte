@@ -33,13 +33,17 @@ namespace bllm::preflight {
 //              (residency/upload.h); a diagnostic build reads every byte back
 //              (residency/upload_check.h)
 //   Run        it generates: its architecture's graph builds
-//              (arch/architecture.h), and the tokenizer
+//              (arch/architecture.h), its tokenizer loads from the header
+//              (load_tokenizer below), and its stop set resolves
 //
 // The verdict lists blockers, each naming the stage it stops and why: the
 // architecture, each unsupported format with how many tensors use it and the
 // first, the graph's refusal of a layer, a cache format no kernel writes, the
-// tokenizer or pre-tokenizer, or a stage this build does not implement. The
-// graph is built only for a model that fits, over the plan Fit made. Every check that can run does, so the verdict says everything a
+// tokenizer or pre-tokenizer, the tokenizer's load or the stop set's
+// failure, or a stage this build does not implement. The graph is built only
+// for a model that fits, over the plan Fit made; the tokenizer is loaded only
+// where its algorithm and pre-tokenizer are listed, at 20 to 56 ms for the
+// listed models, once a verdict. Every check that can run does, so the verdict says everything a
 // model still needs, not only what stops the next stage. The stage reached is
 // derived from the blockers, never stored beside them.
 
@@ -127,13 +131,16 @@ struct Verdict {
                                     const policy::LoadPolicy& policy, model::ModelDescription& description,
                                     residency::ResidencyPlan& plan);
 
-// What a load uses to tokenize: the algorithm the file's
-// tokenizer.ggml.model names and the pre-tokenizer its tokenizer.ggml.pre
-// names, found in the capability table, loaded from the bytes the index was
-// read from — the vocabulary and merges lie in the header, which the load is
-// given (tokenizer.h's LoadFn). Returns what stops it, worded as preflight's
-// Run blocker would be, or the load's own failure named; an empty string,
-// and `out` set, otherwise.
+// The model's tokenizer: the algorithm the file's tokenizer.ggml.model names
+// and the pre-tokenizer its tokenizer.ggml.pre names, found in the
+// capability table, loaded from the bytes the index was read from — the
+// vocabulary and merges lie in the header (tokenizer.h's LoadFn). Returns
+// what stops it, worded as a Run blocker, or the load's own failure named; an
+// empty string, and `out` set, otherwise. Preflight runs it on the header it
+// was given, with the stop set resolved over the vocabulary it loads
+// (runtime/stops.h), and names either failure as a Run blocker, so a file
+// whose tokenizer or stop tokens cannot be made is refused before its
+// weights are fetched; the load runs it again on the same bytes.
 [[nodiscard]] std::string load_tokenizer(gguf::ByteSource& source, const gguf::TensorIndex& index,
                                          std::unique_ptr<tokenizer::Tokenizer>& out);
 

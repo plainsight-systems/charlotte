@@ -87,10 +87,10 @@ extern const Algorithm kByteLevel;
 // The algorithm as a Tokenizer (tokenizer.h): the encoder and its piece
 // cache, kept for the tokenizer's life, so a turn's encode of the whole
 // conversation finds the pieces earlier turns merged. Warm, that cache took
-// Qwen3's encode of the bench corpus, 428 KB, from 15.7 ms to 11.1 ms and
-// Llama 3.2's from 20.9 to 11.7 (piece_cache.h): about 26 ns a byte, so a
-// conversation of Qwen3's whole context, near 160 KB, encodes in about 4 ms
-// a turn.
+// Qwen3's encode of the bench corpus — 385,417 bytes, the Makefile's
+// BENCH_COMMIT — from 15.7 ms to 11.1 ms and Llama 3.2's from 20.9 to 11.7
+// (piece_cache.h): 28.8 and 30.4 ns a byte, so a conversation of Qwen3's
+// whole context, near 160 KB, encodes in about 4.6 ms a turn.
 class ByteLevelTokenizer final : public Tokenizer {
 public:
     [[nodiscard]] const Vocabulary& vocabulary() const noexcept override;

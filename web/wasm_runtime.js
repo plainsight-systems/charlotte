@@ -10,7 +10,8 @@
 // (`canCheck`). The handle is closed however the load ends, so the file is
 // unlocked for the page to read again. Preflight and load carry the model's
 // load policy, written as the module reads it (src/wasm/bindings.cpp): a
-// field unset as its stand-in, the stop texts NUL-terminated in one buffer.
+// field unset as its stand-in, the stop texts' bytes in one buffer with an
+// array of their lengths.
 //
 // generate encodes the prompt as UTF-8 into the module's memory, calls
 // bllm_generate, and frees the bytes once the call returns, the module

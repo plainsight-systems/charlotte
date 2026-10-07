@@ -122,8 +122,9 @@ extern const Algorithm kSentencePiece;
                                                 SentencePieceBpe& out);
 
 // The algorithm as a Tokenizer (tokenizer.h). Gemma 3 encodes the bench
-// corpus, 428 KB, in 16.7 ms: about 39 ns a byte, so a conversation of 32,768
-// tokens, near 130 KB, encodes in about 5 ms a turn.
+// corpus — 385,417 bytes, the Makefile's BENCH_COMMIT — in 16.7 ms: 43.3 ns a
+// byte, so a conversation of 32,768 tokens, near 130 KB, encodes in about
+// 5.6 ms a turn.
 class SentencePieceTokenizer final : public Tokenizer {
 public:
     [[nodiscard]] const Vocabulary& vocabulary() const noexcept override;
