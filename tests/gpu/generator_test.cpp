@@ -151,6 +151,28 @@ std::vector<TokenId> tokens_alone(WGPUInstance instance, const Model& m, std::ui
     return s.tokens;
 }
 
+// A turn whose last text, U+FFFD, starts the next turn from its callback.
+struct Chained {
+    runtime::Generator* generator;
+    Streamed first, second;
+    bool started = false;
+};
+
+void on_first_text(std::string_view text, void* userdata) {
+    auto& c = *static_cast<Chained*>(userdata);
+    c.first.pieces.emplace_back(text);
+    if (!c.started && text.ends_with("\xEF\xBF\xBD")) {
+        c.started = true;
+        REQUIRE(c.generator->start(kPrompt, greedy(2), on_text, on_end, &c.second).ok());
+    }
+}
+
+void on_first_end(const runtime::TurnResult& result, void* userdata) {
+    auto& c = *static_cast<Chained*>(userdata);
+    c.first.result = result;
+    c.first.result->message = {};
+}
+
 }  // namespace
 
 TEST_CASE("the generator streams whole characters, the tokens' decoding, and ends a split one with U+FFFD") {
@@ -200,6 +222,16 @@ TEST_CASE("the generator streams whole characters, the tokens' decoding, and end
         CHECK(got == want);
         if (inside) CHECK(s.pieces.back().ends_with("\xEF\xBF\xBD"));
     }
+    // The turn ending inside a character, its last text starting the next
+    // turn: each turn's end reaches its own callback.
+    runtime::Generator g{tokenizer_of(*m), runtime_of(instance.get(), *m, *decoder)};
+    Chained c{&g};
+    REQUIRE(g.start(kPrompt, greedy(*split), on_first_text, on_first_end, &c).ok());
+    pump_end(instance.get(), c.first);
+    CHECK(c.started);
+    CHECK(c.first.result->emitted == *split);
+    pump_end(instance.get(), c.second);
+    CHECK(c.second.result->emitted == 2);
 }
 
 TEST_CASE("the generator refuses text it cannot take, and a destroyed one ends its turn Cancelled") {

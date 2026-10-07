@@ -35,10 +35,16 @@ void on_token(tokenizer::TokenId token, void* userdata) {
 
 void on_turn(const TurnResult& result, void* userdata) {
     Generator::State& s = *static_cast<Generator::State*>(userdata);
+    // This turn's callbacks, taken before the generator is idle: the last
+    // text callback may start the next turn, which replaces them.
+    const TextCallback on_text = s.on_text;
+    const EndCallback on_end = s.on_end;
+    void* const caller = s.userdata;
+    const std::string_view text = s.text->finish();
     const std::shared_ptr<Generator::State> keep = std::move(s.in_flight);
     // Bytes still pending, the turn stopped inside a character: U+FFFD.
-    if (const std::string_view text = s.text->finish(); !text.empty()) s.on_text(text, s.userdata);
-    s.on_end(result, s.userdata);
+    if (!text.empty()) on_text(text, caller);
+    on_end(result, caller);
 }
 
 }  // namespace
