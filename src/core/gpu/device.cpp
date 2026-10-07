@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace bllm::gpu {
 namespace {
@@ -88,6 +89,17 @@ struct PendingDeviceRequest {
     WGPULimits adapter_limits = {};
     WGPULimits required_limits = {};
     Device::RequestCallback callback;
+#if BLLM_DIAGNOSTICS_ENABLED
+    // What a diagnostic build asked for, and the descriptors that carry it,
+    // held until the request completes (device.h's DiagnosticRequest).
+    DiagnosticRequest diagnostic = {};
+    std::vector<WGPUFeatureName> features;
+    WGPURequestAdapterOptions adapter_options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
+#ifndef __EMSCRIPTEN__
+    WGPUDawnTogglesDescriptor adapter_toggles = WGPU_DAWN_TOGGLES_DESCRIPTOR_INIT;
+    WGPUDawnTogglesDescriptor device_toggles = WGPU_DAWN_TOGGLES_DESCRIPTOR_INIT;
+#endif
+#endif
     void* userdata;
 
     void fail(const std::string& message) {
@@ -112,8 +124,31 @@ void Device::request(RequestCallback callback, void* userdata) {
     request(instance.get(), callback, userdata);
 }
 
+#if BLLM_DIAGNOSTICS_ENABLED
+namespace {
+// Natively: unsafe APIs allowed, so an adapter lists timestamps inside a
+// pass where it has them, and timestamps unrounded (device.h).
+#ifndef __EMSCRIPTEN__
+constexpr const char* kUnsafe[] = {"allow_unsafe_apis"};
+constexpr const char* kUnrounded[] = {"timestamp_quantization"};
+#endif
+}  // namespace
+
+void Device::request(WGPUInstance instance, RequestCallback callback, void* userdata,
+                     const WGPURequestAdapterOptions* options, const DiagnosticRequest& diagnostic) {
+    request_with(instance, callback, userdata, options, &diagnostic);
+}
+#endif
+
 void Device::request(WGPUInstance instance, RequestCallback callback, void* userdata,
                      const WGPURequestAdapterOptions* options) {
+#if BLLM_DIAGNOSTICS_ENABLED
+    request_with(instance, callback, userdata, options, nullptr);
+}
+
+void Device::request_with(WGPUInstance instance, RequestCallback callback, void* userdata,
+                          const WGPURequestAdapterOptions* options, const DiagnosticRequest* diagnostic) {
+#endif
     if (instance == nullptr) {
         callback(nullptr, "no WebGPU instance was given", userdata);
         return;
@@ -129,6 +164,19 @@ void Device::request(WGPUInstance instance, RequestCallback callback, void* user
         .userdata = userdata};
 
     pending->device->instance_ = retain(instance);   // the Device's own reference
+#if BLLM_DIAGNOSTICS_ENABLED
+    if (diagnostic != nullptr && diagnostic->timestamps) {
+        pending->diagnostic = *diagnostic;
+        if (options != nullptr) pending->adapter_options = *options;
+#ifndef __EMSCRIPTEN__
+        pending->adapter_toggles.chain.next = pending->adapter_options.nextInChain;
+        pending->adapter_toggles.enabledToggleCount = 1;
+        pending->adapter_toggles.enabledToggles = kUnsafe;
+        pending->adapter_options.nextInChain = &pending->adapter_toggles.chain;
+#endif
+        options = &pending->adapter_options;
+    }
+#endif
 
     WGPURequestAdapterCallbackInfo adapter_cb = {};
     adapter_cb.mode = kCallbackMode;
@@ -200,6 +248,27 @@ void Device::request(WGPUInstance instance, RequestCallback callback, void* user
         WGPUDeviceDescriptor device_desc = {};
         device_desc.uncapturedErrorCallbackInfo.callback = on_uncaptured_error;
         device_desc.requiredLimits = &required;
+#if BLLM_DIAGNOSTICS_ENABLED
+        if (p->diagnostic.timestamps) {
+            if (!wgpuAdapterHasFeature(adapter, WGPUFeatureName_TimestampQuery)) {
+                p->fail("the adapter does not offer timestamp queries, which profiling needs");
+                return;
+            }
+            p->features.push_back(WGPUFeatureName_TimestampQuery);
+            if (wgpuAdapterHasFeature(adapter, WGPUFeatureName_ChromiumExperimentalTimestampQueryInsidePasses)) {
+                p->features.push_back(WGPUFeatureName_ChromiumExperimentalTimestampQueryInsidePasses);
+            }
+            device_desc.requiredFeatureCount = p->features.size();
+            device_desc.requiredFeatures = p->features.data();
+#ifndef __EMSCRIPTEN__
+            p->device_toggles.enabledToggleCount = 1;
+            p->device_toggles.enabledToggles = kUnsafe;
+            p->device_toggles.disabledToggleCount = 1;
+            p->device_toggles.disabledToggles = kUnrounded;
+            device_desc.nextInChain = &p->device_toggles.chain;
+#endif
+        }
+#endif
         // The callback's own reference to the status, released by the callback.
         p->device->status_ = std::make_shared<DeviceStatus>();
         device_desc.deviceLostCallbackInfo.mode = kCallbackMode;
@@ -220,6 +289,11 @@ void Device::request(WGPUInstance instance, RequestCallback callback, void* user
             }
             q->device->device_.reset(device);
             q->device->queue_.reset(wgpuDeviceGetQueue(device));
+#if BLLM_DIAGNOSTICS_ENABLED
+            q->device->timestamps_ = wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery);
+            q->device->timestamps_inside_passes_ =
+                wgpuDeviceHasFeature(device, WGPUFeatureName_ChromiumExperimentalTimestampQueryInsidePasses);
+#endif
 
             // Read back what was actually granted rather than assuming the
             // request was honoured wholesale. These are the limits validation

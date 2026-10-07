@@ -50,4 +50,23 @@ inline std::unique_ptr<gpu::Device> acquire(WGPUInstance instance) {
     return std::move(acquired.device);
 }
 
+#if BLLM_DIAGNOSTICS_ENABLED
+// The same, asking for what a diagnostic build may (gpu/device.h).
+inline std::unique_ptr<gpu::Device> acquire(WGPUInstance instance, const gpu::DiagnosticRequest& diagnostic) {
+    Acquired acquired;
+    gpu::Device::request(
+        instance,
+        [](std::unique_ptr<gpu::Device> device, const char* error, void* userdata) {
+            auto& a = *static_cast<Acquired*>(userdata);
+            a.device = std::move(device);
+            if (error != nullptr) a.error = error;
+            a.done = true;
+        },
+        &acquired, nullptr, diagnostic);
+    pump_until(instance, acquired.done, "a device");
+    REQUIRE_MESSAGE(acquired.device != nullptr, acquired.error);
+    return std::move(acquired.device);
+}
+#endif
+
 }  // namespace bllm::testing

@@ -165,6 +165,10 @@ public:
 private:
     Device() = default;
     friend struct PendingDeviceRequest;
+#if BLLM_DIAGNOSTICS_ENABLED
+    static void request_with(WGPUInstance instance, RequestCallback callback, void* userdata,
+                             const WGPURequestAdapterOptions* options, const DiagnosticRequest* diagnostic);
+#endif
 
     // Declaration order is release order reversed by the compiler: members are
     // destroyed bottom-up, so queue releases before device, device before

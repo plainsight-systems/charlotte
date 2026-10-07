@@ -172,3 +172,16 @@ TEST_CASE("the self-check runs vector_add on the GPU and reads back every value 
     CHECK(checked.result.mismatches == 0);
     CHECK(checked.result.device != nullptr);   // handed back on every path
 }
+
+#if BLLM_DIAGNOSTICS_ENABLED
+TEST_CASE("a diagnostic build's device grants timestamp queries; the harness's asks for none") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto harness = acquire(instance.get());
+    CHECK(!harness->timestamps());
+    CHECK(!harness->timestamps_inside_passes());
+    const auto diagnostic = acquire(instance.get(), gpu::DiagnosticRequest{.timestamps = true});
+    CHECK(diagnostic->timestamps());
+    MESSAGE("timestamps inside passes: " << diagnostic->timestamps_inside_passes() << " on "
+                                         << diagnostic->adapter_info().backend);
+}
+#endif
