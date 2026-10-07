@@ -18,7 +18,8 @@ namespace bllm::kernels {
 //   - Rows: row i of the hidden buffer is token i of the step, hidden-width
 //     floats, 4-byte f32 (residency/plan.h).
 //   - One invocation per 32-weight group of a row: it reads the step's
-//     identifier for its row, decodes its group through the table's format's
+//     identifier for its row — or, in a fed step, the draw's token and not
+//     the identifier — decodes its group through the table's format's
 //     unpack (format.h), multiplies each weight by the launch's scale, and
 //     writes the group's 32 floats. A row is hidden-width / 32 invocations;
 //     every listed model's width is a whole number of groups, which routes
@@ -58,8 +59,13 @@ namespace bllm::kernels {
 // 8 words a group, 32 groups, 1 KiB, against 840 bytes stored — and 4 bytes a
 // weight written: 4 KiB. A 512-row prefill step reads 512 KiB and writes
 // 2 MiB; a decode step reads 1 KiB and writes 4 KiB, so decode's embedding
-// costs about its one launch's 1.5 µs. No row of the table that
-// the step does not name is read.
+// costs about its one launch's 1.5 µs. Each invocation also reads its row's
+// token, 4 bytes: the same word for every group of a row, which the GPU's
+// caches serve after the first — logically 128 bytes a row a launch for
+// Qwen3, 256 for Llama 3.2 and 144 for Gemma 3, 4 bytes from device memory.
+// Loaded once a workgroup instead, it would need a barrier, which costs more
+// than the cached reads it saves. No row of the table that the step does not
+// name is read.
 // Optimization (practice): an invocation writes its group's 128 bytes
 // contiguously and adjacent invocations take adjacent groups, so a
 // workgroup's writes are one contiguous run (GPU.2).

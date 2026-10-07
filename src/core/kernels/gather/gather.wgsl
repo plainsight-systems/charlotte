@@ -26,10 +26,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (row >= step.tokens) {
         return;
     }
-    // A fed step's one token is the last step's draw (gather.h).
-    var token = step.ids[row / 4u][row % 4u];
+    // A fed step's one token is the last step's draw, and its identifier is
+    // never read (gather.h).
+    var token: u32;
     if (step.fed == 1u) {
         token = sampled[0];
+    } else {
+        token = step.ids[row / 4u][row % 4u];
     }
     // A token in another piece of the table is that piece's launch's to write.
     if (token < gather.first_row || token - gather.first_row >= gather.row_count) {
