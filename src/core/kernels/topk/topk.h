@@ -103,8 +103,9 @@ inline constexpr std::uint32_t kCandidates = residency::kCandidates;
 // The launches that reduce `logits`, one row of `vocabulary` f32, to the
 // top kCandidates in `candidates` — (logit, token) pairs, sorted — through
 // `partials_a` and `partials_b` alternately. Preconditions: vocabulary >=
-// kCandidates; each partials buffer holds 64 · ceil(vocabulary / 1,024)
-// pairs; `candidates` holds kCandidates.
+// kCandidates; `partials_a` holds n₁ = 64 · ceil(vocabulary / 1,024) pairs
+// and `partials_b` 64 · ceil(n₁ / 1,024), as the plan sizes them; each later
+// pass writes fewer than the one two before; `candidates` holds kCandidates.
 [[nodiscard]] std::vector<Launch> topk_launches(const residency::BufferRange& logits, std::uint32_t vocabulary,
                                                 const residency::BufferRange& partials_a,
                                                 const residency::BufferRange& partials_b,

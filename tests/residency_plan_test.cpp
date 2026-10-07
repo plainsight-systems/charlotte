@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <set>
 #include <string>
+#include <tuple>
 
 #include "core/arch/architecture.h"
 #include "core/capability/capability.h"
@@ -347,6 +348,30 @@ TEST_CASE("selection's buffers hold 64 pairs a tile of the vocabulary, and the d
     CHECK(length("partials_b") == 64 * 8);
     CHECK(length("candidates") == 64 * 8);
     CHECK(length("sampled") == 16);
+}
+
+TEST_CASE("selection's partials are sized by the passes that write them, for a vocabulary of many tiles") {
+    const testing::ReadHeader qwen3 = testing::read_model_header("qwen3-0.6b-q4_0");
+    std::string_view name;
+    REQUIRE(qwen3.index.read_string("general.architecture", name) == gguf::MetadataError::Ok);
+    model::ModelDescription m;
+    REQUIRE(capability::find_architecture(name)->describe(qwen3.index, m).ok());
+    for (const auto& [vocabulary, a, b] : {std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>{151'936, 149, 10},
+                                           {1'025, 2, 1}, {262'144, 256, 16}}) {
+        CAPTURE(vocabulary);
+        m.vocabulary_size = vocabulary;
+        ResidencyPlan plan;
+        REQUIRE(residency::plan_residency(qwen3.index, m, kDefaults, policy::LoadPolicy{}, plan).ok());
+        const auto length = [&](std::string_view purpose) -> std::uint64_t {
+            for (const auto& s : plan.scratch) {
+                if (s.purpose == purpose) return s.range.length;
+            }
+            return 0;
+        };
+        // 64 pairs of 8 bytes for each tile the pass reads.
+        CHECK(length("partials_a") == a * 64 * 8);
+        CHECK(length("partials_b") == b * 64 * 8);
+    }
 }
 
 namespace {

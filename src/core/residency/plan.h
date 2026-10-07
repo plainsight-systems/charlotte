@@ -34,8 +34,8 @@ namespace bllm::residency {
 //     reads one working buffer and writes another — the norm reads `output`
 //     and writes `hidden` — so two working buffers in one buffer could not be
 //     bound together. Weights are only read, and no dispatch both reads and
-//     writes the cache, so those pools stay suballocated. Ten buffers instead
-//     of one costs ten allocations at load and nothing a step; GPU.9 keeps
+//     writes the cache, so those pools stay suballocated. Fifteen buffers
+//     instead of one costs fifteen allocations at load and nothing a step; GPU.9 keeps
 //     dedicated allocations for where an API requirement justifies them, and
 //     this is one.
 //   - Limits are the ones the device granted, never the adapter's advertised
@@ -55,10 +55,13 @@ namespace bllm::residency {
 //     multiplied apart.
 //   - Selection and the draw have four working buffers of their own
 //     (sampler/sampler.h): `partials_a` and `partials_b`, which its passes
-//     alternate between, each kCandidates (logit, token) pairs of 8 bytes for
-//     every kSelectionTile of the vocabulary — 76 KB for Qwen3, 131 KB for
-//     Gemma 3; `candidates`, the kCandidates kept, 512 bytes; and `sampled`,
-//     the draw's 16-byte record.
+//     alternate between — `partials_a` the first pass's output, kCandidates
+//     (logit, token) pairs of 8 bytes for every kSelectionTile of the
+//     vocabulary, 76 KB for Qwen3 and 131 KB for Gemma 3; `partials_b` the
+//     second's, kCandidates for every kSelectionTile of those, 5 KB and
+//     8 KB; each later pass writes fewer than the one two before it, into the
+//     same buffer — `candidates`, the kCandidates kept, 512 bytes; and
+//     `sampled`, the draw's 16-byte record.
 //   - The working buffers hold a prefill block of kPrefillBlock tokens at f32.
 //     Attention never stores a block-by-context matrix of scores: at 512
 //     tokens, 32 heads and a 40,000-token context that is 2.6 GB. Kernels work

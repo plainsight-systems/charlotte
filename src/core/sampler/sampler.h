@@ -89,9 +89,10 @@ namespace bllm::sampler {
 //   - kernels/gather: with `fed`, row 0's identifier is `sampled`'s token,
 //     bound read-only; a draw's token is below the vocabulary by
 //     construction.
-//   - residency/plan.h: working buffers `partials_a` and `partials_b`, 64 ·
-//     ceil(V / 1,024) pairs of 8 bytes — 76 KB for Qwen3, 131 KB for Gemma
-//     3 — `candidates`, 512 bytes, and `sampled`, 16.
+//   - residency/plan.h: working buffers `partials_a`, 64 · ceil(V / 1,024)
+//     pairs of 8 bytes — 76 KB for Qwen3, 131 KB for Gemma 3 — and
+//     `partials_b`, 64 for each 1,024 of those — 5 KB and 8 KB —
+//     `candidates`, 512 bytes, and `sampled`, 16.
 //   - graph/graph.h: output() appends the selection and the draw after the
 //     head; all of them run only in a step that asks for logits.
 //   - kernels/program.h: a step that asks for logits copies `sampled` into
