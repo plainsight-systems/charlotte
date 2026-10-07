@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -42,6 +43,16 @@ namespace bllm::residency {
 //   - A weight larger than one storage binding is split by rows. Every offset
 //     is aligned to the device's storage-offset alignment, and every range is
 //     padded to a multiple of 4 bytes, as a storage binding requires.
+//   - A layer's Q, K and V, and its gate and up, are each a fused group
+//     when its members share a format and an input width and are one piece
+//     each: the plan keeps the group in one buffer, opening a new buffer
+//     before it when the open one cannot hold the span from its first
+//     member to its last, and records the group, its members in output
+//     order and that span, which a fused product binds
+//     (kernels/matmul/matmul.h). The members stay where file order puts
+//     them, with whatever the file puts between them, so upload is the
+//     same; a span wider than a binding is not a group, and its members are
+//     multiplied apart.
 //   - The working buffers hold a prefill block of kPrefillBlock tokens at f32.
 //     Attention never stores a block-by-context matrix of scores: at 512
 //     tokens, 32 heads and a 40,000-token context that is 2.6 GB. Kernels work
@@ -120,9 +131,18 @@ struct PlannedScratch {
     BufferRange range;
 };
 
+// A fused group: its members in output order — Q, K, V, or gate, up — and
+// the range from the first member's first byte to the last member's last.
+struct PlannedGroup {
+    std::array<gguf::TensorId, 3> members;
+    std::uint32_t count;
+    BufferRange span;
+};
+
 struct ResidencyPlan {
     std::vector<PlannedBuffer> buffers;
     std::vector<PlannedTensor> tensors;
+    std::vector<PlannedGroup> groups;
     std::vector<PlannedCacheLayer> cache;
     std::vector<PlannedScratch> scratch;
     std::uint32_t context_offered = 0;

@@ -9,6 +9,7 @@
 #include "core/gguf/reader.h"
 #include "core/residency/plan.h"
 #include "support/gguf_fixture.h"
+#include "support/model_headers.h"
 
 using namespace bllm;
 using residency::DeviceLimits;
@@ -329,4 +330,73 @@ TEST_CASE("attention's partial buffers hold 512 query rows of outputs and of max
     };
     CHECK(length("partials") == 512 * 2 * 32 * 4);
     CHECK(length("partial_stats") == 512 * 2 * 2 * 4);
+}
+
+namespace {
+
+// Each group's members lie in its span, in one buffer, and the span fits a
+// binding.
+void check_groups(const ResidencyPlan& plan, const residency::DeviceLimits& limits) {
+    for (const auto& g : plan.groups) {
+        CHECK(g.span.length <= limits.max_storage_binding_size);
+        CHECK(g.span.offset % limits.storage_offset_alignment == 0);
+        for (std::uint32_t m = 0; m < g.count; ++m) {
+            const auto& piece = plan.tensors[static_cast<std::size_t>(g.members[m])].view.pieces();
+            REQUIRE(piece.size() == 1);
+            CHECK(piece[0].buffer == g.span.buffer);
+            CHECK(piece[0].offset >= g.span.offset);
+            CHECK(piece[0].offset + piece[0].length <= g.span.offset + g.span.length);
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("each layer's Q, K and V and its gate and up are fused groups, in output order") {
+    const auto p = describe("tiny_qwen3");
+    ResidencyPlan plan;
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(plan.groups.size() == 2 * p.model.layers.size());
+    check_groups(plan, kDefaults);
+    const auto& layer = p.model.layers[1];
+    const auto role = [&](model::Role r) { return *layer.tensors[static_cast<std::size_t>(r)]; };
+    const auto& qkv = plan.groups[2];
+    CHECK(qkv.count == 3);
+    CHECK(qkv.members[0] == role(model::Role::Query));
+    CHECK(qkv.members[1] == role(model::Role::Key));
+    CHECK(qkv.members[2] == role(model::Role::Value));
+    const auto& gate_up = plan.groups[3];
+    CHECK(gate_up.count == 2);
+    CHECK(gate_up.members[0] == role(model::Role::Gate));
+    CHECK(gate_up.members[1] == role(model::Role::Up));
+}
+
+TEST_CASE("groups stay whole under buffers barely larger than the working buffers") {
+    const auto p = describe("tiny_qwen3");
+    // Many small buffers; the listed models' test below is the one whose
+    // groups would straddle a buffer without the plan's reservation.
+    for (const std::uint64_t buffer : {std::uint64_t{131072}, std::uint64_t{150000}, std::uint64_t{180000}}) {
+        CAPTURE(buffer);
+        const residency::DeviceLimits limits{buffer, buffer, 256};
+        ResidencyPlan plan;
+        REQUIRE(residency::plan_residency(p.index, p.model, limits, policy::LoadPolicy{}, plan).ok());
+        check_groups(plan, limits);
+        CHECK(plan.groups.size() == 2 * p.model.layers.size());
+    }
+}
+
+TEST_CASE("the listed models' groups are all fused, within a binding") {
+    const residency::DeviceLimits limits{256ull << 20, 128ull << 20, 256};
+    for (const char* name : {"qwen3-0.6b-q4_0", "llama-3.2-1b-instruct-q4_0", "gemma-3-1b-it-q4_0"}) {
+        CAPTURE(name);
+        const testing::ReadHeader header = testing::read_model_header(name);
+        std::string_view architecture;
+        REQUIRE(header.index.read_string("general.architecture", architecture) == gguf::MetadataError::Ok);
+        model::ModelDescription description;
+        REQUIRE(capability::find_architecture(architecture)->describe(header.index, description).ok());
+        ResidencyPlan plan;
+        REQUIRE(residency::plan_residency(header.index, description, limits, policy::LoadPolicy{}, plan).ok());
+        CHECK(plan.groups.size() == 2 * description.layers.size());
+        check_groups(plan, limits);
+    }
 }

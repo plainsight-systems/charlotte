@@ -82,6 +82,16 @@ public:
     Packer(std::vector<PlannedBuffer>& buffers, Pool pool, const DeviceLimits& limits)
         : buffers_(buffers), pool_(pool), limits_(limits) {}
 
+    // Closes the open buffer if `length` more bytes, at the next aligned
+    // offset, would not fit it, so a group placed next starts a new one.
+    bool reserve(std::uint64_t length) {
+        if (!open_) return true;
+        std::uint64_t offset = 0;
+        if (!round_up(buffers_.back().size, limits_.storage_offset_alignment, offset)) return false;
+        if (offset > limits_.max_buffer_size || length > limits_.max_buffer_size - offset) open_ = false;
+        return true;
+    }
+
     // Places `length` bytes. `alone` gives the range a buffer nobody else
     // shares. Precondition: the padded length fits in one buffer.
     bool place(std::uint64_t length, bool alone, BufferRange& out) {
@@ -124,12 +134,66 @@ bool is_tied_copy(const gguf::TensorIndex& index, const model::ModelDescription&
                       std::begin(embedding.dimensions));
 }
 
+// A layer's candidate groups, members in output order: Q, K, V and gate,
+// up, where the layer has them.
+std::vector<PlannedGroup> candidate_groups(const model::ModelDescription& model) {
+    std::vector<PlannedGroup> groups;
+    for (const model::LayerDescription& l : model.layers) {
+        const auto at = [&](model::Role r) { return l.tensors[static_cast<std::size_t>(r)]; };
+        using model::Role;
+        if (at(Role::Query) && at(Role::Key) && at(Role::Value)) {
+            groups.push_back({{*at(Role::Query), *at(Role::Key), *at(Role::Value)}, 3, {}});
+        }
+        if (at(Role::Gate) && at(Role::Up)) {
+            groups.push_back({{*at(Role::Gate), *at(Role::Up), gguf::TensorId{}}, 2, {}});
+        }
+    }
+    return groups;
+}
+
+// The bytes from tensor `first` to tensor `last`, in file order, as the
+// packer would place them in one buffer: each padded and aligned. False
+// when one of them is more than one piece, so the group cannot be one span.
+bool span_bytes(std::span<const gguf::TensorEntry> tensors, std::size_t first, std::size_t last,
+                const DeviceLimits& limits, std::uint64_t& out) {
+    out = 0;
+    for (std::size_t k = first; k <= last; ++k) {
+        std::uint64_t padded = 0, aligned = 0;
+        if (tensors[k].data_length > range_limit(limits) || !round_up(tensors[k].data_length, kBindingGranule, padded) ||
+            !round_up(padded, limits.storage_offset_alignment, aligned) || !checked_add(out, aligned, out)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescription& model,
                          const DeviceLimits& limits, ResidencyPlan& out) {
     Packer packer{out.buffers, Pool::Weights, limits};
     const std::uint64_t limit = range_limit(limits);
     const auto tensors = index.tensors();
+
+    // Groups whose members agree in format and input width, by the file
+    // index of their first member, and the bytes of their span.
+    std::vector<PlannedGroup> groups = candidate_groups(model);
+    std::vector<std::uint64_t> reserve_before(tensors.size(), 0);
+    std::erase_if(groups, [&](const PlannedGroup& g) {
+        const gguf::TensorEntry& head = index.tensor(g.members[0]);
+        std::size_t first = tensors.size(), last = 0;
+        for (std::uint32_t m = 0; m < g.count; ++m) {
+            const gguf::TensorEntry& t = index.tensor(g.members[m]);
+            if (t.type != head.type || t.dimensions[0] != head.dimensions[0]) return true;
+            first = std::min(first, static_cast<std::size_t>(g.members[m]));
+            last = std::max(last, static_cast<std::size_t>(g.members[m]));
+        }
+        std::uint64_t bytes = 0;
+        if (!span_bytes(tensors, first, last, limits, bytes) || bytes > limit) return true;
+        reserve_before[first] = std::max(reserve_before[first], bytes);
+        return false;
+    });
+
     for (std::size_t i = 0; i < tensors.size(); ++i) {
+        if (reserve_before[i] != 0 && !packer.reserve(reserve_before[i])) return failure(PlanError::Overflow);
         const gguf::TensorEntry& t = tensors[i];
         const gguf::TensorShape shape{t.dimension_count,
                                       {t.dimensions[0], t.dimensions[1], t.dimensions[2], t.dimensions[3]},
@@ -152,6 +216,24 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
         }
         out.tensors.push_back({static_cast<gguf::TensorId>(i), WeightView{t.type, shape, std::move(pieces)},
                                tied ? std::optional{model.token_embedding} : std::nullopt});
+    }
+
+    // Each group's span, now its members are placed: one buffer, from the
+    // first member's first byte to the last member's last.
+    for (PlannedGroup& g : groups) {
+        const WeightPiece& head = out.tensors[static_cast<std::size_t>(g.members[0])].view.pieces().front();
+        std::uint64_t begin = head.offset, end = head.offset + head.length;
+        bool one_buffer = true;
+        for (std::uint32_t m = 0; m < g.count; ++m) {
+            const WeightPiece& p = out.tensors[static_cast<std::size_t>(g.members[m])].view.pieces().front();
+            one_buffer = one_buffer && p.buffer == head.buffer;
+            begin = std::min(begin, p.offset);
+            end = std::max(end, p.offset + p.length);
+        }
+        if (one_buffer && end - begin <= limit) {
+            g.span = {head.buffer, begin, end - begin};
+            out.groups.push_back(g);
+        }
     }
     return {};
 }
@@ -185,8 +267,8 @@ PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimit
         // A block's last matmul writes its result here; the norm after it
         // adds it into hidden (kernels/norm/norm.h).
         Need{"output", kPrefillBlock, model.embedding_width},
-        Need{"gate", kPrefillBlock, feed_forward},
-        Need{"up", kPrefillBlock, feed_forward},
+        // The gated activation, gate and up never written (kernels/matmul).
+        Need{"activation", kPrefillBlock, feed_forward},
         // Logits are computed for the last token of a step only.
         Need{"logits", 1, model.vocabulary_size},
     };
