@@ -77,6 +77,18 @@ Decided 2026-10-02:
   it came from, and nothing is claimed for hardware it did not run on.
   Supersedes BLLM-002's target matrix and its owed floor budget.
 
+Decided 2026-10-07:
+
+- **The sampled token stays on the GPU and is read back a step behind.** The
+  draw runs on the GPU and the next decode step embeds its token from there,
+  so a step is submitted before the last one's token maps
+  (`src/core/sampler/sampler.h`). Supersedes the per-step readback decided in
+  `research/2026-08-31-gpu-readback-round-trip.md`: that decision assumed a
+  token took 20–50 ms. Counted, a Qwen3 decode step is 1.3–2.1 ms, so the
+  0.5 ms map would be 20–30% of every token. The cache risk that research
+  warned of is stated in the sampler's contract, for the runtime's tests to
+  hold.
+
 Decided 2026-10-03:
 
 - **A data path's cost is derived before it is built.** Every stage walked

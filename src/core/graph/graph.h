@@ -172,7 +172,7 @@ namespace bllm::graph {
 //     in steps that change prefill tile width and attention's split, and
 //     decoded a token at a time, at positions either side of a 256-key
 //     chunk boundary. The test reads `logits` back through a mapping of its
-//     own; the harness reads only the sampler's candidates
+//     own; the harness reads only the sampler's drawn token
 //     (sampler/sampler.h).
 //   - Against the reference, Qwen3 0.6B at Q4_0, the file pinned by SHA-256
 //     and fetched as test data: a pinned prompt of 64 token identifiers
