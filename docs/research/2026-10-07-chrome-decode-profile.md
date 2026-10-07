@@ -23,9 +23,12 @@ One turn: "Write a 400-word story about a lighthouse keeper who finds a
 message in a bottle.", Thinking on, the model's sampling. 29 prompt tokens
 in one prefill step, then 623 decode steps to position 652. The summary
 leaves out the first two decode steps, which fill the pipeline, and gives
-the in-pass time by position. The native reference is `make profile`'s
-pipelined run over the same kernels: 128 steps from position 64, 3.228 ms
-a step in its pass on average.
+the in-pass time by position. Beside it is `make profile`'s pipelined run
+over the same kernels: 128 steps from position 64, 3.228 ms a step in its
+pass on average. It is not a matched reference: its steps drew with the
+sampler's settings unset, top_k 0, not the turn's; it is a mean where the
+Chrome figure is a median; and it was run at another time, under its own
+load. The profiler and the page's summary are matched from `a510721`.
 
 Chrome rounds each timestamp to 65.5 µs (2^16 ns, from the values seen),
 so a step's in-pass time is good to about 2%. One pair of steps was left
@@ -34,7 +37,7 @@ ticks to nanoseconds having changed between them, as natively (below).
 
 ## Results
 
-| | Chrome | Native, same kernels |
+| | Chrome | Native, unmatched (above) |
 |---|---|---|
 | In-pass time, positions 64–191 | 3.54 ms | 3.23 ms |
 | GPU period between steps | 3.93 ms | — |
@@ -48,9 +51,10 @@ The interval between reports equals the GPU's period, and the GPU spends
 8% of it outside the passes — each step's query resolve and copies, the
 next step's write and any idle, an upper bound on the idle. Chrome keeps
 the GPU fed: a token costs its step's GPU time and 8%. Its step's pass is
-about 10% longer than native Dawn's; the kernels, model and positions
-being the same, that is Chrome's Dawn and Tint against the release the
-native build pins.
+about 10% longer than the native figure, which is not a matched
+measurement (Method); how much of that is Chrome's Dawn and Tint, against
+the release the native build pins, awaits a matched run on a quiet
+machine.
 
 The clean build, unprofiled, on the same prompt: 552 tokens at 258.3 tok/s,
 counted by the page from the turn's start, prefill included — about

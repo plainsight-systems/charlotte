@@ -114,9 +114,10 @@ to 383, `attention.qkv` and `ffn.gate_up` near 260 to 340, `ffn.down` and
 4.31 ms a step in their passes, with 5.5% of the run's span outside the
 passes — each step's query resolve and copies, the next step's write, and
 any idle, so the GPU idled at most that. Two earlier runs gave 19.1 and
-40.0 ms a step; their steps drew with the sampler's settings unset, top_k 0,
-a different draw from a turn's, and are not comparable. Chrome decoded a
-long reply at about 8 ms a token.
+40.0 ms a step. All three runs' steps, this one's included, drew with the
+sampler's settings unset, top_k 0, not a turn's draw (corrected at
+`a510721`); what made the two earlier runs slower is not known. Chrome
+decoded a long reply at about 8 ms a token.
 
 ## What follows
 
