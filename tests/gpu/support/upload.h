@@ -54,7 +54,7 @@ struct Model {
     residency::ResidencyPlan plan;
 };
 
-inline Model load(const std::string& fixture) {
+inline Model load(const std::string& fixture, const policy::LoadPolicy& policy = {}) {
     Model m;
     m.bytes = testing::load_gguf_fixture(fixture);
     gguf::MemoryByteSource source{m.bytes};
@@ -64,7 +64,7 @@ inline Model load(const std::string& fixture) {
     model::ModelDescription description;
     REQUIRE(capability::find_architecture(name)->describe(m.index, description).ok());
     (void)residency::plan_residency(m.index, description, residency::DeviceLimits{256ull << 20, 128ull << 20, 256},
-                                    policy::LoadPolicy{}, m.plan);
+                                    policy, m.plan);
     return m;
 }
 
