@@ -38,7 +38,7 @@ override last_token: bool = false;
 override columns: u32 = 1024;        // K
 override out_width: u32 = 1024;      // a write's output row width
 override activation: u32 = 0;       // 0 SiLU, 1 GELU in its tanh form
-override tile_tokens: u32 = 32;     // a prefill tile's tokens: 8 or 32
+override tile_tokens: u32 = 32;     // a prefill tile's tokens: 8, 16 or 32
 
 const kRanges = 32u;
 
@@ -264,7 +264,7 @@ fn tile_row(out_tile: u32, i: u32, gated: bool) -> vec3<u32> {
 }
 
 // An invocation's micro-tile: tokens tile_tokens / 8 × (t % 8) onward,
-// tile_tokens / 8 of them — 4, or 1 — and 8 outputs; for a gated tile,
+// tile_tokens / 8 of them — 1, 2 or 4 — and 8 outputs; for a gated tile,
 // gate outputs 4 × (t / 8) .. + 3 and the same up outputs.
 fn micro_row(t: u32, j: u32, gated: bool) -> u32 {
     let c = t / 8u;

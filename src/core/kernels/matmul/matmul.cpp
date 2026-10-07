@@ -1,6 +1,7 @@
 #include "core/kernels/matmul/matmul.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -16,12 +17,14 @@ namespace {
 constexpr std::uint32_t kWorkgroupSize = 64;
 constexpr std::uint32_t kDecodeRows = 8;        // a decode workgroup's rows
 constexpr std::uint32_t kDecodePairs = 4;       // or gate-and-up pairs
-// A prefill tile's tokens: 8 for steps of up to 16 tokens, where the
-// narrow tile issues fewer instructions than one mostly empty wide tile,
-// and 32 above (matmul.h, prefill) (GDSA.6).
-constexpr std::uint32_t kNarrowTokens = 8;
-constexpr std::uint32_t kNarrowMost = 16;   // the narrow tile's longest step
-constexpr std::uint32_t kWideTokens = 32;
+// Prefill's tiles, by tokens, and the steps each takes: the narrowest tile
+// that holds the step whole, or the widest when none does (matmul.h,
+// prefill) (GDSA.6).
+struct Tile {
+    std::uint32_t tokens;
+    TokenRange steps;
+};
+constexpr std::array<Tile, 3> kTiles{{{8, {2, 8}}, {16, {9, 16}}, {32, {17, UINT32_MAX}}}};
 constexpr std::uint32_t kTileOutputs = 64;      // and outputs
 constexpr std::uint32_t kTilePairs = 32;        // or gate-and-up pairs
 
@@ -85,11 +88,10 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     decode.tokens = tokens_of(Regime::Decode);
     out.push_back(std::move(decode));
 
-    // Prefill: tiles of 8 tokens for a step of up to 16, of 32 above, each a
-    // workgroup an output tile.
+    // Prefill: a launch a tile width, each workgroup a token tile an output
+    // tile.
     const std::uint32_t out_tiles = gated ? ceil_div(rows / 2, kTilePairs) : ceil_div(rows, kTileOutputs);
-    for (const auto [tile, steps] : {std::pair{kNarrowTokens, TokenRange{2, kNarrowMost}},
-                                     std::pair{kWideTokens, TokenRange{kNarrowMost + 1, UINT32_MAX}}}) {
+    for (const auto [tile, steps] : kTiles) {
         std::vector<Override> with_tile = overrides;
         with_tile.push_back({"tile_tokens", static_cast<double>(tile)});
         Launch prefill{shaders::matmul,

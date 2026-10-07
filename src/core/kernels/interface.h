@@ -114,8 +114,8 @@ enum class Regime {
 }
 
 // The steps a launch runs in, by token count, both ends included: a
-// regime's, or a part of prefill's, as a matrix product's narrow and wide
-// tiles take (kernels/matmul/matmul.h).
+// regime's, or a part of prefill's, as a matrix product's tile widths
+// take (kernels/matmul/matmul.h).
 struct TokenRange {
     std::uint32_t least = 1;
     std::uint32_t most = UINT32_MAX;

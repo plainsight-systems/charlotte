@@ -26,7 +26,7 @@ namespace bllm::kernels {
 // weight is written out expanded (GDSA.18).
 //
 // Two forms, one per regime, each its own launch; a step runs one (the
-// launch contract's token range, below), prefill in one of two tile widths.
+// launch contract's token range, below), prefill in one of three tile widths.
 // The head is the exception: it covers the step's last token alone, in
 // both regimes, so its one launch is the decode form, run in every step.
 // Both forms add each output's products in one order, fixed by K alone
@@ -80,23 +80,25 @@ namespace bllm::kernels {
 //     token tile first, so the token tiles reading one weight tile are
 //     dispatched together and may find it in the GPU's caches (costs,
 //     below).
-//     A step of 2 to 16 tokens takes a narrow tile instead, 8 tokens × 64
-//     outputs, one token × 8 outputs an invocation (GDSA.6). Counted per
-//     output and step of K, with d the instructions to decode a weight into
-//     workgroup memory: the wide tile issues 32 multiply-adds, 12 reads, half
-//     an input load and a weight's decode, 44.5 + d, whatever the step's
-//     tokens; the narrow tile, for each of its tiles — the step's n tokens
-//     over 8, rounded up — 8 multiply-adds, 9 reads, an eighth of an input
-//     load and a decode, 17.1 + d. Two narrow tiles issue fewer than one wide
-//     for any d below 10, three always more, so steps of up to 16 tokens take
-//     the narrow tile; the second tile's weight reads, 8.9 MB a layer for
-//     Qwen3, are of a weight tile the first has just read, dispatched beside
-//     it. Steps of 17 or more take the wide tile, whose last tile holds the
-//     step's remainder and runs all 32 slots, as llama.cpp's mul_mm does:
-//     1.88 times the useful products at 17 tokens, 1.94 at 33, none extra at
-//     64 or 512; the narrow tile runs 4 times at 2 tokens, where the wide
-//     would run 16, and 1.78 at 9. Tile width changes no output's order of
-//     addition, so the narrow tile's bits are the wide one's and decode's.
+//     Shorter steps take narrower tiles of the same 64 outputs, 16 tokens or
+//     8, an invocation's micro-tile 2 tokens or 1 × 8 outputs (GDSA.6): a
+//     step takes the narrowest tile that holds it whole, 8 for 2 to 8 tokens
+//     and 16 for 9 to 16, and the 32-token tile from 17. Each token tile
+//     reads and decodes the whole weight, so the rule first keeps a step to
+//     the fewest weight passes — one up to 32 tokens — and among those takes
+//     the tile issuing the fewest instructions: per output and step of K, a
+//     tile of τ tokens issues τ multiply-adds, τ / 8 + 8 reads of workgroup
+//     memory, τ / 64 input loads and a weight's decode, and two barriers a
+//     workgroup, so a narrower tile holding the step issues less on every
+//     count. Past 32 tokens three 16-token tiles would issue fewer
+//     multiply-adds than two 32-token ones at 33 to 48 tokens, at a third
+//     more weight passes and decodes; the rule keeps the passes. The 32-token
+//     tile's last tile holds the step's remainder and runs all 32 slots, as
+//     llama.cpp's mul_mm does: 1.88 times the useful products at 17 tokens,
+//     1.94 at 33, none extra at 64 or 512. The 8-token tile runs 4 times at 2
+//     tokens, where the 32-token tile would run 16; the 16-token tile 1.78 at
+//     9. Tile width changes no output's order of addition, so every tile's
+//     bits are the others' and decode's.
 //
 // Epilogues — what a product writes — are variants, override constants:
 //   - write: y to one buffer: the output projection and down projection
@@ -135,7 +137,7 @@ namespace bllm::kernels {
 // What it asks of the other contracts:
 //   - kernels/interface.h: a launch may run in a range of token counts
 //     only — a regime's, Decode a step of one token and Prefill one of more
-//     (regime_for, tokens_of), or part of one, as the two prefill tiles
+//     (regime_for, tokens_of), or part of one, as the three prefill tiles
 //     take — and is not dispatched outside it; Geometry gains the range.
 //   - residency/plan.h: a layer's Q, K and V, and its gate and up, each
 //     lie in one buffer, within one binding's span from the first to the
@@ -219,8 +221,8 @@ namespace bllm::kernels {
 // launch of its own: 48 KiB a token and a layer saved of the 60 KiB
 // separate kernels would move (GDSA.6).
 // Optimization (practice): decode reuses each input value it loads for 4
-// rows, and prefill each decoded weight for its tile's 32 tokens, or 8,
-// and each input for 64 outputs (GPU.2, GPU.5).
+// rows, and prefill each decoded weight for its tile's 32 tokens, or 16 or
+// 8, and each input for 64 outputs (GPU.2, GPU.5).
 // Optimization (practice): one order of addition for both forms, fixed by
 // K, so a token's projections do not depend on its step — the fixed split
 // Thinking Machines' batch-invariant kernels use (GDSA.2).
@@ -251,8 +253,9 @@ namespace bllm::kernels {
 //
 // Verification the implementation is held to, on the GPU against f64 over
 // the format's CPU-decoded weights: each form, each epilogue, each listed
-// format, at each listed model's widths; prefill steps of 2, 9 and 16
-// tokens, in the narrow tile, and 17, 33 and 64, in the wide; a weight
+// format, at each listed model's widths; prefill steps of 2 and 8 tokens,
+// in the 8-token tile, 9 and 16, in the 16-token, and 17, 33 and 64, in the
+// 32-token; a weight
 // split into pieces; QKV outputs landing in their buffers; the activation
 // for SiLU and GELU; and a token's outputs the same bits decoded alone and
 // prefilled in each of those steps, at tokens on each tile's edges, at widths
@@ -302,7 +305,7 @@ struct MatmulLaunch {
 };
 
 // The product's launches: for each piece of the weight, a decode launch,
-// and narrow and wide prefill launches, each in its token range; or for the
+// and a prefill launch for each tile width, each in its token range; or for the
 // head, the decode form alone, in every step. Preconditions: K is a whole number of 32-weight groups;
 // a fused group's members lie in one buffer within a binding's span, and
 // their rows are the epilogue's.
