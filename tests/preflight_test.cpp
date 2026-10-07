@@ -68,16 +68,12 @@ TEST_CASE("every check reports, each naming the stage it stops") {
     CHECK(blocked(verdict, Stage::Run, "the file does not declare tokenizer.ggml.model"));
 }
 
-TEST_CASE("every stage past the last one this build implements is blocked by name") {
+TEST_CASE("every stage is implemented, so none is blocked for being missing") {
+    CHECK(preflight::kImplementedThrough == Stage::Run);
     const auto verdict = preflight_fixture("valid");
-    for (int s = static_cast<int>(preflight::kImplementedThrough) + 1;
-         s <= static_cast<int>(Stage::Run); ++s) {
-        const auto stage = static_cast<Stage>(s);
-        CAPTURE(preflight::to_string(stage));
-        CHECK(blocked(verdict, stage,
-                      "the " + std::string(preflight::to_string(stage)) +
-                          " stage is not implemented in this build"));
-    }
+    CHECK(std::none_of(verdict.blockers.begin(), verdict.blockers.end(), [](const Blocker& b) {
+        return b.detail.ends_with("stage is not implemented in this build");
+    }));
 }
 
 TEST_CASE("an unsupported format is reported once, counting every tensor that uses it") {
@@ -182,18 +178,14 @@ TEST_CASE("a model that fits is judged for Run by its architecture's graph, whic
     gguf::MemoryByteSource qwen3_source{std::as_bytes(std::span{qwen3.bytes}), qwen3.file_size};
     CHECK(blocked(preflight::preflight(qwen3_source, qwen3.index, defaults, bf16), Stage::Run,
                   "the cache format BF16 cannot be written by this build"));
-    // Each listed model: the only Run blocker is the stage this build lacks.
+    // Each listed model runs: nothing blocks it.
     for (const char* id : {"qwen3-0.6b-q4_0", "llama-3.2-1b-instruct-q4_0", "gemma-3-1b-it-q4_0"}) {
         CAPTURE(id);
         const testing::ReadHeader header = testing::read_model_header(id);
         gguf::MemoryByteSource header_source{std::as_bytes(std::span{header.bytes}), header.file_size};
         const Verdict verdict = preflight::preflight(header_source, header.index, defaults, policy::LoadPolicy{});
-        CHECK(verdict.reached() == Stage::Upload);
-        std::vector<std::string> run;
-        for (const Blocker& b : verdict.blockers) {
-            if (b.stage == Stage::Run) run.push_back(b.detail);
-        }
-        CHECK(run == std::vector<std::string>{"the run stage is not implemented in this build"});
+        CHECK(verdict.reached() == Stage::Run);
+        CHECK(verdict.blockers.empty());
     }
 }
 
@@ -273,8 +265,8 @@ TEST_CASE("Run is blocked, by name, when the tokenizer does not load or a stop t
     policy::LoadPolicy stops;
     stops.stop = {"<|endoftext|>"};
     const Verdict measured = preflight::preflight(source, qwen3.index, defaults, stops);
-    CHECK(measured.reached() == Stage::Upload);
-    CHECK(measured.blockers.size() == 1);   // the stage this build lacks
+    CHECK(measured.reached() == Stage::Run);
+    CHECK(measured.blockers.empty());
     // A stop text the vocabulary does not hold.
     stops.stop = {"<nope>"};
     CHECK(blocked(preflight::preflight(source, qwen3.index, defaults, stops), Stage::Run,

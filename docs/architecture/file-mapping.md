@@ -276,13 +276,18 @@ Four rules hold for every contract:
    identifiers. Decoding gives each token's bytes back, special tokens as the
    text that encodes to them, and rewrites nothing, so decoding what was
    encoded gives the text back. It is a stream: bytes that end mid-character
-   are held until the next token completes them.
+   are held until the next token completes them. A loaded tokenizer is used
+   through one interface whatever its algorithm, chosen at load by the
+   capability table, whose entry for the algorithm carries its loader.
 10. **Sampler** — `core/sampler`. The GPU reduces the logits to the top-k
     candidates, and the sampler chooses among them. Randomness is a pure
     function of the seed and the token's position, so a seed reproduces a run.
 11. **The boundary** — `web/worker.js` and `src/wasm/bindings.cpp`. Preflight a
-    prefix, load a chunk, generate from a prompt and policy, cancel. One
-    crossing per streamed token (WASM.2).
+    prefix and load a chunk, each under the model's load policy; generate
+    from a rendered prompt and the turn's policy; cancel. The rendered prompt
+    crosses once a turn, as bytes; the reply's text one crossing per piece it
+    completes (WASM.2). A refusal names its cause, and one the page can act
+    on carries a code, as "prompt-too-long" does with both counts.
 12. **Policy** — `core/policy`. A model's measured configuration from
     `web/models.json`: cache precision, sampling settings per mode, and the
     template variables it exposes, the memory budget, the rollback reserve

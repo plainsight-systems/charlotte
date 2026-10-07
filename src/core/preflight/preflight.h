@@ -71,7 +71,7 @@ enum class Stage {
 // The furthest stage this build implements. Every later stage is blocked, by
 // name, whatever the model: a verdict never claims a stage that does not
 // exist. Advanced when the next stage is built.
-inline constexpr Stage kImplementedThrough = Stage::Upload;
+inline constexpr Stage kImplementedThrough = Stage::Run;
 
 // What stops `stage`. Never Read or Download: those depend only on the
 // reader.
