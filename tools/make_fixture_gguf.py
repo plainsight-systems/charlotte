@@ -457,6 +457,13 @@ CASES = {
         kv(b"qwen3.rope.scaling.type", STRING, gstr(b"none"))]),
     "tiny_qwen3_odd_head": lambda: tiny_model("qwen3", extra=[
         kv(b"qwen3.rope.dimension_count", U32, struct.pack("<I", 33))], key_length=33),
+    # Logit caps no kernel applies: refused; a zero cap, none, runs.
+    "tiny_gemma3_attention_cap": lambda: tiny_model("gemma3", extra=[
+        kv(b"gemma3.attn_logit_softcapping", F32, struct.pack("<f", 50.0))]),
+    "tiny_gemma3_final_cap": lambda: tiny_model("gemma3", extra=[
+        kv(b"gemma3.final_logit_softcapping", F32, struct.pack("<f", 30.0))]),
+    "tiny_gemma3_zero_cap": lambda: tiny_model("gemma3", extra=[
+        kv(b"gemma3.final_logit_softcapping", F32, struct.pack("<f", 0.0))]),
     "tiny_qwen3_partial_rotation": lambda: tiny_model("qwen3", extra=[
         kv(b"qwen3.rope.dimension_count", U32, struct.pack("<I", D // 2))]),
     "tiny_qwen3_rope_scaling": lambda: tiny_model("qwen3", extra=[

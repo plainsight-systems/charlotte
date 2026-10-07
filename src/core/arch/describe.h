@@ -46,7 +46,8 @@ struct RoleName {
 // <arch>.rope.dimension_count other than the head dimension — part of each
 // head rotated — and <arch>.rope.scaling.type other than "none" — linear or
 // YaRN scaling of positions. A file declaring either would otherwise run with
-// every position wrong.
+// every position wrong. So, too, a nonzero <arch>.attn_logit_softcapping or
+// <arch>.final_logit_softcapping, a tanh cap no kernel applies.
 [[nodiscard]] DescribeResult read_hyperparameters(const gguf::TensorIndex& index,
                                                   std::string_view arch, Hyperparameters& out);
 

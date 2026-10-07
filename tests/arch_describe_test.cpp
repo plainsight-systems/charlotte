@@ -166,6 +166,10 @@ TEST_CASE("the listed models describe, with their pairing and Llama's factors") 
     }
 }
 
+TEST_CASE("a logit cap of zero, none, describes as if absent") {
+    CHECK(describe_fixture("tiny_gemma3_zero_cap").result.ok());
+}
+
 TEST_CASE("rotary keys declaring whole heads and no scaling describe as if absent") {
     const auto d = describe_fixture("tiny_qwen3_rope_declared");
     REQUIRE(d.result.ok());
@@ -188,6 +192,8 @@ TEST_CASE("a file that breaks what describe needs says what and where") {
                   "gemma3.attention.sliding_window_pattern"},
              // Rotary forms the rope kernel does not implement.
              Case{"tiny_qwen3_odd_head", DescribeError::UnsupportedValue, "qwen3.attention.key_length"},
+             Case{"tiny_gemma3_attention_cap", DescribeError::UnsupportedValue, "gemma3.attn_logit_softcapping"},
+             Case{"tiny_gemma3_final_cap", DescribeError::UnsupportedValue, "gemma3.final_logit_softcapping"},
              Case{"tiny_qwen3_partial_rotation", DescribeError::UnsupportedValue, "qwen3.rope.dimension_count"},
              Case{"tiny_qwen3_rope_scaling", DescribeError::UnsupportedValue, "qwen3.rope.scaling.type"},
              Case{"tiny_llama_rope_freqs_wrong_shape", DescribeError::ShapeMismatch, "rope_freqs.weight"},

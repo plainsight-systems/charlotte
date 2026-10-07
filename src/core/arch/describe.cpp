@@ -168,6 +168,15 @@ DescribeResult read_hyperparameters(const gguf::TensorIndex& index, std::string_
     if (rotated != out.head_dimension) {
         return failure(DescribeError::UnsupportedValue, key_of(arch, "rope.dimension_count"));
     }
+    // No kernel caps logits with tanh, as Gemma 2 does: a file declaring a
+    // nonzero cap, on attention scores or on the output, would run uncapped.
+    for (const std::string_view key : {std::string_view{"attn_logit_softcapping"},
+                                       std::string_view{"final_logit_softcapping"}}) {
+        float cap = 0;
+        if (auto r = read_f32_or(index, arch, key, 0.0f, cap); !r.ok()) return r;
+        if (cap != 0.0f) return failure(DescribeError::UnsupportedValue, key_of(arch, key));
+    }
+
     const std::string scaling_key = key_of(arch, "rope.scaling.type");
     std::string_view scaling;
     if (const auto e = index.read_string(scaling_key, scaling); e == gguf::MetadataError::Ok) {
