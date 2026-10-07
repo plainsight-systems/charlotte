@@ -12,21 +12,25 @@ namespace bllm::arch {
 //
 // Each arch/<arch>/ provides one Architecture, and the capability table lists
 // it under every general.architecture value it answers to. An architecture is
-// the only code that knows which architecture is loaded. It supplies two
-// things:
+// the only code that knows which architecture is loaded. It supplies one
+// thing:
 //
 //   - describe: reads its numbers from the tensor index into a model
-//     description, and names each layer's tensors by role. Fails naming the
-//     key or tensor when the file lacks what the architecture needs.
-//   - graph: the kernel launches for one step, in either regime.
+//     description, names each layer's tensors by role, and states every way
+//     its family differs — conventions, scales, per-layer windows and bases.
+//     Fails naming the key or tensor when the file lacks what the
+//     architecture needs.
+//
+// One graph serves every architecture, reading only the description
+// (graph/graph.h).
 //
 // It rewrites no weights. A file's converter has already put them in the
 // convention the shared kernels expect — llama.cpp's stores Gemma 3's norm
 // weights as 1 + w and permutes Llama's Q and K — so upload writes what the
 // file holds.
 //
-// An entry is chosen once, at load. The graph is built once from it, so the
-// per-token path makes no call through this table (WASM.4).
+// An entry is chosen once, at load, and the per-token path makes no call
+// through this table (WASM.4).
 
 enum class DescribeError {
     Ok,

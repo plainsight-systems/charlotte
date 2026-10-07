@@ -10,6 +10,7 @@
 #include "core/formats/format.h"
 #include "core/gguf/arrays.h"
 #include "core/gguf/index.h"
+#include "core/graph/graph.h"
 #include "core/kernels/attention/attention.h"
 #include "core/kernels/gather/gather.h"
 #include "core/kernels/matmul/matmul.h"

@@ -81,7 +81,7 @@
 <g class="coral"><rect x="40" y="524" width="134" height="32" rx="6"/><text class="th" x="107" y="545" text-anchor="middle">Prefill · Decode</text></g>
 <line class="arr" x1="174" y1="540" x2="190" y2="540" marker-end="url(#a)"/>
 <g class="purple"><rect x="192" y="526" width="92" height="28" rx="5"/><text class="ts" x="238" y="544" text-anchor="middle">runtime · M</text></g>
-<g class="purple"><rect x="292" y="526" width="118" height="28" rx="5"/><text class="ts" x="351" y="544" text-anchor="middle">arch/&lt;arch&gt; · A</text></g>
+<g class="purple"><rect x="292" y="526" width="118" height="28" rx="5"/><text class="ts" x="351" y="544" text-anchor="middle">graph · A</text></g>
 <g class="purple"><rect x="418" y="526" width="105" height="28" rx="5"/><text class="ts" x="470" y="544" text-anchor="middle">kernels/* · E</text></g>
 
 <g class="gray"><rect x="40" y="564" width="134" height="32" rx="6"/><text class="th" x="107" y="585" text-anchor="middle">Sample</text></g>

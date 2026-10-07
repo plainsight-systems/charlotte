@@ -33,7 +33,7 @@
 <g class="gray"><rect x="52" y="338" width="104" height="44" rx="4"/><text class="th" x="104" y="357" text-anchor="middle">gguf/</text><text class="ts" x="104" y="373" text-anchor="middle">C · reader</text></g>
 <g class="gray"><rect x="170" y="338" width="104" height="44" rx="4"/><text class="th" x="222" y="357" text-anchor="middle">capability/</text><text class="ts" x="222" y="373" text-anchor="middle">I · one table</text></g>
 <g class="gray"><rect x="288" y="338" width="104" height="44" rx="4"/><text class="th" x="340" y="357" text-anchor="middle">preflight/</text><text class="ts" x="340" y="373" text-anchor="middle">I · four gates</text></g>
-<g class="gray"><rect x="406" y="338" width="104" height="44" rx="4"/><text class="th" x="458" y="357" text-anchor="middle">arch/*</text><text class="ts" x="458" y="373" text-anchor="middle">A · per arch</text></g>
+<g class="gray"><rect x="406" y="338" width="104" height="44" rx="4"/><text class="th" x="458" y="357" text-anchor="middle">arch/*</text><text class="ts" x="458" y="373" text-anchor="middle">A · describe</text></g>
 <g class="gray"><rect x="524" y="338" width="104" height="44" rx="4"/><text class="th" x="576" y="357" text-anchor="middle">formats/*</text><text class="ts" x="576" y="373" text-anchor="middle">B · device layout</text></g>
 <g class="gray"><rect x="52" y="394" width="180" height="44" rx="4"/><text class="th" x="142" y="413" text-anchor="middle">residency/plan</text><text class="ts" x="142" y="429" text-anchor="middle">D · pure, no GPU</text></g>
 <g class="gray"><rect x="250" y="394" width="180" height="44" rx="4"/><text class="th" x="340" y="413" text-anchor="middle">residency/routes</text><text class="ts" x="340" y="429" text-anchor="middle">D · pure, file to buffers</text></g>
@@ -45,9 +45,10 @@
 <g class="gray"><rect x="199" y="506" width="135" height="44" rx="4"/><text class="th" x="266.5" y="525" text-anchor="middle">pretokenize</text><text class="ts" x="266.5" y="541" text-anchor="middle">K · split patterns</text></g>
 <g class="gray"><rect x="346" y="506" width="135" height="44" rx="4"/><text class="th" x="413.5" y="525" text-anchor="middle">cache/prefix</text><text class="ts" x="413.5" y="541" text-anchor="middle">G · pure diff</text></g>
 <g class="gray"><rect x="493" y="506" width="135" height="44" rx="4"/><text class="th" x="560.5" y="525" text-anchor="middle">cache/kv</text><text class="ts" x="560.5" y="541" text-anchor="middle">G · bookkeeping</text></g>
-<g class="gray gpu"><rect x="52" y="562" width="180" height="44" rx="4"/><text class="th" x="142" y="581" text-anchor="middle">kernels/*</text><text class="ts" x="142" y="597" text-anchor="middle">E · per kernel × regime</text></g>
-<g class="gray"><rect x="250" y="562" width="180" height="44" rx="4"/><text class="th" x="340" y="581" text-anchor="middle">sampler/</text><text class="ts" x="340" y="597" text-anchor="middle">F · top-k candidates</text></g>
-<g class="gray"><rect x="448" y="562" width="180" height="44" rx="4"/><text class="th" x="538" y="581" text-anchor="middle">runtime/</text><text class="ts" x="538" y="597" text-anchor="middle">M · the turn loop</text></g>
+<g class="gray gpu"><rect x="52" y="562" width="135" height="44" rx="4"/><text class="th" x="119.5" y="581" text-anchor="middle">kernels/*</text><text class="ts" x="119.5" y="597" text-anchor="middle">E · per kernel</text></g>
+<g class="gray"><rect x="199" y="562" width="135" height="44" rx="4"/><text class="th" x="266.5" y="581" text-anchor="middle">graph/</text><text class="ts" x="266.5" y="597" text-anchor="middle">A · the pass, pure</text></g>
+<g class="gray"><rect x="346" y="562" width="135" height="44" rx="4"/><text class="th" x="413.5" y="581" text-anchor="middle">sampler/</text><text class="ts" x="413.5" y="597" text-anchor="middle">F · top-k candidates</text></g>
+<g class="gray"><rect x="493" y="562" width="135" height="44" rx="4"/><text class="th" x="560.5" y="581" text-anchor="middle">runtime/</text><text class="ts" x="560.5" y="597" text-anchor="middle">M · the turn loop</text></g>
 <line class="arr" x1="340" y1="618" x2="340" y2="638" marker-end="url(#a)"/>
 <rect class="frame" x="40" y="640" width="600" height="196" rx="8"/>
 <text class="th" x="56" y="660">Contract headers — no axis; modules depend on these</text>

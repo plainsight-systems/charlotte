@@ -98,6 +98,11 @@ struct ModelDescription {
     // key states and llama.cpp infers from its 62 layers, after Google's
     // gemma_pytorch configuration. Set by describe.
     float attention_scale;
+    // What the embedding multiplies each row by: 1, but for Gemma 3 the
+    // square root of the embedding width, in f32, as llama.cpp's
+    // build_inp_embd(tok_embd, sqrtf(n_embd)) does. The output head reads
+    // the table unscaled where the file ties them. Set by describe.
+    float embedding_scale;
     // Llama 3's long-context scaling, rope_freqs.weight: F32, one factor a
     // pair, each pair's frequency divided by its own, in every layer. Empty
     // where the file has none. Every head is rotated whole: describe refuses

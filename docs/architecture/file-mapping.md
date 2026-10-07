@@ -64,7 +64,8 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/policy/` | contract | a model's measured configuration, and the defaults for an unmeasured one |
 | `src/core/arch/architecture.h` | contract | what every architecture supplies |
 | `src/core/arch/describe` | C | what describing shares: GGUF's `<arch>.<key>` and `blk.<layer>.<suffix>` naming, and the shape each role's weight has |
-| `src/core/arch/<arch>/` | A | reading its numbers into the model description, and its graph |
+| `src/core/arch/<arch>/` | A | reading its numbers into the model description, and stating every way its family differs there |
+| `src/core/graph/` | A | the forward pass: every launch of a step, in order, from the model description and the plan |
 | `src/core/formats/format.h` | contract | what every weight format supplies |
 | `src/core/formats/<format>/` | B | device layout, pack and unpack in WGSL |
 | `src/core/residency/plan` | D | the planner, pure: weights, cache and working buffers, and the context offered |
@@ -108,7 +109,7 @@ and production never materialises a dequantized weight.
 | **Tokenize** | `core/tokenizer/<algorithm>` K · `core/tokenizer/pretokenize` K | no — split within K |
 | **Diff** | `core/cache/prefix` G | no |
 | **KV cache** | `core/cache/kv` G · `core/formats/<format>` B | yes |
-| **Prefill · Decode** | `core/runtime` M · `core/arch/<arch>` A · `core/kernels/*` E | yes |
+| **Prefill · Decode** | `core/runtime` M · `core/graph` A · `core/kernels/*` E | yes |
 | **Sample** | `core/sampler` F | no |
 | **Emit** | `core/tokenizer/<algorithm>` K · the boundary · `web/chat.js` H | yes |
 
@@ -121,16 +122,16 @@ runs, in what order, with what parameters.
 
 | Block | Files, with axis |
 |---|---|
-| Order of every block below, per architecture | `core/arch/<arch>` A |
+| Order of every block below, for every architecture | `core/graph` A |
 | Step parameters: position, token count and the tokens' identifiers | `core/kernels/interface` contract · `core/runtime` M |
 | Launching every block, a step | `core/kernels/program` D |
-| Working buffers: hidden, normed, query, key, value, attention, output, gate, up, logits | `core/residency/plan` D |
+| Working buffers: hidden, normed, query, key, value, attention, partials, output, activation, logits | `core/residency/plan` D |
 | **Embed** | `core/kernels/gather` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
 | **Norms**: attention, feed-forward, final, each with the residual add before it | `core/kernels/norm` E · `core/formats/f32` B |
 | **Projections**: Q, K, V and Wo; feed-forward gate, up and down; the output head | `core/kernels/matmul` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
 | **QK-norm, RoPE, append to the cache** | `core/kernels/rope` E · `core/model` contract · `core/cache/kv` G · `core/formats/<format>` B, the cache's |
 | **Attention**: scores, causal mask, softmax, weighted sum | `core/kernels/attention` E · `core/cache/kv` G · `core/formats/<format>` B, the cache's |
-| **Activation** | `core/kernels/activation` E |
+| **Activation** | `core/kernels/matmul` E: the gate-and-up product's epilogue |
 | **Residual add** | `core/kernels/norm` E: the norm that begins the next block adds the block's output into X |
 
 Which of these blocks share a launch, and why, is in
@@ -148,8 +149,8 @@ changes on exactly one axis.
 - **`formats/<format>`** serves Upload and the KV cache. Its device layout and
   its packing and unpacking are one piece of knowledge, whether the data is a
   weight or a cached key.
-- **`arch/<arch>`** serves Gates, through describe, and the forward pass,
-  through its graph.
+- **`arch/<arch>`** serves Gates and the forward pass, both through the
+  description its describe fills.
 - **`tokenizer/<algorithm>`** serves Tokenize and Emit: encode on the way in,
   streaming decode on the way out.
 - **`web/fetch.js`** serves Preflight, which reads the header prefix, and Fetch,
