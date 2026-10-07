@@ -176,6 +176,8 @@ StartResult Runtime::start(std::span<const tokenizer::TokenId> prompt, const pol
     return {};
 }
 
+std::uint32_t Runtime::capacity() const noexcept { return state_->cache.capacity(); }
+
 void Runtime::cancel() noexcept {
     if (state_->turn) state_->turn->cancel();
 }

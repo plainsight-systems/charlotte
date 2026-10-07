@@ -192,6 +192,9 @@ public:
     // Ends the running turn at its next report; with none, nothing.
     void cancel() noexcept;
 
+    // The context offered: the most tokens a prompt and its reply hold.
+    [[nodiscard]] std::uint32_t capacity() const noexcept;
+
     ~Runtime();
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;

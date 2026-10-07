@@ -33,7 +33,7 @@ namespace bllm::runtime {
 //     named; text over that bound; and whatever the runtime refuses
 //     (runtime.h).
 //   - Each token the runtime emits is decoded into bytes and pushed through
-//     a UTF-8 stream (tokenizer.h's Utf8Stream), and the characters it
+//     a UTF-8 stream (tokenizer/detokenizer.h), and the characters it
 //     completes are passed to the text callback; a token that completes
 //     none — the first bytes of a character another token finishes — passes
 //     nothing. Stop tokens are never emitted, so never decoded; any other
