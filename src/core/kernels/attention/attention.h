@@ -181,8 +181,10 @@ namespace bllm::kernels {
 //     layers — 448 MiB at L = 4,096, about 1.2 ms at 400 GB/s, more than the
 //     weights' 0.95 ms; attention is decode's second floor, and the larger
 //     past about 3,300 tokens. The split's partials add H_q × (d + 2) × 4
-//     bytes a chunk, written and read, 16 KiB against the chunk's 256 KiB
-//     of keys and values: 6.3%. Workgroups: 8 × ceil(L / 64), 128
+//     bytes a chunk: 16 KiB of values written and read, and 128 bytes of
+//     statistics written and read by each of the combine's d / 4
+//     invocations a query, 4 KiB — about 20.6 KB against the chunk's 256 KiB
+//     of keys and values, 7.9%. Workgroups: 8 × ceil(L / 64), 128
 //     at 1,024 and 512 at 4,096. The combine's d / 4 invocations a query
 //     each fold its count of partials in order, a chain of that many merges:
 //     64 at 4,096, 128 at 8,192, each two exp2s and a vec4 multiply and
@@ -211,9 +213,10 @@ namespace bllm::kernels {
 // 4,096 read the KV cache where one a key-value head would be 8 —
 // Flash-Decoding, vLLM's PagedAttention V2 (GDSA.8). The chunk is 64 keys,
 // ONNX Runtime's: llama.cpp's and ONNX Runtime's WebGPU decode reach 256
-// workgroups or more at 1,024 keys, and 256-key chunks gave 32, which read
-// the KV cache at about 32 GB/s in the profile
-// (docs/research/2026-10-07-forward-pass-profile.md) (GPU.3).
+// workgroups or more at 1,024 keys, and 256-key chunks ran 40 at the
+// profile's position 1,024 — 1,025 keys, 5 chunks — which read the KV
+// cache at about 32 GB/s (docs/research/2026-10-07-forward-pass-profile.md);
+// 64-key chunks run 136 there (GPU.3).
 // Optimization (practice): chunks fixed by position and folded in order,
 // so a split does not change a result — the fixed split size Thinking
 // Machines' batch-invariant attention uses (CDSA.23).
@@ -249,6 +252,14 @@ namespace bllm::kernels {
 //   - The combine folded into the output projection's load: 28 launches a
 //     decode step saved, 42 µs, for a matrix product that reads partials
 //     and knows attention's merge.
+//   - The combine's statistics folded once a head, one lane a head, its
+//     factors shared through workgroup memory: 32 times fewer exp2s for
+//     Qwen3, where each of a query's d / 4 invocations folds them itself.
+//     The combine's 512 invocations a layer leave most of the GPU's lanes
+//     idle, so the repeated exp2s run beside one another at no cost in time,
+//     and each invocation's chain is the same count of merges either way;
+//     a head's lane would make every output wait on its serial pass and a
+//     barrier.
 //   - Larger tiles from a raised workgroup-memory limit: Apple adapters
 //     offer 32 KiB; the harness asks for none of the defaults' limits
 //     raised.
