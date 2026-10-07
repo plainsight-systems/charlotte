@@ -409,6 +409,7 @@ PlanResult plan_residency(const gguf::TensorIndex& index, const model::ModelDesc
                           const DeviceLimits& limits, const policy::LoadPolicy& policy,
                           ResidencyPlan& out) {
     out = ResidencyPlan{};
+    out.cache_type = storage_type(policy.cache_precision);
     if (auto r = place_weights(index, model, limits, out); !r.ok()) return r;
     out.weight_bytes = pool_bytes(out.buffers, Pool::Weights);
     if (auto r = place_scratch(model, limits, out); !r.ok()) return r;

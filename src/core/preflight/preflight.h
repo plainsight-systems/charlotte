@@ -34,8 +34,9 @@ namespace bllm::preflight {
 //
 // The verdict lists blockers, each naming the stage it stops and why: the
 // architecture, each unsupported format with how many tensors use it and the
-// first, the tokenizer or pre-tokenizer, or a stage this build does not
-// implement. Every check that can run does, so the verdict says everything a
+// first, the graph's refusal of a layer, a cache format no kernel writes, the
+// tokenizer or pre-tokenizer, or a stage this build does not implement. The
+// graph is built only for a model that fits, over the plan Fit made. Every check that can run does, so the verdict says everything a
 // model still needs, not only what stops the next stage. The stage reached is
 // derived from the blockers, never stored beside them.
 

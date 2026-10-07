@@ -8,6 +8,7 @@
 #include "core/preflight/preflight.h"
 #include "core/residency/routes.h"
 #include "support/gguf_fixture.h"
+#include "support/model_headers.h"
 
 using namespace bllm;
 using preflight::Blocker;
@@ -150,6 +151,34 @@ TEST_CASE("with a device's limits, a model that describes reaches fit and says h
     const auto blind = preflight::preflight(index, residency::DeviceLimits{}, policy::LoadPolicy{});
     CHECK(blind.reached() == Stage::Describe);
     CHECK(blocked(blind, Stage::Fit, "no GPU device was acquired, so fit cannot be judged"));
+}
+
+TEST_CASE("a model that fits is judged for Run by its architecture's graph, which names the layer it refuses") {
+    const residency::DeviceLimits defaults{256ull << 20, 128ull << 20, 256};
+    // The tiny fixture's heads are 32 wide, which no attention kernel takes.
+    const auto bytes = testing::load_gguf_fixture("tiny_qwen3");
+    gguf::MemoryByteSource source{bytes};
+    gguf::TensorIndex index;
+    REQUIRE(gguf::read_index(source, index).error == gguf::ReadError::Ok);
+    CHECK(blocked(preflight::preflight(index, defaults, policy::LoadPolicy{}), Stage::Run,
+                  "architecture \"qwen3\" cannot run this file: a layer's shape is outside the kernels "
+                  "(layer 0: head dimension 32 is not 64, 128 or 256)"));
+    // A cache precision no kernel writes.
+    policy::LoadPolicy bf16;
+    bf16.cache_precision = policy::CachePrecision::BF16;
+    const testing::ReadHeader qwen3 = testing::read_model_header("qwen3-0.6b-q4_0");
+    CHECK(blocked(preflight::preflight(qwen3.index, defaults, bf16), Stage::Run,
+                  "the cache format BF16 cannot be written by this build"));
+    // Each listed model: the only Run blocker is the stage this build lacks.
+    for (const char* id : {"qwen3-0.6b-q4_0", "llama-3.2-1b-instruct-q4_0", "gemma-3-1b-it-q4_0"}) {
+        CAPTURE(id);
+        const testing::ReadHeader header = testing::read_model_header(id);
+        const Verdict verdict = preflight::preflight(header.index, defaults, policy::LoadPolicy{});
+        REQUIRE(verdict.fit.has_value());
+        for (const Blocker& b : verdict.blockers) {
+            if (b.stage == Stage::Run) CHECK(b.detail == "the run stage is not implemented in this build");
+        }
+    }
 }
 
 TEST_CASE("a model that fits reports its duplicate candidates with both byte ranges") {

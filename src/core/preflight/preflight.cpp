@@ -7,6 +7,8 @@
 #include "core/arch/architecture.h"
 #include "core/capability/capability.h"
 #include "core/formats/format.h"
+#include "core/graph/graph.h"
+#include "core/kernels/interface.h"
 #include "core/model/model_description.h"
 #include "core/tokenizer/tokenizer.h"
 
@@ -37,10 +39,16 @@ std::string_view to_string(arch::DescribeError error) noexcept {
     return "unrecognised error";
 }
 
+// The architecture and the description it read, which Fit and Run need.
+struct Described {
+    const arch::Architecture* architecture;
+    std::string_view name;
+    model::ModelDescription description;
+};
+
 // Describe: the architecture is implemented and can read its numbers from
-// this file. Returns the description, which Fit needs.
-std::optional<model::ModelDescription> check_architecture(const gguf::TensorIndex& index,
-                                                          Verdict& verdict) {
+// this file.
+std::optional<Described> check_architecture(const gguf::TensorIndex& index, Verdict& verdict) {
     constexpr std::string_view kKey = "general.architecture";
     std::string_view name;
     if (const auto e = index.read_string(kKey, name); e != gguf::MetadataError::Ok) {
@@ -60,7 +68,33 @@ std::optional<model::ModelDescription> check_architecture(const gguf::TensorInde
                                   std::string(to_string(r.error)) + " (" + r.subject + ")"});
         return std::nullopt;
     }
-    return description;
+    return Described{architecture, name, std::move(description)};
+}
+
+constexpr std::string_view to_string(graph::GraphError e) noexcept {
+    switch (e) {
+        case graph::GraphError::Ok: return "ok";
+        case graph::GraphError::UngroupedFeedForward: return "a layer's gate and up are not one group";
+        case graph::GraphError::UnsupportedShape: return "a layer's shape is outside the kernels";
+    }
+    return "unrecognised error";
+}
+
+// Run needs the architecture's graph to build over the plan Fit made, with
+// a cache format a kernel can write (graph/graph.h).
+void check_graph(const Described& d, const residency::ResidencyPlan& plan, Verdict& verdict) {
+    const formats::Format* cache = capability::find_format(plan.cache_type);
+    if (cache == nullptr || cache->pack_wgsl().empty()) {
+        verdict.blockers.push_back({Stage::Run, "the cache format " +
+                                                    std::string(gguf::format_layout(plan.cache_type)->name) +
+                                                    " cannot be written by this build"});
+        return;
+    }
+    std::vector<kernels::Launch> launches;
+    if (const auto r = d.architecture->graph(d.description, plan, *cache, launches); !r.ok()) {
+        verdict.blockers.push_back({Stage::Run, "architecture " + quoted(d.name) + " cannot run this file: " +
+                                                    std::string(to_string(r.error)) + " (" + r.subject + ")"});
+    }
 }
 
 std::string mebibytes(std::uint64_t bytes) {
@@ -204,18 +238,19 @@ std::string plan_load(const gguf::TensorIndex& index, const residency::DeviceLim
     Verdict verdict;
     const auto described = check_architecture(index, verdict);
     if (!described) return verdict.blockers.front().detail;
-    check_fit(index, *described, limits, policy, verdict, plan);
+    check_fit(index, described->description, limits, policy, verdict, plan);
     if (!verdict.fit) return verdict.blockers.front().detail;
-    description = *described;
+    description = described->description;
     return {};
 }
 
 Verdict preflight(const gguf::TensorIndex& index, const residency::DeviceLimits& limits,
                   const policy::LoadPolicy& policy) {
     Verdict verdict;
-    if (const auto description = check_architecture(index, verdict)) {
+    if (const auto described = check_architecture(index, verdict)) {
         residency::ResidencyPlan plan;
-        check_fit(index, *description, limits, policy, verdict, plan);
+        check_fit(index, described->description, limits, policy, verdict, plan);
+        if (verdict.fit) check_graph(*described, plan, verdict);
     }
     check_formats(index, verdict);
     check_rows(index, verdict);

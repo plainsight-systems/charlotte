@@ -144,6 +144,9 @@ struct ResidencyPlan {
     std::vector<PlannedTensor> tensors;
     std::vector<PlannedGroup> groups;
     std::vector<PlannedCacheLayer> cache;
+    // The type the cache is stored in, from the policy's precision; set by
+    // plan_residency before anything else, so a failed plan has it too.
+    gguf::TensorType cache_type{};
     std::vector<PlannedScratch> scratch;
     std::uint32_t context_offered = 0;
     // Bytes in each pool, alignment padding included, and their sum. On
