@@ -164,8 +164,10 @@ void on_decoded(kernels::ProgramError e, std::string_view message, std::span<con
 
 // Runs the prompt, then pumps until every step run has reported, failed or
 // not, so no callback outlives the decoder.
+// Precondition: count >= 1; the prompt's step draws the first.
 std::vector<std::uint32_t> decode(WGPUInstance instance, const gpu::Device& device, std::span<const std::uint32_t> ids,
                                   std::size_t count, const policy::SamplingSettings& s, bool pipelined) {
+    REQUIRE(count >= 1);
     Running r = run_model(instance, device);
     // On the heap, and kept should the wait time out: the program, destroyed
     // with steps in flight, still reports them, and a report must find it.
