@@ -131,35 +131,43 @@ namespace bllm::sampler {
 //     warned a pipeline puts at risk, stated so the
 //     runtime's tests can hold it.
 //
-// What it costs, a sampled step: the draw is one launch, 1.5 µs. It loads
-// the 512 bytes of candidates, and each invocation the first logit again —
-// 256 bytes more, logically, which the GPU's caches serve — and writes 16.
-// Its work, in order:
-//   - side by side: each invocation loads its candidate and the first from
-//     device memory, computes two exponentials and its min-p test,
-//     and writes them to workgroup memory; the last runs Philox's 10 rounds
-//     and writes u;
-//   - a barrier; invocation 0 sums top-p's weights, at most 64 dependent
+// What it costs, a sampled step: the draw is one launch, 1.5 µs. Each of the
+// first top_k invocations loads its candidate's logit and the first's, and
+// invocation 0 the chosen token: 8 × top_k + 4 bytes logically, of 4 ×
+// top_k + 4 distinct, which the GPU's caches serve — 164 and 84 at Qwen3's
+// top_k of 20, 516 and 260 at 64 — and it writes 16. Its work, in order:
+//   - side by side: each of the first top_k invocations loads its candidate
+//     and the first from device memory, computes its exponentials and its
+//     min-p test, and writes them to workgroup memory; the others, past
+//     top_k, do none of it, and wait at the barriers — a split by
+//     invocation, so on a SIMD group straddling top_k its idle lanes cost
+//     the group's issue slots, not its time; the last runs Philox's 10
+//     rounds and writes u;
+//   - a barrier; invocation 0 sums top-p's weights, at most top_k dependent
 //     adds, and writes the total;
-//   - a barrier; each invocation divides its own weight by it;
-//   - a barrier; invocation 0 runs top-p's running sum, at most 64 dependent
-//     adds, carrying the draw's total over the survivors as a second chain
-//     beside it, then the draw's running sum to u × that total, at most 64
-//     more, and writes the record.
-// Three barriers, and in sequence on one invocation 3 × top_k adds at most
-// — 192 at a top_k of 64, 60 at Qwen3's 20 — with as many interleaved
-// beside them. At a top_p of 1, top-p's weights, total, division and
-// running sum are not computed: one barrier, and 2 × top_k adds.
-// Optimization (practice): only the first top_k candidates are worked, and
-// none of top-p's work is done where it would keep every candidate; both
-// branch on the step's uniform settings, so neither diverges a workgroup. An estimate of its latency at the worst, a top_k of 64, on
-// cores near 1.4 GHz from about 400 cycles for the loads, 50 a barrier and
-// 8 an add with its read, compare and loop control: 2,086 cycles, 1.5 µs,
-// leaving out the exponentials' and the divisions' latency, each on the
-// path between two barriers, and the issue slots Philox and the second
-// chain take. An estimate, partial, not a bound: the selection's stages and
-// this are measured together once they run, and that measure, not this,
-// says what share of a decode step they take.
+//   - a barrier; each of the first top_k invocations divides its own weight
+//     by it;
+//   - a barrier; invocation 0 runs the running sums, at most top_k
+//     iterations — the tempered weights' and, beside them, top-p's
+//     cumulative probability, stopping at top-p's cut — then the min-p scan
+//     and the draw's comparisons with u × the survivors' total, at most
+//     top_k iterations each, and writes the record.
+// Three barriers, and on invocation 0, in sequence, four loops of at most
+// top_k iterations — 256 at a top_k of 64, 80 at Qwen3's 20. At a top_p of
+// 1, top-p's weights, total, division and cumulative sum are not computed:
+// one barrier, and three loops.
+// Optimization (practice): only the first top_k candidates are read and
+// worked, and none of top-p's work is done where it would keep every
+// candidate. The branch on top_p is uniform; the one on top_k splits
+// invocations, which is cheaper than working candidates never read.
+// An estimate of its latency at the worst, a top_k of 64 and a top_p below
+// 1, on cores near 1.4 GHz from about 400 cycles for the loads, 50 a barrier
+// and 8 an iteration with its read, add or compare, and loop control: 2,598
+// cycles, 1.9 µs, leaving out the exponentials' and the divisions' latency,
+// each on the path between two barriers, and the issue slots Philox takes.
+// An estimate, partial, not a bound: the selection's stages and this are
+// measured together once they run, and that measure, not this, says what
+// share of a decode step they take.
 // The readback copies 16 bytes and maps them while the next step runs, so a
 // decode step's critical path no longer holds the map's round trip, 0.5 ms
 // median and 0.8 ms at p95 on the target. On the CPU, a token costs one
@@ -172,7 +180,8 @@ namespace bllm::sampler {
 //   - The draw folded into the selection's last pass, whose one workgroup
 //     already holds the 64 candidates: one launch fewer, about 1.5 µs, three
 //     calls out of the module — its pipeline, bind group and dispatch — and
-//     a 512-byte read a sampled step — 0.09% of
+//     its candidate loads, 8 × top_k + 4 bytes logically, a sampled step —
+//     0.09% of
 //     a decode step — at the cost of the sampling method living inside the
 //     selection kernel, so that a new method would change the selection
 //     (docs/architecture/change-axes.md: axis F apart from E).

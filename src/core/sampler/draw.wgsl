@@ -71,20 +71,25 @@ fn negative_infinity(bits: u32) -> bool {
 fn main(@builtin(local_invocation_index) t: u32) {
     let k = min(step.top_k, draw.count);
     // At a top_p of 1 top-p keeps every candidate, and none of its work is
-    // done: no weight, total, division or running sum. The step's settings
-    // are uniform, so every branch on them keeps the barriers uniform.
+    // done: no weight, total, division or cumulative sum. The step's settings
+    // are uniform, so a branch on them alone keeps the barriers uniform.
     let top_p = step.top_p < 1.0;
-    let first_bits = candidates[0].x;
-    let failed = !finite(first_bits);
-    weight[t] = 0.0;
-    tempered[t] = 0.0;
-    above_min_p[t] = 0u;
-    // A candidate past top_k is never read, so its invocation works none of
-    // it. −∞ weighs nothing; a non-finite first fails the draw before any of
-    // it is used.
-    if (t < k && !failed) {
+    // Only the first top_k invocations work: a candidate past top_k is never
+    // read, and invocation 0 reads the workgroup arrays below top_k alone.
+    // Invocation 0 is always one of them, top_k being at least 1.
+    var failed = false;
+    if (t < k) {
+        let first_bits = candidates[0].x;
         let mine_bits = candidates[t].x;
-        if (!negative_infinity(mine_bits)) {
+        failed = !finite(first_bits);
+        if (top_p) {
+            weight[t] = 0.0;
+        }
+        tempered[t] = 0.0;
+        above_min_p[t] = 0u;
+        // −∞ weighs nothing; a non-finite first fails the draw before any of
+        // it is used.
+        if (!failed && !negative_infinity(mine_bits)) {
             let first = bitcast<f32>(first_bits);
             let mine = bitcast<f32>(mine_bits);
             if (top_p) {
