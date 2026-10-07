@@ -37,6 +37,7 @@ add_executable(charlotte_tests
     arch_describe_test.cpp
     graph_test.cpp
     kernels_schedule_test.cpp
+    kernels_topk_test.cpp
     residency_plan_test.cpp
     cache_kv_test.cpp
     cache_prefix_test.cpp

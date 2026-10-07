@@ -60,6 +60,7 @@ add_library(charlotte_core STATIC
     src/core/kernels/attention/attention.cpp
     src/core/kernels/rope/rope.cpp
     src/core/kernels/schedule.cpp
+    src/core/kernels/topk/topk.cpp
     src/core/residency/routes.cpp
     src/core/gpu/dispatch_math.cpp
 )
@@ -91,6 +92,7 @@ bllm_embed_shaders(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/norm/norm.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/attention/attention.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/topk/topk.wgsl"
 )
 
 # ---------------------------------------------------------------------------
