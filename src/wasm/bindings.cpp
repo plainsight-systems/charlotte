@@ -39,7 +39,11 @@
 // Contract 11, the boundary: this file and web/worker.js are the only two
 // places JavaScript and C++ meet. The crossings are preflight a header prefix;
 // begin a load, load a chunk of the file, and finish the load (web/load.js);
-// generate from a rendered prompt and the turn's policy; and cancel. Text goes
+// generate from a rendered prompt and the turn's policy; and cancel. A
+// prompt the tokenizer refuses as too long to encode is answered with code
+// "prompt-too-large", its normalized bytes and kMaxEncodeBytes
+// (tokenizer/tokenizer.h), which the page shows by name: dropping old
+// messages does not shorten a message that is itself too large. Text goes
 // back one crossing per piece the reply completes (WASM.2).
 //
 // The model's load policy (policy/policy.h) crosses with preflight and with

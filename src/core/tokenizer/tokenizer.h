@@ -44,6 +44,68 @@ struct PreTokenizer;
 //     final class. It is called once a turn to encode and once a token to
 //     decode, never in a loop over tokens' work, so its indirect call is paid
 //     at those rates (WASM.4's caveat).
+//   - Encoding is bounded, by the caller's token limit and by the bytes one
+//     encode takes, before any piece is merged — the work, and the memory,
+//     that grow with a piece's length (bpe/merge.h). encode takes the
+//     limit, max_tokens, and returns an EncodeResult: the error, and the
+//     least tokens or the normalized bytes a refusal names — for raw text
+//     refused before normalizing, its bytes × 2 / 7, the least it normalizes
+//     to. EncodeError gains TooManyTokens, and TooLong comes to mean past
+//     kMaxEncodeBytes, a constant here. An algorithm first
+//     refuses text over 7/2 × kMaxEncodeBytes raw bytes as TooLong: NFC
+//     shrinks UTF-8 at most 7/2-fold and SentencePiece's escaping never
+//     shrinks it, so its normalized text would exceed the bound. Otherwise
+//     it splits out the special tokens and normalizes the rest — NFC, or
+//     SentencePiece's escaping — keeping each ordinary segment's normalized
+//     bytes; then admit (admission.h), a pure function of the counts both
+//     algorithms call, decides: each special token is a token, and a
+//     segment of n normalized bytes makes at least ceil(n / longest_cover())
+//     tokens — no token spans a special or two segments — so their sum,
+//     taken in 64 bits, over the limit is TooManyTokens, naming that least
+//     count; then normalized text over kMaxEncodeBytes is TooLong, naming
+//     its bytes. The token check first, so text a context could never hold
+//     is named by its tokens, by which the page shortens a conversation.
+//     The count is a lower bound: admitted text may still make more tokens
+//     than the limit, which the caller counts after encoding; it never
+//     refuses text that would fit. Only admitted text is pre-tokenized and
+//     merged. A refusal leaves `out` untouched.
+//   - longest_cover(), a new member, is the most normalized bytes one token
+//     covers, computed at load: a
+//     normal token's decoded bytes for byte-level BPE, its spelling for
+//     SentencePiece, whose normalized text is spelled alike: 128 for Qwen3
+//     and Llama 3.2, runs of spaces, and 48 for Gemma 3. Special tokens are
+//     segmented out first, so their length bounds nothing.
+//   - kMaxEncodeBytes, 512 KiB of normalized text, is sized from the
+//     encode's worst case in the module's heap (WASM.1, EMB.4), per byte:
+//     before admission, per raw byte — the boundary's copy, 1; segments,
+//     16 bytes each, at most two a special token's text; normalized text, at
+//     most 3 — 20 bytes, at most 35 MiB at 1.75 MiB of raw text; after it,
+//     per normalized byte — pre-tokenization's characters, 12, and pieces,
+//     8, doubled by their vector's growth; the merge of a piece holding all
+//     of it, its symbols, 4 doubled, its chain, 12, and its candidate heap,
+//     at most 2 a symbol live, 24 bytes each, whose vector's capacity, at
+//     most 4 a symbol, is copied once more as it grows, 144; and the
+//     tokens, 4 doubled, and the generator's copy, 4 — 204 bytes, at most
+//     102 MiB. 137 MiB in all, 274 MiB with EMB.4's margin of 2, beside the
+//     module's own — its static data, the tokenizer's tables, under 10 MB
+//     for the listed models by their vocabularies' sizes, and the load's
+//     16 MiB chunk buffer — under the build's 512 MiB maximum
+//     (CMakeLists.txt). 512 KiB is about 128,000 tokens of English at 4
+//     bytes a token, past every listed model's context: what it refuses
+//     that a context could hold is text averaging more bytes a token than
+//     512 KiB over the context — 32 for a 16,384-token context — such as
+//     long runs of spaces, a stated limit (WASM.1's caveat), named.
+//   - Verification: admit, on the CPU — the least count at a segment of a
+//     multiple of the cover and one byte past it, specials alone, segments
+//     that each round up; the limit met exactly and passed by one;
+//     kMaxEncodeBytes met exactly and passed by one; the token refusal ahead
+//     of the byte one when both hold. Each listed model's tokenizer: its
+//     longest_cover() as above; a text of spaces whose least count meets the
+//     limit admitted, its tokens those an encode without a limit gives, and
+//     one more space past it refused naming its count, out untouched; text one byte past
+//     kMaxEncodeBytes normalized refused as TooLong, and raw text past 7/2 of
+//     it refused unnormalized; and every reference case encoded with no
+//     limit, the same tokens as before.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -51,9 +113,17 @@ struct PreTokenizer;
 //            data; its virtual destructor public (C.127).
 //     C.121  If a base class is used as an interface, make it a pure abstract
 //            class.
+//     SL.io.2 When reading, always consider ill-formed input — a prompt of
+//            any size is input; its size is checked before work grows with it.
+//     E.27   Use error codes systematically — TooManyTokens and TooLong,
+//            each with its counts.
+//     F.8    Prefer pure functions — admit, counts in and a verdict out.
 //   C++ performance guidelines
 //     WASM.4 Reduce indirect dispatch in hot paths — the dispatch is once a
 //            turn and once a token; implementations are final.
+//     WASM.1 Size linear memory to the real high-water mark — the encode's
+//            worst case counted against the heap's maximum; the cap stated.
+//     EMB.4  Size the worst case of dynamic allocation, with margin.
 
 // A token's identifier. Its own type, so it cannot be passed where a count or
 // a position is meant.

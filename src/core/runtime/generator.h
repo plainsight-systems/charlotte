@@ -21,20 +21,27 @@ namespace bllm::runtime {
 //     the special tokens as text, and they encode as their identifiers —
 //     into tokens held for the generator's life, reserved at the context
 //     offered plus one. Then the runtime's turn starts over them.
-//   - A token covers at most the vocabulary's longest text, L bytes, of
-//     normalized text, and NFC shrinks UTF-8 at most 7/2-fold — a character
-//     NFC writes stands for at most its longest canonical equivalent, at most
-//     7/2 times its bytes in Unicode 16.0 —
-//     so text longer than 7/2 × the context × L bytes encodes to more tokens
-//     than the context holds: it is refused before it is encoded, as
-//     PromptTooLong, naming its bytes and the least tokens they make, so no
-//     prompt's encode grows memory past what a prompt the context could hold
-//     needs.
-//     Shorter text encodes to at most its bytes in tokens; one too long for
-//     the context grows the tokens once, and the runtime refuses it, naming
-//     both counts.
+//   - A token covers at most the tokenizer's longest_cover(), L bytes, of
+//     normalized text, and normalizing shrinks UTF-8 at most 7/2-fold — a
+//     character NFC writes stands for at most its longest canonical
+//     equivalent, at most 7/2 times its bytes in Unicode 16.0 — so text
+//     longer than 7/2 × the context × L bytes makes more tokens than the
+//     context holds: it is refused before it is encoded, as PromptTooLong,
+//     naming its bytes and the least tokens they make.
+//   - Shorter text is encoded with the context offered as its limit
+//     (tokenizer/tokenizer.h, encoding is bounded): text that makes more
+//     tokens at least, its specials and segments counted after normalizing,
+//     is refused before any piece is merged, as PromptTooLong with that
+//     count, as the runtime refuses one, so the page shortens the
+//     conversation alike; text past kMaxEncodeBytes once normalized, as the
+//     encode's TooLong, the result carrying the tokenizer's EncodeResult,
+//     its normalized bytes with it, which the boundary sends as
+//     "prompt-too-large" with the limit; and the memory an encode takes stays
+//     within what tokenizer.h counts for kMaxEncodeBytes, whatever the
+//     text. Admitted text that still makes more tokens than the context
+//     grows the tokens once, and the runtime refuses it, naming both counts.
 //   - Refused at once, without a callback: text the tokenizer cannot encode,
-//     named; text over that bound; and whatever the runtime refuses
+//     named; text over those bounds; and whatever the runtime refuses
 //     (runtime.h).
 //   - Each token the runtime emits is decoded into bytes and pushed through
 //     a UTF-8 stream (tokenizer/detokenizer.h), and the characters it
