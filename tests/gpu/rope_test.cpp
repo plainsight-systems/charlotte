@@ -260,7 +260,7 @@ double check_step(const Uploaded& u, const Shape& s, const Result& got, std::uin
             for (std::uint32_t i = 0; i < s.d; ++i) {
                 const double error = std::abs(got.query[(t * s.query_heads + h) * s.d + i] - want.values[i]);
                 worst = std::max(worst, error / bound(s, want, i));
-                if (error > bound(s, want, i)) {
+                if (!(error <= bound(s, want, i))) {   // NaN fails too
                     FAIL_CHECK("query head " << h << " value " << i << " off by " << error);
                     return worst;
                 }
@@ -276,7 +276,7 @@ double check_step(const Uploaded& u, const Shape& s, const Result& got, std::uin
                                        std::ldexp(1.0, -25);
                 const double error = std::abs(half_value(got.keys[stored + i]) - want.values[i]);
                 worst = std::max(worst, error / allowed);
-                if (error > allowed) {
+                if (!(error <= allowed)) {   // NaN fails too
                     FAIL_CHECK("key head " << h << " value " << i << " off by " << error);
                     return worst;
                 }

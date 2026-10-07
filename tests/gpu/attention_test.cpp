@@ -199,7 +199,7 @@ double check_step(const Shape& s, std::span<const float> got, std::span<const fl
                 }
                 const double error = std::abs(got[(std::size_t{t} * s.query_heads + h) * s.d + e] - want);
                 worst = std::max(worst, error / allowed);
-                if (error > allowed) {
+                if (!(error <= allowed)) {   // NaN fails too
                     FAIL_CHECK("row " << t << " head " << h << " value " << e << " off by " << error << ", allowed "
                                       << allowed);
                     return worst;

@@ -233,7 +233,7 @@ TEST_CASE("each format's product is within its bound, decoded and prefilled, and
                     const Want want = reference(weights, source, columns, o, t);
                     const double error = std::abs(got[0][std::size_t{t} * rows + o] - want.value);
                     worst = std::max(worst, error / want.bound);
-                    if (error > want.bound) {
+                    if (!(error <= want.bound)) {   // NaN fails too
                         FAIL_CHECK("token " << t << " row " << o << " off by " << error);
                         break;
                     }

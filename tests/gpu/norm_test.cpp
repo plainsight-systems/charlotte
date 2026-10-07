@@ -184,8 +184,14 @@ double check_row(std::span<const float> got, const std::vector<double>& want) {
     double largest = 0;
     for (const double e : want) largest = std::max(largest, std::abs(e));
     double worst = 0;
-    for (std::size_t i = 0; i < want.size(); ++i) worst = std::max(worst, std::abs(got[i] - want[i]) / largest);
-    CHECK(worst <= std::ldexp(1.0, -18));
+    for (std::size_t i = 0; i < want.size(); ++i) {
+        const double error = std::abs(got[i] - want[i]) / largest;
+        if (!(error <= std::ldexp(1.0, -18))) {   // NaN fails too, which std::max would drop
+            FAIL_CHECK("value " << i << " off by " << error << " of its row's largest");
+            return error;
+        }
+        worst = std::max(worst, error);
+    }
     return worst;
 }
 
