@@ -102,7 +102,7 @@ namespace bllm::kernels {
 // ran alone — so a step at those positions runs whole before any result is
 // read from them.
 //
-// What a step costs, counted: calls into WebGPU are 1 writeBuffer of 48
+// What a step of run() costs, counted: calls into WebGPU are 1 writeBuffer of 48
 // bytes for a fed step and 48 + 16 × ceil(tokens / 4) for another, 1
 // createCommandEncoder, 1 beginComputePass, for each launch that runs 1
 // setBindGroup, 1 dispatchWorkgroups and 1 setPipeline where the kernel
@@ -112,7 +112,12 @@ namespace bllm::kernels {
 // or, for a step that reads back, a copyBufferToBuffer, a mapAsync, a
 // getConstMappedRange and an unmap: 14 calls out of the module, 17 reading
 // back, and 2 or 3 a launch; and three callbacks back in, the two scopes'
-// and the queue's or the mapping's. Everything else —
+// and the queue's or the mapping's. A profiled step, in diagnostic builds,
+// adds to run()'s the resolve of its timestamps, their copy, and their
+// buffer's mapAsync, getConstMappedRange and unmap — 22 calls a whole step,
+// 19 a prefix, which reads nothing back — a fourth callback, the timestamps'
+// mapping, and, where timestamps inside a pass are granted, a writeTimestamp
+// a launch; the device's capability is read once, at build. Everything else —
 // buffers, pipelines, bind groups — is made at load. The GPU adds about
 // 1.5 µs a dispatch (interface.h). Build costs a pipeline and a bind group
 // layout per distinct kernel — 28 for Qwen3 (graph/graph.h) — one key a launch
