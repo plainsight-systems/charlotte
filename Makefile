@@ -25,7 +25,7 @@ EMSDK_IMAGE := emscripten/emsdk:6.0.8
 # directory is incompatible -- see tools/ensure_container_cache.sh.
 CONTAINER_SRC := /src
 
-.PHONY: test test-data dawn test-native test-web bench check wasm wasm-diag dist serve serve-dev clean
+.PHONY: test test-data dawn test-native test-web bench profile check wasm wasm-diag dist serve serve-dev clean
 
 ## Every unit test. No browser; the GPU tests run on this machine's GPU,
 ## through native Dawn.
@@ -73,6 +73,16 @@ check:
 	./tests/test_codex_review_preflight.sh
 	./tests/test_ensure_container_cache.sh
 	./tests/test_check_site.sh
+
+## The forward pass's GPU time, launch by launch, on Qwen3: DIAGNOSTIC, never a
+## throughput figure (bench/forward_profile.cpp). The model's SHA-256 heads the
+## report; every launch's time goes to build/native-diag/profile.csv.
+PROFILE_MODEL := .cache/test-data/models/qwen3-0.6b-q4_0.gguf
+profile: test-data dawn
+	cmake --preset native-diag
+	cmake --build --preset native-diag --target charlotte_profile_forward
+	shasum -a 256 $(PROFILE_MODEL)
+	./build/native-diag/bench/charlotte_profile_forward $(PROFILE_MODEL) --csv build/native-diag/profile.csv
 
 ## Diagnostic wasm build: same optimisation, instrumentation compiled in.
 ## Timings from this build are diagnostic and are not quotable as throughput.

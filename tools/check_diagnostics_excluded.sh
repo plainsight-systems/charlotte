@@ -30,8 +30,36 @@ if [ -f "${DIAG}" ]; then
     fi
 fi
 
+# The profiled step (kernels/program.h): absent from the clean native library
+# and the clean module, present in the diagnostic library.
+PROFILED=run_profiled
+NATIVE_CLEAN=build/native-release/libcharlotte_gpu.a
+NATIVE_DIAG=build/native-diag/libcharlotte_gpu.a
+if [ -f "${NATIVE_CLEAN}" ]; then
+    checked=$((checked + 1))
+    if nm -C "${NATIVE_CLEAN}" 2>/dev/null | grep -q "${PROFILED}"; then
+        echo "FAIL: ${PROFILED} is present in the clean native build (${NATIVE_CLEAN})" >&2
+        status=1
+    fi
+fi
+if [ -f "${NATIVE_DIAG}" ]; then
+    checked=$((checked + 1))
+    if ! nm -C "${NATIVE_DIAG}" 2>/dev/null | grep -q "${PROFILED}"; then
+        echo "FAIL: ${PROFILED} is absent from the diagnostic native build (${NATIVE_DIAG})" >&2
+        status=1
+    fi
+fi
+CLEAN_WASM=build/wasm-release/charlotte.wasm
+if [ -f "${CLEAN_WASM}" ]; then
+    checked=$((checked + 1))
+    if strings "${CLEAN_WASM}" | grep -q "profiled step"; then
+        echo "FAIL: the profiled step's strings are present in the clean module (${CLEAN_WASM})" >&2
+        status=1
+    fi
+fi
+
 if [ "${checked}" -eq 0 ]; then
-    echo "diagnostics: no wasm artifacts built; nothing to check"
+    echo "diagnostics: no artifacts built; nothing to check"
     exit 0
 fi
 [ "${status}" -eq 0 ] && echo "diagnostics: OK (${checked} artifact(s) checked)"
