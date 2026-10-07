@@ -95,7 +95,7 @@ struct PendingDeviceRequest {
     DiagnosticRequest diagnostic = {};
     std::vector<WGPUFeatureName> features;
     WGPURequestAdapterOptions adapter_options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-#ifndef __EMSCRIPTEN__
+#if BLLM_GPU_DAWN_NATIVE
     WGPUDawnTogglesDescriptor adapter_toggles = WGPU_DAWN_TOGGLES_DESCRIPTOR_INIT;
     WGPUDawnTogglesDescriptor device_toggles = WGPU_DAWN_TOGGLES_DESCRIPTOR_INIT;
 #endif
@@ -125,10 +125,15 @@ void Device::request(RequestCallback callback, void* userdata) {
 }
 
 #if BLLM_DIAGNOSTICS_ENABLED
+// Dawn's own toggles and experimental features exist natively alone, where
+// CMakeLists.txt sets this 1; in the browser the port's webgpu.h has neither.
+#if !defined(BLLM_GPU_DAWN_NATIVE)
+#error "BLLM_GPU_DAWN_NATIVE is set by CMakeLists.txt: 1 natively, 0 in the browser"
+#endif
 namespace {
 // Natively: unsafe APIs allowed, so an adapter lists timestamps inside a
 // pass where it has them, and timestamps unrounded (device.h).
-#ifndef __EMSCRIPTEN__
+#if BLLM_GPU_DAWN_NATIVE
 constexpr const char* kUnsafe[] = {"allow_unsafe_apis"};
 constexpr const char* kUnrounded[] = {"timestamp_quantization"};
 #endif
@@ -168,7 +173,7 @@ void Device::request_with(WGPUInstance instance, RequestCallback callback, void*
     if (diagnostic != nullptr && diagnostic->timestamps) {
         pending->diagnostic = *diagnostic;
         if (options != nullptr) pending->adapter_options = *options;
-#ifndef __EMSCRIPTEN__
+#if BLLM_GPU_DAWN_NATIVE
         pending->adapter_toggles.chain.next = pending->adapter_options.nextInChain;
         pending->adapter_toggles.enabledToggleCount = 1;
         pending->adapter_toggles.enabledToggles = kUnsafe;
@@ -255,12 +260,14 @@ void Device::request_with(WGPUInstance instance, RequestCallback callback, void*
                 return;
             }
             p->features.push_back(WGPUFeatureName_TimestampQuery);
+#if BLLM_GPU_DAWN_NATIVE
             if (wgpuAdapterHasFeature(adapter, WGPUFeatureName_ChromiumExperimentalTimestampQueryInsidePasses)) {
                 p->features.push_back(WGPUFeatureName_ChromiumExperimentalTimestampQueryInsidePasses);
             }
+#endif
             device_desc.requiredFeatureCount = p->features.size();
             device_desc.requiredFeatures = p->features.data();
-#ifndef __EMSCRIPTEN__
+#if BLLM_GPU_DAWN_NATIVE
             p->device_toggles.enabledToggleCount = 1;
             p->device_toggles.enabledToggles = kUnsafe;
             p->device_toggles.disabledToggleCount = 1;
@@ -291,8 +298,10 @@ void Device::request_with(WGPUInstance instance, RequestCallback callback, void*
             q->device->queue_.reset(wgpuDeviceGetQueue(device));
 #if BLLM_DIAGNOSTICS_ENABLED
             q->device->timestamps_ = wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery);
+#if BLLM_GPU_DAWN_NATIVE
             q->device->timestamps_inside_passes_ =
                 wgpuDeviceHasFeature(device, WGPUFeatureName_ChromiumExperimentalTimestampQueryInsidePasses);
+#endif
 #endif
 
             // Read back what was actually granted rather than assuming the

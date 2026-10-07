@@ -769,8 +769,11 @@ void Program::run_profiled(const Step& step, std::uint32_t launches, ProfileCall
     }
     if (!s.timed) {
         // Made once, outside any step a throughput is quoted from (program.h).
+#if BLLM_GPU_DAWN_NATIVE
+        // Dawn's own, natively alone (gpu/device.h).
         s.inside_passes =
             wgpuDeviceHasFeature(s.device.get(), WGPUFeatureName_ChromiumExperimentalTimestampQueryInsidePasses);
+#endif
         s.query_count = 2 + (s.inside_passes ? static_cast<std::uint32_t>(s.launches.size()) : 0);
         for (State::Timer& t : s.timers) {
             WGPUQuerySetDescriptor q = WGPU_QUERY_SET_DESCRIPTOR_INIT;

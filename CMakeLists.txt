@@ -154,7 +154,7 @@ target_link_libraries(charlotte_gpu_header_checks PRIVATE charlotte_gpu)
 if(EMSCRIPTEN)
     target_compile_options(charlotte_gpu PUBLIC --use-port=emdawnwebgpu)
     # The browser's event loop runs every callback (core/gpu/callback_mode.h).
-    target_compile_definitions(charlotte_gpu PUBLIC BLLM_GPU_PROCESS_EVENTS=0)
+    target_compile_definitions(charlotte_gpu PUBLIC BLLM_GPU_PROCESS_EVENTS=0 BLLM_GPU_DAWN_NATIVE=0)
 
     # Not merely preprocessed away — not compiled at all in a clean build, so
     # the symbol cannot reach the shipped module.
@@ -222,7 +222,7 @@ else()
     # Callbacks given a mode run only inside wgpuInstanceProcessEvents, on the
     # caller's thread; the uncaptured-error callback is the one exception
     # (core/gpu/callback_mode.h).
-    target_compile_definitions(charlotte_gpu PUBLIC BLLM_GPU_PROCESS_EVENTS=1)
+    target_compile_definitions(charlotte_gpu PUBLIC BLLM_GPU_PROCESS_EVENTS=1 BLLM_GPU_DAWN_NATIVE=1)
 
     enable_testing()
     add_subdirectory(tests)
