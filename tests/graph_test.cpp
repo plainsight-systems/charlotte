@@ -320,3 +320,52 @@ TEST_CASE("a layer outside a kernel's shapes is refused, naming the layer and th
         CHECK(r.subject == c.subject);
     }
 }
+
+TEST_CASE("every launch is named by its role and layer, as graph.h lists them") {
+    // The roles of a layer, in the order its launches run; consecutive
+    // launches of one role, a product's decode and prefill forms, count once.
+    const auto roles_of = [](const std::vector<kernels::Launch>& launches, std::uint32_t layer) {
+        std::vector<std::string_view> roles;
+        for (const kernels::Launch& l : launches) {
+            if (l.layer != layer) continue;
+            if (roles.empty() || roles.back() != l.role) roles.push_back(l.role);
+        }
+        return roles;
+    };
+    const std::vector<std::string_view> grouped{"attention.norm", "attention.qkv",    "attention.rope",
+                                                "attention.scores", "attention.combine", "attention.output",
+                                                "ffn.norm",       "ffn.gate_up",      "ffn.down"};
+    for (const char* model : {"qwen3-0.6b-q4_0", "llama-3.2-1b-instruct-q4_0", "gemma-3-1b-it-q4_0"}) {
+        CAPTURE(model);
+        const Loaded l = load(model);
+        const auto launches = graph_of(l);
+        std::uint32_t last_layer = 0;
+        for (const kernels::Launch& x : launches) {
+            CHECK(!x.role.empty());
+            const bool outside = x.role == "embed" || x.role.starts_with("output.");
+            CHECK(outside == (x.layer == kernels::kNoLayer));
+            if (x.layer != kernels::kNoLayer) {
+                CHECK(x.layer >= last_layer);   // layers in order
+                last_layer = x.layer;
+            }
+        }
+        CHECK(launches.front().role == "embed");
+        CHECK(launches.back().role == "output.draw");
+        for (std::uint32_t layer = 0; layer < l.model.layers.size(); ++layer) {
+            CAPTURE(layer);
+            CHECK(roles_of(launches, layer) == grouped);
+        }
+        std::vector<std::string_view> output;
+        for (const kernels::Launch& x : launches) {
+            if (x.role.starts_with("output.") && (output.empty() || output.back() != x.role)) output.push_back(x.role);
+        }
+        CHECK(output == std::vector<std::string_view>{"output.norm", "output.head", "output.select", "output.draw"});
+    }
+    // Q, K and V ungrouped: three products, each named.
+    Loaded l = load("qwen3-0.6b-q4_0");
+    std::erase_if(l.plan.groups, [](const residency::PlannedGroup& g) { return g.count == 3; });
+    const auto launches = graph_of(l);
+    const auto layer0 = roles_of(launches, 0);
+    CHECK(std::vector<std::string_view>(layer0.begin() + 1, layer0.begin() + 4) ==
+          std::vector<std::string_view>{"attention.q", "attention.k", "attention.v"});
+}

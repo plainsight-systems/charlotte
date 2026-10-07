@@ -67,6 +67,15 @@ void append(std::vector<kernels::Launch>& out, std::vector<kernels::Launch> laun
     for (kernels::Launch& l : launches) out.push_back(std::move(l));
 }
 
+// Names the launches appended since `from` (graph.h's names).
+void named(std::vector<kernels::Launch>& out, std::size_t from, std::string_view role,
+           std::uint32_t layer = kernels::kNoLayer) {
+    for (std::size_t i = from; i < out.size(); ++i) {
+        out[i].role = role;
+        out[i].layer = layer;
+    }
+}
+
 }  // namespace
 
 Builder::Builder(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
@@ -118,7 +127,9 @@ void Builder::product(const residency::WeightView& weight, const residency::Buff
 }
 
 void Builder::embed(float scale) {
+    const std::size_t at = out_->size();
     append(*out_, kernels::gather_launches(view(model_->token_embedding), buffers_.hidden, buffers_.sampled, scale));
+    named(*out_, at, "embed");
 }
 
 GraphResult Builder::attention(std::uint32_t layer) {
@@ -126,11 +137,14 @@ GraphResult Builder::attention(std::uint32_t layer) {
     if (GraphResult r = check_shape(layer, l, model_->embedding_width); !r.ok()) return r;
     const Buffers& b = buffers_;
 
+    std::size_t at = out_->size();
     out_->push_back(kernels::norm_launch({role(layer, Role::AttentionNorm), pending_.post_gain, pending_.written,
                                           b.output, b.hidden, b.normed, model_->norm_epsilon,
                                           kernels::Rows::EveryToken}));
+    named(*out_, at, "attention.norm", layer);
 
     const auto& t = l.tensors;
+    at = out_->size();
     if (group({t[index_of(Role::Query)], t[index_of(Role::Key)], t[index_of(Role::Value)]}) != nullptr) {
         append(*out_, kernels::matmul_launches({{role(layer, Role::Query), role(layer, Role::Key),
                                                  role(layer, Role::Value)},
@@ -140,25 +154,38 @@ GraphResult Builder::attention(std::uint32_t layer) {
                                                 kernels::Epilogue::QKV,
                                                 model_->activation,
                                                 kernels::Rows::EveryToken}));
+        named(*out_, at, "attention.qkv", layer);
     } else {
         product(*role(layer, Role::Query), b.normed, b.query, kernels::Rows::EveryToken);
+        named(*out_, at, "attention.q", layer);
+        at = out_->size();
         product(*role(layer, Role::Key), b.normed, b.key, kernels::Rows::EveryToken);
+        named(*out_, at, "attention.k", layer);
+        at = out_->size();
         product(*role(layer, Role::Value), b.normed, b.value, kernels::Rows::EveryToken);
+        named(*out_, at, "attention.v", layer);
     }
 
+    at = out_->size();
     out_->push_back(kernels::rope_launch({l, model_->rotary_pairing, role(layer, Role::QueryNorm),
                                           role(layer, Role::KeyNorm),
                                           model_->rotary_factors ? &view(*model_->rotary_factors) : nullptr,
                                           model_->norm_epsilon, b.query, b.key, b.value, plan_->cache[layer],
                                           cache_format_}));
+    named(*out_, at, "attention.rope", layer);
 
     for (kernels::Launch& a : kernels::attention_launches({l, model_->attention_scale, b.query, plan_->cache[layer],
                                                            cache_format_, b.attention, b.partials,
                                                            b.partial_stats})) {
+        at = out_->size();
+        const bool combine = a.entry_point == "combine";
         out_->push_back(std::move(a));
+        named(*out_, at, combine ? "attention.combine" : "attention.scores", layer);
     }
 
+    at = out_->size();
     product(*role(layer, Role::AttentionOutput), b.attention, b.output, kernels::Rows::EveryToken);
+    named(*out_, at, "attention.output", layer);
     pending_ = {true, role(layer, Role::PostAttentionNorm)};
     return {};
 }
@@ -170,9 +197,12 @@ GraphResult Builder::gated_feed_forward(std::uint32_t layer) {
     }
     const Buffers& b = buffers_;
 
+    std::size_t at = out_->size();
     out_->push_back(kernels::norm_launch({role(layer, Role::FeedForwardNorm), pending_.post_gain, pending_.written,
                                           b.output, b.hidden, b.normed, model_->norm_epsilon,
                                           kernels::Rows::EveryToken}));
+    named(*out_, at, "ffn.norm", layer);
+    at = out_->size();
     append(*out_, kernels::matmul_launches({{role(layer, Role::Gate), role(layer, Role::Up), nullptr},
                                             2,
                                             b.normed,
@@ -180,7 +210,10 @@ GraphResult Builder::gated_feed_forward(std::uint32_t layer) {
                                             kernels::Epilogue::GatedActivation,
                                             model_->activation,
                                             kernels::Rows::EveryToken}));
+    named(*out_, at, "ffn.gate_up", layer);
+    at = out_->size();
     product(*role(layer, Role::Down), b.activation, b.output, kernels::Rows::EveryToken);
+    named(*out_, at, "ffn.down", layer);
     pending_ = {true, role(layer, Role::PostFeedForwardNorm)};
     return {};
 }
@@ -192,12 +225,20 @@ GraphResult Builder::output() {
                                                   " candidates selection keeps"};
     }
     const Buffers& b = buffers_;
+    std::size_t at = out_->size();
     out_->push_back(kernels::norm_launch({&view(model_->output_norm), pending_.post_gain, pending_.written, b.output,
                                           b.hidden, b.normed, model_->norm_epsilon, kernels::Rows::LastToken}));
+    named(*out_, at, "output.norm");
     const residency::WeightView& head = view(model_->output_head.value_or(model_->token_embedding));
+    at = out_->size();
     product(head, b.normed, b.logits, kernels::Rows::LastToken);
+    named(*out_, at, "output.head");
+    at = out_->size();
     append(*out_, kernels::topk_launches(b.logits, model_->vocabulary_size, b.partials_a, b.partials_b, b.candidates));
+    named(*out_, at, "output.select");
+    at = out_->size();
     out_->push_back(sampler::draw_launch(b.candidates, b.sampled));
+    named(*out_, at, "output.draw");
     return {};
 }
 
