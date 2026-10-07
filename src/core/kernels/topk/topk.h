@@ -61,7 +61,7 @@ namespace bllm::kernels {
 // stages one after another, each a barrier: at about 50 cycles a stage on
 // the M3 Max's cores near 1.4 GHz — an estimate, not counted from the
 // design, to be calibrated — 1.75 µs a pass, 5 µs for the three; and the
-// draw's own work, about 2 µs (sampler.h). About 15 µs a sampled step,
+// draw's own work, about 1 µs (sampler.h). About 14 µs a sampled step,
 // under 1% of a 1.7 ms decode step.
 // Optimization (practice): select, not sort — 64 kept from each tile of
 // 1,024, never a sorted vocabulary, as FlashInfer's and Faiss's GPU
