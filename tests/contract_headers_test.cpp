@@ -1,6 +1,7 @@
 // Compile check only: every platform-neutral contract and module header builds
 // natively, together, with nothing else included first. The headers that hold
-// GPU objects (residency/upload.h) build in the wasm configuration only.
+// GPU objects — residency/upload.h, kernels/program.h, runtime/runtime.h —
+// build only where WebGPU is linked: the GPU tests and the wasm build.
 
 #include "core/arch/architecture.h"
 #include "core/cache/kv.h"
@@ -26,7 +27,8 @@
 #include "core/residency/plan.h"
 #include "core/residency/routes.h"
 #include "core/residency/weight_view.h"
-#include "core/runtime/runtime.h"
+#include "core/runtime/stops.h"
+#include "core/runtime/turn.h"
 #include "core/sampler/sampler.h"
 #include "core/tokenizer/bpe/byte_level_bpe.h"
 #include "core/tokenizer/bpe/byte_map.h"
