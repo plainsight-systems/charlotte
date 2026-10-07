@@ -9,6 +9,7 @@
 
 #include <webgpu/webgpu.h>
 
+#include "core/diagnostics.h"
 #include "core/gpu/wgpu_handles.h"
 #include "core/kernels/interface.h"
 #include "core/residency/upload.h"
@@ -67,6 +68,29 @@ namespace bllm::kernels {
 //     (I.11). Callbacks keep their state alive on their own, as upload's do,
 //     so destroying a program with a step in flight reports Cancelled.
 //
+// Profiling, in a diagnostic build alone (core/diagnostics.h; TLM.1): the
+// clean build compiles none of it, and its module has no symbol of it
+// (TLM.8). A profiled step runs as run() does, its launches in the graph's
+// order over the same pipelines and bind groups, with GPU timestamps written
+// at one of two grains:
+//   - Step: one compute pass, timestamps at its beginning and end — the
+//     step's GPU time as run() spends it, but for those two writes.
+//   - Launch: each launch that dispatches in a compute pass of its own,
+//     timestamps at its beginning and end — what each launch takes. A pass
+//     a launch perturbs the step: each boundary may drain the GPU's work
+//     before the next begins, where one pass lets dispatches overlap as
+//     their buffer use allows. So the launches' sum against a Step-grain
+//     run of the same step is the instrument's cost, and every profile
+//     reports both (TLM.6).
+// The timestamps are resolved into a buffer, copied to a mappable one and
+// read back with the step; WebGPU gives them in nanoseconds. A query set of
+// two entries a launch, its resolve buffer and its readback buffer are made
+// at the first profiled step, outside any step a throughput is quoted from.
+// A profiled step runs only with no step outstanding, and on a device that
+// granted the timestamp-query feature (gpu/device.h's DiagnosticRequest);
+// otherwise it is refused at once, named. Its results are the same bits as
+// run()'s: timestamps write no buffer a kernel reads.
+//
 // What a step costs, counted: calls into WebGPU are 1 writeBuffer of 48
 // bytes for a fed step and 48 + 16 × ceil(tokens / 4) for another, 1
 // createCommandEncoder, 1 beginComputePass, for each launch that runs 1
@@ -99,6 +123,12 @@ namespace bllm::kernels {
 //            a step makes only the single-use encoders WebGPU requires, and
 //            its callbacks carry the program's own state, so it allocates
 //            nothing on the heap.
+//     GPU.10 Profile with GPU timelines before optimizing — a profiled step,
+//            timed by the GPU's own timestamps, a launch at a time, each named.
+//     TLM.1  Compile telemetry out by default — the profiled step is the
+//            diagnostic build's alone.
+//     TLM.6  Diagnostic mode is not benchmark mode — Launch grain's cost is
+//            reported beside it, against Step grain.
 
 enum class ProgramError {
     Ok,
@@ -136,6 +166,26 @@ public:
     // kMaxReadback bytes.
     static void build(const residency::Upload& upload, std::vector<Launch> launches,
                       std::optional<Binding> readback, BuildCallback done, void* userdata);
+
+#if BLLM_DIAGNOSTICS_ENABLED
+    enum class ProfileGrain { Step, Launch };
+
+    // The GPU time of a launch — its index in the graph's launches — or, at
+    // Step grain, of the whole step, whose index is the launches' count.
+    struct Timed {
+        std::uint32_t launch;
+        std::uint64_t begin_ns;
+        std::uint64_t end_ns;
+    };
+    // `times`, in the order run, is valid only during the call; empty for a
+    // step refused or failed.
+    using ProfileCallback = void (*)(ProgramError error, std::string_view message, std::span<const Timed> times,
+                                     void* userdata);
+
+    // Runs one step as run() does, timed at `grain` (above). `done` is
+    // called once. Preconditions: run()'s, and no step outstanding.
+    void run_profiled(const Step& step, ProfileGrain grain, ProfileCallback done, void* userdata);
+#endif
 
     // Runs one step. `done` is called once: when the queue has finished it,
     // or its readback has mapped, or it has failed; a step past

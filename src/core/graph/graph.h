@@ -107,6 +107,15 @@ namespace bllm::graph {
 //     token's logits are the same bits whether its prompt was prefilled in
 //     one step, in several, or decoded a token at a time, on the target's
 //     compiler, as each kernel states.
+//   - Names: every launch a block appends carries its role and its layer
+//     (kernels/interface.h), so a profile and a GPU capture name what they
+//     time: "embed"; "attention.norm", "attention.qkv" — or "attention.q",
+//     "attention.k" and "attention.v" where the three cannot be one group —
+//     "attention.rope", "attention.scores", "attention.combine" and
+//     "attention.output"; "ffn.norm", "ffn.gate_up" and "ffn.down"; and the
+//     output block's "output.norm", "output.head", "output.select" and
+//     "output.draw", which belong to no layer. A role with decode and
+//     prefill launches, the products', tells them apart by entry point.
 //
 // What it asks of the other contracts:
 //   - kernels/interface.h: Step gains `logits`, 1 in a step whose last

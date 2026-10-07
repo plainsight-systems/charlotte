@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "core/diagnostics.h"
 #include "core/gpu/wgpu_handles.h"
 
 namespace bllm::gpu {
@@ -78,6 +79,21 @@ struct DeviceStatus {
 //   - `callback` must not be null. It is invoked unconditionally.
 //   - `error` is valid only for the duration of the callback. Copy it to keep
 //     it; it points into a temporary that dies when the callback returns.
+#if BLLM_DIAGNOSTICS_ENABLED
+// What a diagnostic build may ask of a device beyond what the harness needs:
+// the harness itself asks for no optional feature, so it runs wherever
+// WebGPU's defaults do, and a clean build cannot ask (TLM.1).
+//   - timestamps: the timestamp-query feature, which a profiled step needs
+//     (kernels/program.h). Natively it also disables Dawn's
+//     timestamp_quantization toggle, which otherwise rounds every
+//     timestamp — a browser's protection against timing attacks, and coarser
+//     than the dispatches it would time. An adapter without the feature is a
+//     failure, named, not a device without it.
+struct DiagnosticRequest {
+    bool timestamps = false;
+};
+#endif
+
 class Device {
 public:
     using RequestCallback = void (*)(std::unique_ptr<Device> device,
@@ -98,6 +114,15 @@ public:
     // that checked less would pass. Tested natively by asking for it.
     static void request(WGPUInstance instance, RequestCallback callback, void* userdata,
                         const WGPURequestAdapterOptions* options = nullptr);
+
+#if BLLM_DIAGNOSTICS_ENABLED
+    // The same, asking for what `diagnostic` names as well.
+    static void request(WGPUInstance instance, RequestCallback callback, void* userdata,
+                        const WGPURequestAdapterOptions* options, const DiagnosticRequest& diagnostic);
+
+    // Whether the device granted timestamp queries.
+    bool timestamps() const { return timestamps_; }
+#endif
 
     // The same, from an instance of its own: the browser's path, where the
     // event loop runs every callback and nothing else needs the instance.
@@ -145,6 +170,9 @@ private:
     Queue queue_;
     AdapterInfo adapter_info_;
     std::shared_ptr<DeviceStatus> status_;   // shared with the device-lost callback
+#if BLLM_DIAGNOSTICS_ENABLED
+    bool timestamps_ = false;
+#endif
     DeviceLimits limits_;          // of the acquired device
     DeviceLimits adapter_maxima_;  // of the adapter, informational
 };

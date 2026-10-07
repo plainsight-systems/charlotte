@@ -283,6 +283,9 @@ struct Override {
     friend bool operator==(const Override&, const Override&) = default;
 };
 
+// A launch that belongs to no layer: the embedding, the output block.
+inline constexpr std::uint32_t kNoLayer = ~std::uint32_t{0};
+
 // One launch, as a kernel launcher describes it.
 struct Launch {
     // The kernel's WGSL entry point and helpers, embedded at build time.
@@ -318,6 +321,13 @@ struct Launch {
     // a matrix product's decode form runs in tokens_of(Regime::Decode), its
     // prefill tiles in parts of prefill's.
     TokenRange tokens = {};
+    // What the launch does in the model, and its layer, as the graph names
+    // them (graph/graph.h): a profile's and a GPU capture's name for it, since
+    // one kernel serves many roles — the matrix product is every projection
+    // and the head (GPU.10). The program runs a launch the same whatever its
+    // name; a launcher leaves both for the graph to set.
+    std::string_view role = {};
+    std::uint32_t layer = kNoLayer;
 };
 
 }  // namespace bllm::kernels
