@@ -150,6 +150,33 @@ namespace bllm::sampler {
 //     `failed`; check refuses each setting outside its range, naming it.
 //   - Through the forward pass: greedy decoding fed on the GPU gives the
 //     tokens read back by the same draw run a step at a time.
+//   - Through the runtime, the cache after a step is discarded. In each case
+//     below, the turn that follows gives the same bits — every logit it
+//     reads back, and the tokens it draws — as the same conversation run in
+//     a fresh upload with no step discarded, so a stale entry the discarded
+//     step left, or one it should have left and did not, shows as a
+//     difference (graph/graph.h: logits do not depend on how a prompt is
+//     stepped):
+//       - a stop token drawn by the first decode step, the queued step behind
+//         it discarded;
+//       - a stop token drawn one position before the context offered, where
+//         no step is queued behind it, and none is queued at the context's
+//         end;
+//       - a cancel while a step is queued behind the one running;
+//       - the next turn's prompt sharing the whole accepted history, so the
+//         cache is reused up to it and the discarded position is written
+//         again;
+//       - each of these on Gemma 3's sliding-window layers after the ring has
+//         wrapped, so the discarded step's slot held a position still in an
+//         earlier window.
+//     These are where pipelined engines have failed: vLLM's async scheduling
+//     in a request stopping with a step in flight while preempted, where one
+//     count served both for positions holding keys and values and for tokens
+//     to keep (vllm-project/vllm#58776); llama.cpp's speculative decoding,
+//     the nearest thing it has, removes a rejected draft's entries by
+//     position (llama_memory_seq_rm) and restores a checkpoint where it
+//     cannot. Here the cache keeps the two counts apart, written and length
+//     (cache/kv.h), and these cases hold them.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
