@@ -36,8 +36,10 @@ namespace bllm::kernels {
 // a running maximum m, sum l and weighted sum O, rescaled when its maximum
 // rises; nothing larger than a tile of scores exists (GDSA.16).
 //
-//   - Chunks. Keys are taken in chunks of 256 consecutive positions, chunk c
-//     holding positions 256c .. 256c + 255, fixed by position alone. Each
+//   - Chunks. Keys are taken in chunks of 64 consecutive positions, chunk c
+//     holding positions 64c .. 64c + 63, fixed by position alone — ONNX
+//     Runtime's fixed decode tile, so a decode step at 1,024 keys runs 128
+//     workgroups where 256-key chunks ran 32 (costs, below). Each
 //     chunk's (m, l, O) is computed from an empty state, then folded into the
 //     query's result in chunk order by one merge function:
 //       merge((m, l, O), (m_c, l_c, O_c)), m' = max(m, m_c):
@@ -49,11 +51,11 @@ namespace bllm::kernels {
 //     count, not which workgroup took which chunk (CDSA.23).
 //   - Active chunks. A layer's step needs the chunks from the one holding
 //     its first row's earliest key to the one holding its last row:
-//       first = floor(max(0, position − W + 1) / 256)
-//       last  = floor((position + tokens − 1) / 256)
+//       first = floor(max(0, position − W + 1) / 64)
+//       last  = floor((position + tokens − 1) / 64)
 //     W the layer's window — the trained context for a full-attention layer,
 //     so first is 0 — giving count = last − first + 1: every chunk for a
-//     full-attention layer, at most three for one of Gemma 3's 512-key
+//     full-attention layer, at most nine for one of Gemma 3's 512-key
 //     window layers however long the context. Chunks outside are never
 //     scheduled; leaving out a chunk with no live key changes no result.
 //   - Splits. When a step has few rows, one workgroup a chunk: split s takes
@@ -62,9 +64,13 @@ namespace bllm::kernels {
 //     chunk order and divides — Flash-Decoding's split, and vLLM's
 //     PagedAttention V2 over 512-token partitions. When it has many, one
 //     workgroup folds every active chunk itself, with the same merge. A
-//     layer's step splits when tokens × count <= 512, so the partial
-//     buffers hold 512 query rows, the attention buffer's own size
-//     (kernels/interface.h, key_chunks). A chunk holding no live key for some of a
+//     layer's step splits when tokens × count <= P, the partial buffers'
+//     rows: 512, the attention buffer's own size, or the offered context's
+//     chunks, ceil(C / 64), where that is more — 640 for Qwen3's 40,960 —
+//     so a decode step splits at every position the context offers
+//     (kernels/interface.h, key_chunks). Folding several chunks a split
+//     instead would associate the merges differently from an unsplit step,
+//     and change its bits. A chunk holding no live key for some of a
 //     workgroup's rows writes empty partials for them, which the combine
 //     skips.
 //   - Tiles. A workgroup is 64 invocations and holds, in workgroup memory, a
@@ -136,9 +142,14 @@ namespace bllm::kernels {
 //     pays no launch for it; and it names its entry point. The kernel computes the same first chunk and
 //     split from the step's position and token count and its window, in
 //     WGSL; the tests hold the two to agreement at every boundary.
-//   - residency/plan.h: two working buffers — partial values, 512 rows of
-//     H_q × d floats, and partial statistics, 512 rows of H_q × 2 — each a
-//     buffer of its own.
+//   - residency/plan.h: two working buffers — partial values, P rows of
+//     H_q × d floats, and partial statistics, P rows of H_q × 2, P =
+//     max(512, ceil(C / 64)) for the context C it offers — each a buffer of
+//     its own: 5 MiB of values for Qwen3 at 40,960, 4 MiB at 512 rows.
+//   - kernels/interface.h: kChunkKeys is 64, and key_chunks takes the
+//     partial rows P, which the kernel receives as an override constant,
+//     `partial_rows`; tokens × count stays below 2^32, at most 512 ×
+//     262,145 (kMaxPositions / 64 + 1).
 //   - formats/format.h: the KV cache format's WGSL gains pack's inverse, fn
 //     unpack4(words: vec2<u32>) -> vec4<f32>, reading no binding; F16's is
 //     two unpack2x16float.
@@ -159,7 +170,7 @@ namespace bllm::kernels {
 // d-term f32 dot product errs by up to d × 2⁻²⁴ × Σ_j |q_j k_j| × scale, in
 // log2 units once scaled, and moves the key's weight by that much,
 // relatively, through exp2; exp2's own 3 + 2|x| units and the f32 sums of at
-// most 256 weights a chunk add far less. So each output is within max|v| ×
+// most 64 weights a chunk add far less. So each output is within max|v| ×
 // (d × 2⁻²⁴ × max_j Σ_i |q_i k_ji| × scale × log2(e) + 2⁻¹⁶), max|v| the
 // largest value in the query's window: a margin the GPU test checks on the
 // target, as the norm's is, not a proof.
@@ -170,9 +181,13 @@ namespace bllm::kernels {
 //     layers — 448 MiB at L = 4,096, about 1.2 ms at 400 GB/s, more than the
 //     weights' 0.95 ms; attention is decode's second floor, and the larger
 //     past about 3,300 tokens. The split's partials add H_q × (d + 2) × 4
-//     bytes a chunk, written and read, 16 KiB against the chunk's 1 MiB of
-//     keys and values: 1.6%. Workgroups: 8 × ceil(L / 256), 128 at 4,096.
-//     Launches: one a layer, and the combine's a layer once L passes 256 —
+//     bytes a chunk, written and read, 16 KiB against the chunk's 256 KiB
+//     of keys and values: 6.3%. Workgroups: 8 × ceil(L / 64), 128
+//     at 1,024 and 512 at 4,096. The combine's d / 4 invocations a query
+//     each fold its count of partials in order, a chain of that many merges:
+//     64 at 4,096, 128 at 8,192, each two exp2s and a vec4 multiply and
+//     multiply-add.
+//     Launches: one a layer, and the combine's a layer once L passes 64 —
 //     56 a step, 84 µs at 1.5 µs (interface.h).
 //   - Prefill, 512 tokens from position 0: query-key pairs under the causal
 //     mask, T(T + 1) / 2 = 131,328 a head; 2 × d multiply-adds a pair, the
@@ -186,14 +201,19 @@ namespace bllm::kernels {
 //     about 0.3 ms a layer at 400 GB/s, if they do not; WebGPU promises
 //     neither the order workgroups run in nor what the caches keep, so where
 //     in that range a step falls is the target's, to be measured.
-//   - Barriers: four a tile, 64 a chunk for Qwen3, 32 for Llama 3.2, 128
-//     for Gemma 3; the merge at each chunk's end needs none.
+//   - Barriers: four a tile, 16 a chunk for Qwen3, 8 for Llama 3.2, 32
+//     for Gemma 3 — a decode workgroup's whole chain — and the merge at each
+//     chunk's end needs none.
 // Optimization (practice): the softmax is online and tiled, so the
 // T × L scores are never written — FlashAttention-2 (GDSA.16).
 // Optimization (practice): a decode step is split across the context in
-// fixed chunks and combined, so 128 workgroups at 4,096 tokens read the
-// KV cache where one a key-value head would be 8 — Flash-Decoding, vLLM's
-// PagedAttention V2 (GDSA.8).
+// fixed chunks and combined, so 128 workgroups at 1,024 tokens and 512 at
+// 4,096 read the KV cache where one a key-value head would be 8 —
+// Flash-Decoding, vLLM's PagedAttention V2 (GDSA.8). The chunk is 64 keys,
+// ONNX Runtime's: llama.cpp's and ONNX Runtime's WebGPU decode reach 256
+// workgroups or more at 1,024 keys, and 256-key chunks gave 32, which read
+// the KV cache at about 32 GB/s in the profile
+// (docs/research/2026-10-07-forward-pass-profile.md) (GPU.3).
 // Optimization (practice): chunks fixed by position and folded in order,
 // so a split does not change a result — the fixed split size Thinking
 // Machines' batch-invariant attention uses (CDSA.23).
@@ -217,10 +237,10 @@ namespace bllm::kernels {
 //     shader cores.
 //   - WGSL may assume no infinities: masks are flags, not −∞.
 //   - WGSL zero-fills workgroup memory: 12.7 KiB for Qwen3, stored once a
-//     workgroup — about 10% of the 128 KiB of keys and values the workgroup
-//     reads from the KV cache for a chunk, though into on-chip memory: about
-//     51 stores an invocation, against about 8,000 multiply-adds an
-//     invocation a chunk.
+//     workgroup — about 40% of the 32 KiB of keys and values a decode
+//     workgroup reads from the KV cache for its chunk, though into on-chip
+//     memory: about 51 stores an invocation, against about 2,000
+//     multiply-adds an invocation a chunk.
 //
 // Levers not taken:
 //   - Splits sized to fill the GPU rather than fixed by position: more
@@ -235,8 +255,8 @@ namespace bllm::kernels {
 //
 // Verification the implementation is held to, on the GPU against f64 from
 // the same KV cache contents: each listed shape, prefill steps of 1, 3, 4 and
-// 512 rows and decode steps, at positions 0, near 256's boundaries and deep
-// into the context; Gemma 3's window over a ring that has wrapped; a step
+// 512 rows and decode steps, at positions 0, near 64's boundaries and deep
+// into the context; a decode step past 512 chunks, split; Gemma 3's window over a ring that has wrapped; a step
 // split and unsplit, and the same query prefilled and decoded, giving the
 // same bits; and a chunk wholly masked for some rows. On the CPU: key_chunks
 // at its boundaries, and each launch's geometry, bindings and variant.
