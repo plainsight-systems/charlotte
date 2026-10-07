@@ -51,8 +51,8 @@ namespace bllm::kernels {
 //     (I.11). Callbacks keep their state alive on their own, as upload's do,
 //     so destroying a program with a step in flight reports Cancelled.
 //
-// What a step costs, counted: calls into WebGPU are 1 writeBuffer of 48 +
-// 16 × ceil(tokens / 4) bytes, 1 createCommandEncoder, 1 beginComputePass,
+// What a step costs, counted: calls into WebGPU are 1 writeBuffer of 48
+// bytes for a fed step and 48 + 16 × ceil(tokens / 4) for another, 1 createCommandEncoder, 1 beginComputePass,
 // for each launch that runs 1 setBindGroup, 1 dispatchWorkgroups and 1 setPipeline
 // where the kernel changes, then end, finish, submit, two scopes' pushes and
 // pops, onSubmittedWorkDone, and the release of the three single-use objects

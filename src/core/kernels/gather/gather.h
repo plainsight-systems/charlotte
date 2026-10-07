@@ -43,7 +43,13 @@ namespace bllm::kernels {
 //   - Constants (binding 1), as WGSL lays them out:
 //       struct Gather { first_row: u32, row_count: u32, groups_per_row: u32,
 //                       blocks_in_piece: u32, scale: f32 }
-//     Bindings 2 and 3: the piece of the table, then the hidden buffer.
+//     Bindings 2, 3 and 4: the piece of the table, the hidden buffer, and
+//     the draw's record, read-only.
+//   - A step that is `fed` (kernels/interface.h) embeds, as its one row, the
+//     token the last step drew, the first word of the draw's record
+//     (sampler/sampler.h), in place of the step's identifier: the next decode
+//     step starts without the token having left the GPU. A drawn token is
+//     below the vocabulary by construction.
 //   - Workgroups of 64 invocations.
 //
 // What it costs, counted. Launches: one a piece, a step — 1 for Qwen3, 2 for
@@ -87,8 +93,9 @@ namespace bllm::kernels {
 // so a view cannot be read with another format's. Preconditions: `table` is
 // the token embedding, in a format the capability table lists — routes
 // refused any other — with rows a whole number of 32-weight groups; `hidden`
-// is the plan's hidden buffer.
+// is the plan's hidden buffer; `sampled` its draw's record.
 [[nodiscard]] std::vector<Launch> gather_launches(const residency::WeightView& table,
-                                                  const residency::BufferRange& hidden, float scale);
+                                                  const residency::BufferRange& hidden,
+                                                  const residency::BufferRange& sampled, float scale);
 
 }  // namespace bllm::kernels

@@ -30,7 +30,7 @@ std::vector<std::byte> bytes_of(const Constants& c) {
 }  // namespace
 
 std::vector<Launch> gather_launches(const residency::WeightView& table, const residency::BufferRange& hidden,
-                                    float scale) {
+                                    const residency::BufferRange& sampled, float scale) {
     const formats::Format* format = capability::find_format(table.format());
     const std::uint64_t width = table.shape().dimensions[0];
     const auto groups_per_row = static_cast<std::uint32_t>(width / formats::kUnpackGroup);
@@ -50,7 +50,8 @@ std::vector<Launch> gather_launches(const residency::WeightView& table, const re
             shaders::gather,
             format,
             bytes_of(constants),
-            {Binding{piece.buffer, piece.offset, piece.length}, Binding{hidden.buffer, hidden.offset, hidden.length}},
+            {Binding{piece.buffer, piece.offset, piece.length}, Binding{hidden.buffer, hidden.offset, hidden.length},
+             Binding{sampled.buffer, sampled.offset, sampled.length}},
             groups_per_row,
             kWorkgroupSize,
         });

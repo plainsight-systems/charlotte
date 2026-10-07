@@ -42,7 +42,8 @@ TEST_CASE("the gather launches once a piece, each binding its piece then the hid
                             {{residency::BufferIndex{0}, 0, 3360, 0, 4},
                              {residency::BufferIndex{1}, 256, 2520, 4, 3},
                              {residency::BufferIndex{1}, 3072, 840, 7, 1}});
-    const auto launches = kernels::gather_launches(view, hidden, 32.0f);
+    const residency::BufferRange sampled{residency::BufferIndex{10}, 0, 16};
+    const auto launches = kernels::gather_launches(view, hidden, sampled, 32.0f);
     REQUIRE(launches.size() == 3);
     const std::uint32_t first[] = {0, 4, 7};
     const std::uint32_t rows[] = {4, 3, 1};
@@ -57,7 +58,8 @@ TEST_CASE("the gather launches once a piece, each binding its piece then the hid
         CHECK(c.groups_per_row == 32);
         CHECK(c.blocks_in_piece == rows[i] * 4);   // four 256-weight super-blocks a row
         CHECK(c.scale == 32.0f);
-        REQUIRE(l.bindings.size() == 2);
+        REQUIRE(l.bindings.size() == 3);
+        CHECK(l.bindings[2].buffer == sampled.buffer);
         CHECK(l.bindings[0].buffer == view.pieces()[i].buffer);
         CHECK(l.bindings[0].offset == view.pieces()[i].offset);
         CHECK(l.bindings[0].size == view.pieces()[i].length);
@@ -71,7 +73,8 @@ TEST_CASE("the gather launches once a piece, each binding its piece then the hid
 
 TEST_CASE("a format of one weight a block counts its blocks as weights") {
     const auto view = table(gguf::TensorType::F32, 64, {{residency::BufferIndex{0}, 0, 1536, 0, 6}});
-    const auto launches = kernels::gather_launches(view, {residency::BufferIndex{1}, 0, 256}, 1.0f);
+    const auto launches =
+        kernels::gather_launches(view, {residency::BufferIndex{1}, 0, 256}, {residency::BufferIndex{2}, 0, 16}, 1.0f);
     REQUIRE(launches.size() == 1);
     CHECK(constants_of(launches[0]).blocks_in_piece == 6 * 64);
     CHECK(constants_of(launches[0]).groups_per_row == 2);

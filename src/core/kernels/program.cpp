@@ -455,7 +455,7 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
     push_scopes(device, kStepScopes);
     // Optimization (browser): the step's head and only the identifier words
     // it uses, in one write (interface.h).
-    const std::size_t bytes = kStepHead + 16 * ((std::size_t{step.tokens} + 3) / 4);
+    const std::size_t bytes = kStepHead + (step.fed == 1 ? 0 : 16 * ((std::size_t{step.tokens} + 3) / 4));
     wgpuQueueWriteBuffer(s.queue.get(), s.step.get(), 0, &step, bytes);
 
     s.in_flight = state_;

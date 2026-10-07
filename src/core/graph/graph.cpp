@@ -78,7 +78,7 @@ Builder::Builder(const model::ModelDescription& model, const residency::Residenc
     buffers_ = {scratch(plan, "hidden"),   scratch(plan, "normed"),        scratch(plan, "query"),
                 scratch(plan, "key"),      scratch(plan, "value"),         scratch(plan, "attention"),
                 scratch(plan, "partials"), scratch(plan, "partial_stats"), scratch(plan, "output"),
-                scratch(plan, "activation"), scratch(plan, "logits")};
+                scratch(plan, "activation"), scratch(plan, "logits"), scratch(plan, "sampled")};
 }
 
 const residency::WeightView& Builder::view(gguf::TensorId tensor) const {
@@ -115,7 +115,7 @@ void Builder::product(const residency::WeightView& weight, const residency::Buff
 }
 
 void Builder::embed(float scale) {
-    append(*out_, kernels::gather_launches(view(model_->token_embedding), buffers_.hidden, scale));
+    append(*out_, kernels::gather_launches(view(model_->token_embedding), buffers_.hidden, buffers_.sampled, scale));
 }
 
 GraphResult Builder::attention(std::uint32_t layer) {

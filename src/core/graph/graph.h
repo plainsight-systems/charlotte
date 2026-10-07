@@ -243,7 +243,7 @@ private:
     // The plan's working buffers, by what they hold.
     struct Buffers {
         residency::BufferRange hidden, normed, query, key, value, attention, partials, partial_stats, output,
-            activation, logits;
+            activation, logits, sampled;
     };
 
     [[nodiscard]] const residency::WeightView& view(gguf::TensorId tensor) const;

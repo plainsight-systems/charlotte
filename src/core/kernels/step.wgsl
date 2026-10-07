@@ -9,6 +9,7 @@ struct Step {
     position: u32,
     tokens: u32,
     logits: u32,
+    fed: u32,              // gather's: the one token is the last step's draw
     seed: vec2<u32>,       // the draw's, and its settings (sampler/sampler.h)
     top_k: u32,
     temperature: f32,

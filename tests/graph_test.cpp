@@ -115,7 +115,7 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
                                       m.activation, rows}));
     };
 
-    add(kernels::gather_launches(view(m.token_embedding), hidden, scale));
+    add(kernels::gather_launches(view(m.token_embedding), hidden, buffer("sampled"), scale));
     const residency::WeightView* carried = nullptr;   // the post-norm of what `output` holds
     for (std::uint32_t i = 0; i < m.layers.size(); ++i) {
         const model::LayerDescription& l = m.layers[i];

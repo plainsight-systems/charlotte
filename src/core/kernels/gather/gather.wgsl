@@ -18,6 +18,7 @@ override workgroup_size: u32 = 64;
 @group(0) @binding(1) var<uniform> gather: Gather;
 @group(0) @binding(2) var<storage, read> weights: array<u32>;
 @group(0) @binding(3) var<storage, read_write> hidden: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> sampled: array<u32>;   // the draw's record
 
 @compute @workgroup_size(workgroup_size)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -25,7 +26,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (row >= step.tokens) {
         return;
     }
-    let token = step.ids[row / 4u][row % 4u];
+    // A fed step's one token is the last step's draw (gather.h).
+    var token = step.ids[row / 4u][row % 4u];
+    if (step.fed == 1u) {
+        token = sampled[0];
+    }
     // A token in another piece of the table is that piece's launch's to write.
     if (token < gather.first_row || token - gather.first_row >= gather.row_count) {
         return;

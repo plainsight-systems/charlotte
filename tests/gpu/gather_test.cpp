@@ -48,6 +48,7 @@ struct Uploaded {
     Model model;
     std::unique_ptr<residency::Upload> upload;
     residency::BufferRange hidden{};
+    residency::BufferRange sampled{};
     std::uint64_t width = 0;
     std::uint64_t row_bytes = 0;
     gguf::TensorType type{};
@@ -90,6 +91,10 @@ Uploaded upload_table(WGPUInstance instance, const gpu::Device& device, const st
     plan.buffers.push_back({residency::Pool::Scratch, hidden_bytes});
     u.hidden = {static_cast<residency::BufferIndex>(plan.buffers.size() - 1), 0, hidden_bytes};
     plan.scratch.push_back({"hidden", u.hidden});
+    // The draw's record in a buffer the test writes from the CPU, a weight
+    // pool's: in the harness the draw writes it on the GPU.
+    plan.buffers.push_back({residency::Pool::Weights, 16});
+    u.sampled = {static_cast<residency::BufferIndex>(plan.buffers.size() - 1), 0, 16};
 
     Ready ready;
     residency::Upload::begin(device, u.model.index, plan, u.model.bytes.size(), capability::find_format, {}, kChunk,
@@ -103,7 +108,8 @@ Uploaded upload_table(WGPUInstance instance, const gpu::Device& device, const st
 }
 
 std::unique_ptr<Program> build(WGPUInstance instance, const Uploaded& u, float scale) {
-    return build_program(instance, *u.upload, kernels::gather_launches(u.model.plan.tensors[0].view, u.hidden, scale));
+    return build_program(instance, *u.upload,
+                         kernels::gather_launches(u.model.plan.tensors[0].view, u.hidden, u.sampled, scale));
 }
 
 void run(WGPUInstance instance, Program& program, std::span<const std::uint32_t> ids) {
@@ -230,6 +236,23 @@ TEST_CASE("the scale multiplies every weight, and a decode step writes its one r
     run(instance.get(), *program, ids);
     // Within 2 units in the last place of decode-then-scale (gather.h).
     check_rows(u, ids, read_hidden(instance.get(), *device, u, 2), scale, 2);
+}
+
+TEST_CASE("a fed step embeds the last step's draw, not the step's identifier") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_table(instance.get(), *device, "embedding_q4_0", {7});
+    const auto program = build(instance.get(), u, 1.0f);
+    const std::uint32_t record[4] = {6, 0, 0, 0};   // the draw's token, 6
+    wgpuQueueWriteBuffer(device->queue(), u.upload->buffer(u.sampled.buffer), 0, record, sizeof record);
+    kernels::Step step{};
+    step.tokens = 1;
+    step.fed = 1;
+    step.ids[0] = 2;   // ignored: the step is fed
+    const StepOutcome ran = try_step(instance.get(), *program, step);
+    REQUIRE_MESSAGE(ran.error == kernels::ProgramError::Ok, ran.message);
+    const std::uint32_t drawn[] = {6};
+    check_rows(u, drawn, read_hidden(instance.get(), *device, u, 2), 1.0f);
 }
 
 TEST_CASE("one program runs step after step, each writing its own rows") {

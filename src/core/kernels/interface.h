@@ -135,16 +135,17 @@ inline constexpr std::uint32_t kFirstWeightBinding = 2;
 // which the program composes before every kernel, as it composes a format's
 // unpack (program.h):
 //
-//   struct Step { position: u32, tokens: u32, logits: u32, seed: vec2<u32>,
-//                 top_k: u32, temperature: f32, top_p: f32, min_p: f32,
-//                 ids: array<vec4<u32>, 128> }
+//   struct Step { position: u32, tokens: u32, logits: u32, fed: u32,
+//                 seed: vec2<u32>, top_k: u32, temperature: f32, top_p: f32,
+//                 min_p: f32, ids: array<vec4<u32>, 128> }
 //
-// A 48-byte head: WGSL places `seed` at 16 and `ids` at 48, a uniform
-// array's 16-byte stride, leaving one word of padding after `logits` and two
-// after `min_p`. `logits` is the program's, read by no kernel; the seed and
-// the settings are the draw's (sampler/sampler.h), the turn's, written with
-// every step. Token i's identifier is ids[i / 4][i % 4]. A step writes its
-// head and only the identifier words it uses: 64 bytes for a decode step.
+// A 48-byte head: WGSL places `ids` at 48, a uniform array's 16-byte stride,
+// leaving two words of padding after `min_p`. `logits` is the program's,
+// read by no kernel; `fed` is gather's; the seed and the settings are the
+// draw's (sampler/sampler.h), the turn's, written with every step. Token i's
+// identifier is ids[i / 4][i % 4]. A step writes its head and only the
+// identifier words it uses: 48 bytes for a fed decode step, which uses none,
+// 64 for one given its token.
 // Optimization (browser): the identifiers ride in the uniform every launch
 // already binds, so a step is one write, not one for its parameters and one
 // for its tokens (WASM.2).
@@ -155,7 +156,10 @@ struct Step {
     // step that does not end the prompt, which runs no launch over the last
     // token alone — the final norm and the head (graph/graph.h).
     std::uint32_t logits;
-    std::uint32_t padding0;
+    // 1 when the step is one token, the last step's draw, which gather reads
+    // from the draw's record on the GPU (kernels/gather/gather.h); the step
+    // writes no identifier.
+    std::uint32_t fed;
     // The draw's: the turn's seed, low word first, and its settings
     // (policy::SamplingSettings), checked before the turn (sampler.h).
     std::uint32_t seed[2];
