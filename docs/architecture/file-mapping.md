@@ -43,7 +43,8 @@ module's own header, and contract 11 in the two boundary files.
 | `web/template.js` | H | rendering the model's chat template, as a pure function of the conversation and the date |
 | `web/vendor/jinja.js` | dependency | `@huggingface/jinja`, byte-for-byte as published; its hash is checked in the tests |
 | `web/chat.js` | H | the conversation panel: renders each turn through the template, streams the reply, stops it |
-| `web/conversation.js` | H | messages as the template sees them, and a reply split into reasoning and answer |
+| `web/conversation.js` | H | messages as the template sees them, and the conversation shortened to fit the context |
+| `web/thinking_stream.js` | H | a streaming reply split into reasoning and answer, each piece read once |
 | `web/fetch.js` | L | range and streaming fetch, with progress |
 | `web/preflight.js` | L | fetching the front of a file until the reader has its whole index |
 | `web/opfs.js` | L | the model file cache; a file is listed only once complete and verified |

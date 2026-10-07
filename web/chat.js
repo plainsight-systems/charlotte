@@ -21,13 +21,15 @@
 // finds what of the shortened conversation it still holds
 // (logical-overview.md).
 //
-// A reply's text is rendered at most once a frame: pieces arriving between
-// frames are joined, and the reply redrawn when the browser next paints.
-// Redrawing it a piece at a time reparses the whole reply each time, work
-// that grows with the square of its length; a frame at a time, with the
-// frames' count, about 60 a second, not the tokens', several hundred.
+// A reply's text is drawn at most once a frame: pieces arriving between
+// frames are joined, split into reasoning and answer by thinking_stream.js,
+// each piece read once, and appended to the text nodes the reply keeps, so
+// drawing a reply costs Θ(its length), and the reasoning's open or closed
+// state and any selection in it are the reader's while it streams. The
+// reasoning is collapsed once, when it finishes.
 
-import { shortened, splitThinking, withAssistant, withUser } from './conversation.js';
+import { shortened, withAssistant, withUser } from './conversation.js';
+import { createThinkingStream } from './thinking_stream.js';
 import { h } from './dom.js';
 import { compileTemplate, offersThinking } from './template.js';
 
@@ -91,20 +93,21 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
 
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
     const started = performance.now();
-    // The reply redrawn at most once a frame (see the top of this file).
+    // The reply drawn at most once a frame (see the top of this file).
     let reply = '';
-    let drawing = false;
+    let undrawn = '';
+    let frame = null;
+    const view = replyView(replyText);
     const draw = () => {
-      drawing = false;
-      renderReply(replyText, reply);
+      frame = null;
+      view.append(undrawn);
+      undrawn = '';
       log.scrollTop = log.scrollHeight;
     };
     const onText = (piece) => {
       reply += piece;
-      if (!drawing) {
-        drawing = true;
-        requestAnimationFrame(draw);
-      }
+      undrawn += piece;
+      if (frame === null) frame = requestAnimationFrame(draw);
     };
     button.textContent = 'Stop';
 
@@ -126,7 +129,9 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
           dropped += shorter.dropped;
         }
       }
+      if (frame !== null) cancelAnimationFrame(frame);
       draw();
+      view.finish();
       messages = withAssistant(turn, reply);
       if (dropped > 0) {
         log.insertBefore(h('p', { className: 'message-facts',
@@ -172,15 +177,29 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
     log, error, form);
 }
 
-// A reply's reasoning, collapsed once it is finished, then its answer.
-function renderReply(bubble, text) {
-  const { thinking, thinkingDone, answer } = splitThinking(text);
-  const parts = [];
-  if (thinking !== null) {
-    parts.push(h('details', { className: 'thinking', open: !thinkingDone },
-      h('summary', { text: thinkingDone ? 'Thought' : 'Thinking…' }),
-      h('p', { text: thinking })));
-  }
-  parts.push(h('p', { className: 'answer', text: answer }));
-  bubble.replaceChildren(...parts);
+// A reply's reasoning, open while it streams and collapsed once it finishes,
+// then its answer, each a text node appended to as the stream gives them.
+function replyView(bubble) {
+  const stream = createThinkingStream();
+  const answer = document.createTextNode('');
+  let thought = null;
+  let summary = null;
+  bubble.append(h('p', { className: 'answer' }, answer));
+  const apply = (out) => {
+    if (out.reasoning && thought === null) {
+      thought = document.createTextNode('');
+      summary = h('summary', { text: 'Thinking…' });
+      bubble.prepend(h('details', { className: 'thinking', open: true }, summary, h('p', {}, thought)));
+    }
+    if (out.thinking) thought.appendData(out.thinking);
+    if (out.closed) {
+      summary.textContent = 'Thought';
+      summary.parentElement.open = false;
+    }
+    if (out.answer) answer.appendData(out.answer);
+  };
+  return {
+    append: (text) => apply(stream.push(text)),
+    finish: () => apply(stream.finish()),
+  };
 }
