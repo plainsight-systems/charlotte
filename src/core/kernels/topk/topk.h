@@ -61,11 +61,13 @@ namespace bllm::kernels {
 // run side by side within a pass. What a pass's latency adds is its 50
 // barriers one after another: at about 50 cycles a stage on the M3 Max's
 // cores near 1.4 GHz — an estimate, not counted from the design, to be
-// calibrated — 1.79 µs a pass, 5.4 µs for the three; and the
-// draw's own work, estimated at 1.9 µs at a top_k of 64 and a top_p below 1
-// (sampler.h), apart from its launch. About
-// 15 µs a sampled step, estimated: the selection and draw are measured
-// together once they run, and that measure gives their share of a step.
+// calibrated — 1.79 µs a pass, 5.4 µs for the three. The draw adds its
+// own work, of which sampler.h counts only a partial subtotal, 1.9 µs at a
+// top_k of 64 and a top_p below 1, leaving out its exponentials, divisions
+// and Philox's issue: no total for the stage follows from these. A
+// profile's prefix differences (bench/forward_profile.cpp) put the
+// selection's and draw's launches each below a decode step's noise, so
+// they are small beside it, not yet resolved.
 // Optimization (practice): select, not sort — 64 kept from each tile of
 // 1,024, never a sorted vocabulary, as FlashInfer's and Faiss's GPU
 // selection do (GDSA.7).
