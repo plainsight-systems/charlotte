@@ -18,8 +18,9 @@ namespace bllm::tokenizer {
 //
 // What it costs: a token's bytes appended to a buffer reserved, at
 // construction, for the vocabulary's longest token, and the characters they
-// complete to another, at most three bytes longer; nothing is allocated a
-// token.
+// complete to another, reserved for the worst — every byte, the three held
+// before the token's included, written as U+FFFD's three; nothing is
+// allocated a token.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
