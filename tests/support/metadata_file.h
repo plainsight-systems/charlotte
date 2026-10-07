@@ -54,6 +54,15 @@ public:
         return *this;
     }
 
+    MetadataFile& uint32(std::string_view key, std::uint32_t value) {
+        string(key);
+        const auto type = static_cast<std::uint32_t>(gguf::ValueType::UInt32);
+        put(&type, sizeof type);
+        put(&value, sizeof value);
+        ++entries_;
+        return *this;
+    }
+
     MetadataFile& boolean(std::string_view key, bool value) {
         string(key);
         const auto type = static_cast<std::uint32_t>(gguf::ValueType::Bool);

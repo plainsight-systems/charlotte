@@ -63,6 +63,7 @@ add_library(charlotte_core STATIC
     src/core/kernels/topk/topk.cpp
     src/core/sampler/sampler.cpp
     src/core/runtime/turn.cpp
+    src/core/runtime/stops.cpp
     src/core/residency/routes.cpp
     src/core/gpu/dispatch_math.cpp
 )

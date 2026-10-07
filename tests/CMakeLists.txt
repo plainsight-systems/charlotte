@@ -40,6 +40,7 @@ add_executable(charlotte_tests
     kernels_topk_test.cpp
     kernels_order_test.cpp
     runtime_turn_test.cpp
+    runtime_stops_test.cpp
     sampler_test.cpp
     residency_plan_test.cpp
     cache_kv_test.cpp
