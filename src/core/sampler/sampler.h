@@ -164,13 +164,19 @@ namespace bllm::sampler {
 //     (docs/architecture/change-axes.md: axis F apart from E).
 //
 // Verification the implementation is held to:
-//   - On the GPU against a CPU reference of the same steps in f64: each
-//     truncation's survivors for settings at and either side of its edges;
-//     temperature zero drawing the first candidate; and, for fixed logits,
-//     the frequencies of 20,000 draws over consecutive positions within a
-//     chi-squared bound of the reference's probabilities (GDSA.21: test
-//     statistically, not by replay).
-//   - Philox4x32-10 against Random123's published known-answer vectors.
+//   - On the GPU against a CPU reference of the same steps in f64, given
+//     the uniform the draw records: each of 1,000 draws over five settings —
+//     llama.cpp's defaults, the listed models' cards, and others at the
+//     truncations' edges — the reference's token, but for a draw within f32's
+//     rounding of a decision, which may number 1 in 100 at most; temperature
+//     zero, a top_k of 1, a top_p and a min_p that leave the first alone, each
+//     drawing the first candidate; and, for fixed logits, the frequencies of
+//     2,000 draws over consecutive positions within the 0.1% chi-squared
+//     bound of the reference's probabilities, no truncated candidate ever
+//     drawn (GDSA.21: test statistically, not by replay).
+//   - Philox4x32-10 on the CPU against Random123's published known-answer
+//     vectors, and the GPU's uniform bit for bit against it, across seeds and
+//     positions.
 //   - A replayed step draws the same token; a non-finite top candidate sets
 //     `failed`; check refuses each setting outside its range, naming it.
 //   - Through the forward pass: greedy decoding fed on the GPU gives the
@@ -222,7 +228,8 @@ namespace bllm::sampler {
 struct SampledRecord {
     std::uint32_t token;
     std::uint32_t failed;   // 1 when the top candidate's logit was not finite
-    std::uint32_t padding[2];
+    float u;                // the uniform the draw used: a step replayed shows the same
+    std::uint32_t padding;
 };
 static_assert(sizeof(SampledRecord) == 16);
 

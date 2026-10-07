@@ -135,13 +135,16 @@ inline constexpr std::uint32_t kFirstWeightBinding = 2;
 // which the program composes before every kernel, as it composes a format's
 // unpack (program.h):
 //
-//   struct Step { position: u32, tokens: u32, logits: u32, ids: array<vec4<u32>, 128> }
+//   struct Step { position: u32, tokens: u32, logits: u32, seed: vec2<u32>,
+//                 top_k: u32, temperature: f32, top_p: f32, min_p: f32,
+//                 ids: array<vec4<u32>, 128> }
 //
-// and one word of padding after `logits`, since a uniform array needs a
-// 16-byte stride; `logits` is the program's, read by no kernel. Token i's
-// identifier is ids[i / 4][i % 4]. A step
-// writes its 16-byte head and only the identifier words it uses: 32 bytes
-// for a decode step.
+// A 48-byte head: WGSL places `seed` at 16 and `ids` at 48, a uniform
+// array's 16-byte stride, leaving one word of padding after `logits` and two
+// after `min_p`. `logits` is the program's, read by no kernel; the seed and
+// the settings are the draw's (sampler/sampler.h), the turn's, written with
+// every step. Token i's identifier is ids[i / 4][i % 4]. A step writes its
+// head and only the identifier words it uses: 64 bytes for a decode step.
 // Optimization (browser): the identifiers ride in the uniform every launch
 // already binds, so a step is one write, not one for its parameters and one
 // for its tokens (WASM.2).
@@ -152,10 +155,19 @@ struct Step {
     // step that does not end the prompt, which runs no launch over the last
     // token alone — the final norm and the head (graph/graph.h).
     std::uint32_t logits;
-    std::uint32_t padding;
+    std::uint32_t padding0;
+    // The draw's: the turn's seed, low word first, and its settings
+    // (policy::SamplingSettings), checked before the turn (sampler.h).
+    std::uint32_t seed[2];
+    std::uint32_t top_k;
+    float temperature;
+    float top_p;
+    float min_p;
+    std::uint32_t padding1[2];
     std::array<std::uint32_t, residency::kPrefillBlock> ids;
 };
-static_assert(sizeof(Step) == 16 + 4 * residency::kPrefillBlock);
+static_assert(sizeof(Step) == 48 + 4 * residency::kPrefillBlock);
+inline constexpr std::size_t kStepHead = 48;
 
 // Each launch's constants lie at their own offset in one uniform buffer, in
 // a whole number of slots on the alignment WebGPU's default limits require
