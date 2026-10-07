@@ -129,7 +129,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 #include <cstdio>
 #include <memory>
 #include <optional>
@@ -137,6 +136,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "core/arch/architecture.h"
 #include "core/cache/kv.h"
@@ -397,6 +397,13 @@ struct Session {
     std::uint32_t turn_request = 0;   // the generate whose turn runs, or 0
 #if BLLM_DIAGNOSTICS_ENABLED
     std::unique_ptr<Check> check;   // declared after `loaded`, so released before it
+    // The running turn's steps, when they are observed (bllm_observe_steps):
+    // reserved at load for the most steps a turn runs, so no step allocates.
+    struct StepRecord {
+        double prefill, position, tokens, begin_ns, end_ns, report_ms;
+    };
+    std::vector<StepRecord> steps;
+    bool observing = false;
 #endif
 };
 
@@ -507,6 +514,13 @@ void on_program_built(std::unique_ptr<bllm::kernels::Program> program, bllm::ker
     bllm::cache::KvCache cache{load->description, plan, load->precision, plan.context_offered};
     auto runtime = std::make_unique<bllm::runtime::Runtime>(std::move(program), std::move(cache), load->stops);
     s.generator = std::make_unique<bllm::runtime::Generator>(std::move(load->tokenizer), std::move(runtime));
+#if BLLM_DIAGNOSTICS_ENABLED
+    // A turn runs at most a decode step a token of context and a prefill
+    // step a block of it.
+    s.observing = false;
+    s.steps.clear();
+    s.steps.reserve(std::size_t{plan.context_offered} + plan.context_offered / bllm::residency::kPrefillBlock + 2);
+#endif
     bllm_reply(request, ("{\"ok\":true,\"contextOffered\":" + std::to_string(plan.context_offered) + "}").c_str());
 }
 
@@ -566,17 +580,39 @@ std::string_view stop_reason(bllm::runtime::TurnEnd end) {
     return "cancelled";
 }
 
+// The observed turn's steps, as a JSON member, emptied for the next turn;
+// nothing when the turn was not observed, or in a clean build.
+std::string observed_steps(Session& s) {
+#if BLLM_DIAGNOSTICS_ENABLED
+    if (!s.observing) return {};
+    std::string json = ",\"steps\":[";
+    for (std::size_t i = 0; i < s.steps.size(); ++i) {
+        const auto& r = s.steps[i];
+        char row[160];
+        std::snprintf(row, sizeof row, "%s[%.0f,%.0f,%.0f,%.0f,%.0f,%.4f]", i == 0 ? "" : ",", r.prefill, r.position,
+                      r.tokens, r.begin_ns, r.end_ns, r.report_ms);
+        json += row;
+    }
+    s.steps.clear();
+    return json + "]";
+#else
+    (void)s;
+    return {};
+#endif
+}
+
 void on_turn_end(const bllm::runtime::TurnResult& result, void* userdata) {
     const std::uint32_t request = to_generation(userdata);
     Session& s = session();
     if (s.turn_request == request) s.turn_request = 0;
+    const std::string steps = observed_steps(s);   // taken whichever way the turn ended
     using bllm::runtime::TurnFailure;
     switch (result.failure) {
         case TurnFailure::None:
             bllm_reply(request, ("{\"ok\":true,\"stopReason\":" + json_string(stop_reason(result.end)) +
                                  ",\"tokens\":" + std::to_string(result.emitted) +
                                  ",\"promptTokens\":" + std::to_string(result.prompt) +
-                                 ",\"reusedTokens\":" + std::to_string(result.reused) + "}")
+                                 ",\"reusedTokens\":" + std::to_string(result.reused) + steps + "}")
                                     .c_str());
             return;
         case TurnFailure::NonFinite:
@@ -1038,6 +1074,41 @@ EMSCRIPTEN_KEEPALIVE void bllm_check_finish(std::uint32_t request) {
                 "}";
     }
     bllm_reply(request, (json + "]}").c_str());
+}
+
+// A step reported: its record, stamped with the module's clock — after the
+// runtime has run its next steps (runtime/runtime.h).
+void record_step(const bllm::runtime::StepTimes& step, void*) {
+    Session& s = session();
+    if (s.steps.size() == s.steps.capacity()) return;   // never past the reserve
+    s.steps.push_back({step.prefill ? 1.0 : 0.0, static_cast<double>(step.position), static_cast<double>(step.tokens),
+                       static_cast<double>(step.begin_ns), static_cast<double>(step.end_ns), emscripten_get_now()});
+}
+
+// The self-check, on a device asked for timestamp queries: see the top of
+// this file.
+EMSCRIPTEN_KEEPALIVE void bllm_run_profile_check() {
+    const std::uint32_t generation = guard().begin();
+    if (generation == bllm::RunGuard::kNoRun) {
+        report_failure("request", "a self-check is already running");
+        return;
+    }
+    pending_generation() = generation;
+    timeout_id() = emscripten_set_timeout(on_timeout, kRunTimeoutMs, to_userdata(generation));
+    const bllm::gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    bllm::gpu::Device::request(instance.get(), on_device, to_userdata(generation), nullptr,
+                               bllm::gpu::DiagnosticRequest{.timestamps = true});
+}
+
+// Sets the loaded model's step observer, or clears it: 1 done, 0 refused —
+// no model loaded, a turn running, or a device without timestamp queries.
+EMSCRIPTEN_KEEPALIVE int bllm_observe_steps(int on) {
+    Session& s = session();
+    if (s.generator == nullptr || s.device == nullptr || !s.device->timestamps()) return 0;
+    if (!s.generator->observe_steps(on != 0 ? record_step : nullptr, nullptr)) return 0;
+    s.observing = on != 0;
+    s.steps.clear();
+    return 1;
 }
 
 EMSCRIPTEN_KEEPALIVE void bllm_run_readback_bench() {

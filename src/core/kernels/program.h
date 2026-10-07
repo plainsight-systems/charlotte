@@ -196,6 +196,9 @@ public:
     // Preconditions: run()'s; launches <= the graph's; no unprofiled step
     // outstanding.
     void run_profiled(const Step& step, std::uint32_t launches, ProfileCallback done, void* userdata);
+
+    // The graph's launches: a whole step's bound for run_profiled.
+    [[nodiscard]] std::uint32_t launch_count() const noexcept;
 #endif
 
     // Runs one step. `done` is called once: when the queue has finished it,

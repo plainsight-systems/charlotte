@@ -203,6 +203,23 @@ struct TurnResult {
 
 // Each emitted token, in order, a step after it was drawn.
 using TokenCallback = void (*)(tokenizer::TokenId token, void* userdata);
+
+#if BLLM_DIAGNOSTICS_ENABLED
+// A step as it reported, profiled (above): its kind, position and tokens,
+// and its pass's GPU times. The two times of one step are on one conversion
+// of the GPU's ticks to nanoseconds; two steps' may not be — on the target
+// natively, Dawn changed the factor once during a process, by 1.07 × 10⁻⁴,
+// so a step began 341.6 s "before" the step ahead of it. Differences across
+// steps are valid only between steps converted alike.
+struct StepTimes {
+    bool prefill;
+    std::uint32_t position;
+    std::uint32_t tokens;
+    std::uint64_t begin_ns;
+    std::uint64_t end_ns;
+};
+using StepObserver = void (*)(const StepTimes& step, void* userdata);
+#endif
 // Once a turn, when it has finished. `result.message` is valid only during
 // the call.
 using TurnCallback = void (*)(const TurnResult& result, void* userdata);
@@ -226,6 +243,12 @@ public:
 
     // The context offered: the most tokens a prompt and its reply hold.
     [[nodiscard]] std::uint32_t capacity() const noexcept;
+
+#if BLLM_DIAGNOSTICS_ENABLED
+    // Sets the step observer, or with null clears it; false, changing
+    // nothing, while a turn runs.
+    bool observe_steps(StepObserver observer, void* userdata) noexcept;
+#endif
 
     ~Runtime();
     Runtime(const Runtime&) = delete;

@@ -1,6 +1,7 @@
 #include "core/runtime/runtime.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -38,6 +39,14 @@ struct Runtime::State {
     std::uint32_t reused = 0;
     std::optional<tokenizer::TokenId> stop;
     std::string message;   // the first failed step's, reserved so a failure allocates nothing
+#if BLLM_DIAGNOSTICS_ENABLED
+    // The step observer, and the steps run and not yet reported, at most two,
+    // in run order: what the observer is told of each.
+    StepObserver observer = nullptr;
+    void* observer_data = nullptr;
+    std::array<StepTimes, 2> outstanding{};
+    std::uint32_t outstanding_count = 0;
+#endif
     // This state, held while a turn runs, so its callbacks outlive the runtime.
     std::shared_ptr<State> in_flight;
 };
@@ -46,6 +55,10 @@ namespace {
 
 void on_step(kernels::ProgramError error, std::string_view message, std::span<const std::byte> bytes,
              void* userdata);
+#if BLLM_DIAGNOSTICS_ENABLED
+void on_profiled_step(kernels::ProgramError error, std::string_view message, std::span<const std::byte> bytes,
+                      const kernels::Program::Timestamps& times, void* userdata);
+#endif
 
 // Runs every step the turn plans now. The turn plans at most two
 // outstanding, so the program never refuses one at once; and every position
@@ -62,6 +75,13 @@ void run_planned(Runtime::State& s) {
                            [](tokenizer::TokenId t) { return static_cast<std::uint32_t>(t); });
         }
         s.cache.advance(p->tokens);
+#if BLLM_DIAGNOSTICS_ENABLED
+        if (s.observer != nullptr) {
+            s.outstanding[s.outstanding_count++] = {p->tokens > 1 || !p->fed, p->position, p->tokens, 0, 0};
+            s.program->run_profiled(s.step, s.program->launch_count(), on_profiled_step, &s);
+            continue;
+        }
+#endif
         s.program->run(s.step, on_step, &s);
     }
 }
@@ -89,10 +109,11 @@ StepFailure failure_of(kernels::ProgramError error) {
     }
 }
 
-void on_step(kernels::ProgramError error, std::string_view message, std::span<const std::byte> bytes,
-             void* userdata) {
-    Runtime::State& s = *static_cast<Runtime::State*>(userdata);
-    const std::shared_ptr<Runtime::State> keep = s.in_flight;   // the token callback may destroy the runtime
+// A step's report, first half: the turn decides its draw, and the steps it
+// plans next go to the GPU before the CPU's work on the token (GPU.7).
+// Returns the token to emit, if any.
+std::optional<tokenizer::TokenId> decide(Runtime::State& s, kernels::ProgramError error, std::string_view message,
+                                         std::span<const std::byte> bytes) {
     Turn& turn = *s.turn;
     std::optional<tokenizer::TokenId> emitted;
     if (error == kernels::ProgramError::Ok) {
@@ -120,11 +141,40 @@ void on_step(kernels::ProgramError error, std::string_view message, std::span<co
         if (s.message.empty()) s.message.assign(message.substr(0, s.message.capacity()));
         turn.fail(failure_of(error));
     }
-    // The next step to the GPU before the CPU's work on the token (GPU.7).
     if (s.program) run_planned(s);
-    if (emitted) s.on_token(*emitted, s.userdata);
-    if (turn.finished()) finish(s);
+    return emitted;
 }
+
+// Second half: the token passed on, and the turn finished if it has.
+void deliver(Runtime::State& s, std::optional<tokenizer::TokenId> emitted) {
+    if (emitted) s.on_token(*emitted, s.userdata);
+    if (s.turn->finished()) finish(s);
+}
+
+void on_step(kernels::ProgramError error, std::string_view message, std::span<const std::byte> bytes,
+             void* userdata) {
+    Runtime::State& s = *static_cast<Runtime::State*>(userdata);
+    const std::shared_ptr<Runtime::State> keep = s.in_flight;   // the token callback may destroy the runtime
+    deliver(s, decide(s, error, message, bytes));
+}
+
+#if BLLM_DIAGNOSTICS_ENABLED
+// A profiled step's report: as on_step, with the observer told of the step
+// between the two halves — after the GPU has its next steps.
+void on_profiled_step(kernels::ProgramError error, std::string_view message, std::span<const std::byte> bytes,
+                      const kernels::Program::Timestamps& times, void* userdata) {
+    Runtime::State& s = *static_cast<Runtime::State*>(userdata);
+    const std::shared_ptr<Runtime::State> keep = s.in_flight;
+    StepTimes step = s.outstanding[0];
+    s.outstanding[0] = s.outstanding[1];
+    --s.outstanding_count;
+    step.begin_ns = times.begin_ns;
+    step.end_ns = times.end_ns;
+    const std::optional<tokenizer::TokenId> emitted = decide(s, error, message, bytes);
+    if (error == kernels::ProgramError::Ok && s.observer != nullptr) s.observer(step, s.observer_data);
+    deliver(s, emitted);
+}
+#endif
 
 }  // namespace
 
@@ -178,6 +228,16 @@ StartResult Runtime::start(std::span<const tokenizer::TokenId> prompt, const pol
 }
 
 std::uint32_t Runtime::capacity() const noexcept { return state_->cache.capacity(); }
+
+#if BLLM_DIAGNOSTICS_ENABLED
+bool Runtime::observe_steps(StepObserver observer, void* userdata) noexcept {
+    State& s = *state_;
+    if (s.turn) return false;
+    s.observer = observer;
+    s.observer_data = userdata;
+    return true;
+}
+#endif
 
 void Runtime::cancel() noexcept {
     if (state_->turn) state_->turn->cancel();

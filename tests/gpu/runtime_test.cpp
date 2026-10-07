@@ -364,3 +364,69 @@ TEST_CASE("a step that fails on a lost device is DeviceLost, and the runtime the
     Turned again;
     CHECK(s->runtime->start(ids, kSampled, on_token, on_turn, &again).error == StartError::DeviceLost);
 }
+
+#if BLLM_DIAGNOSTICS_ENABLED
+
+namespace {
+
+struct Observed {
+    std::vector<runtime::StepTimes> steps;
+    runtime::Runtime* runtime = nullptr;
+    bool refused_while_running = false;
+};
+
+void record_step(const runtime::StepTimes& step, void* userdata) {
+    Observed& o = *static_cast<Observed*>(userdata);
+    o.steps.push_back(step);
+    // A turn is running: the observer cannot be changed now.
+    o.refused_while_running = !o.runtime->observe_steps(nullptr, nullptr);
+}
+
+}  // namespace
+
+TEST_CASE("an observed turn draws the same tokens, each step reported in order with its GPU times") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get(), gpu::DiagnosticRequest{.timestamps = true});
+    const auto prompt = pseudo_random(300, 3);
+    auto plain = open(instance.get(), *device, "forward_model", {0});
+    const auto want = turn(instance.get(), *plain, prompt, 20);
+
+    auto watched = open(instance.get(), *device, "forward_model", {0});
+    Observed seen;
+    seen.runtime = watched->runtime.get();
+    REQUIRE(watched->runtime->observe_steps(record_step, &seen));
+    const auto got = turn(instance.get(), *watched, prompt, 20);
+    CHECK(got->tokens == want->tokens);
+    CHECK(got->result->end == want->result->end);
+    CHECK(seen.refused_while_running);
+    // The prompt's one prefill step, then a decode step a draw after the
+    // first, fed, at the positions after it.
+    REQUIRE(seen.steps.size() == got->tokens.size());
+    CHECK(seen.steps[0].prefill);
+    CHECK(seen.steps[0].position == 0);
+    CHECK(seen.steps[0].tokens == 300);
+    for (std::size_t i = 0; i < seen.steps.size(); ++i) {
+        CAPTURE(i);
+        const runtime::StepTimes& step = seen.steps[i];
+        CHECK(step.begin_ns > 0);
+        CHECK(step.end_ns >= step.begin_ns);
+        CHECK(step.end_ns - step.begin_ns < 1'000'000'000);
+        if (i == 0) continue;
+        CHECK_FALSE(step.prefill);
+        CHECK(step.position == 300 + i - 1);
+        CHECK(step.tokens == 1);
+        // Not checked: one step's times against another's. Dawn converted
+        // a step's GPU ticks to nanoseconds by a factor it changed once
+        // during a process, 1.07 × 10⁻⁴ apart, and a turn's last step then
+        // began 341.6 s "before" the one ahead of it (runtime.h).
+    }
+
+    // Cleared between turns: the next turn runs unprofiled, unobserved.
+    REQUIRE(watched->runtime->observe_steps(nullptr, nullptr));
+    const std::size_t before = seen.steps.size();
+    const auto again = turn(instance.get(), *watched, prompt, 5);
+    CHECK(seen.steps.size() == before);
+    CHECK(again->result->failure == TurnFailure::None);
+}
+
+#endif

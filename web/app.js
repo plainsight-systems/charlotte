@@ -28,9 +28,26 @@ if (!('gpu' in navigator)) {
   const client = startWorker();
   const [models, cache] = await Promise.all([loadCatalog(), ModelCache.open()]);
 
+  // ?profile, on the diagnostic site: each turn's steps summarized to the
+  // console (web/dev/step_profile.js). Elsewhere the module is absent and the
+  // device check has already said why.
+  const profile = new URLSearchParams(location.search).has('profile')
+    ? await import('./dev/step_profile.js').catch(() => null)
+    : null;
   const chat = createChat(page.chat, {
-    generate: (prompt, { sampling, seed, onText }) =>
-      client.send(Request.GENERATE, { prompt, sampling, seed }, { onToken: onText }),
+    generate: (prompt, { sampling, seed, onText }) => {
+      const sent = client.send(Request.GENERATE, { prompt, sampling, seed }, { onToken: onText });
+      if (profile !== null) {
+        sent.reply.then((result) => {
+          if (result.steps === undefined) return;
+          const summary = profile.summarize(result.steps);
+          globalThis.bllmProfiles = [...(globalThis.bllmProfiles ?? []), { steps: result.steps, summary }];
+          console.table(summary.byPosition);
+          console.log('step profile', JSON.stringify({ ...summary, byPosition: undefined }));
+        }, () => {});
+      }
+      return sent;
+    },
     cancel: (id) => client.request(Request.CANCEL, { target: id }),
   });
 

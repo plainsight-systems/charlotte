@@ -758,6 +758,10 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
 }
 
 #if BLLM_DIAGNOSTICS_ENABLED
+std::uint32_t Program::launch_count() const noexcept {
+    return static_cast<std::uint32_t>(state_->launches.size());
+}
+
 void Program::run_profiled(const Step& step, std::uint32_t launches, ProfileCallback done, void* userdata) {
     State& s = *state_;
     const auto refuse = [&](std::string_view why) { done(ProgramError::Step, why, {}, Timestamps{0, 0, {}}, userdata); };

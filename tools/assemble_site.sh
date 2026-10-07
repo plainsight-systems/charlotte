@@ -13,9 +13,14 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+module=build/wasm-release
 if [ "${1:-}" = "--dev" ]; then
     out=dist-dev
     files="$(cd web && find . -type f)"
+elif [ "${1:-}" = "--diag" ]; then
+    out=dist-diag
+    files="$(cd web && find . -type f)"
+    module=build/wasm-diag
 else
     out=dist
     files="$(cd web && find . -path ./dev -prune -o -type f -print)"
@@ -27,5 +32,5 @@ for file in ${files}; do
     mkdir -p "${out}/$(dirname "${file}")"
     cp "web/${file}" "${out}/${file}"
 done
-cp build/wasm-release/charlotte.mjs build/wasm-release/charlotte.wasm "${out}/"
+cp "${module}/charlotte.mjs" "${module}/charlotte.wasm" "${out}/"
 touch "${out}/.nojekyll"

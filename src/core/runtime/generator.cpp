@@ -108,4 +108,10 @@ void Generator::cancel() noexcept {
     if (state_->runtime) state_->runtime->cancel();
 }
 
+#if BLLM_DIAGNOSTICS_ENABLED
+bool Generator::observe_steps(StepObserver observer, void* userdata) noexcept {
+    return state_->runtime && state_->runtime->observe_steps(observer, userdata);
+}
+#endif
+
 }  // namespace bllm::runtime

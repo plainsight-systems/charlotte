@@ -121,6 +121,12 @@ public:
     // nothing.
     void cancel() noexcept;
 
+#if BLLM_DIAGNOSTICS_ENABLED
+    // The runtime's step observer (runtime.h): false, changing nothing,
+    // while a turn runs.
+    bool observe_steps(StepObserver observer, void* userdata) noexcept;
+#endif
+
     ~Generator();
     Generator(const Generator&) = delete;
     Generator& operator=(const Generator&) = delete;

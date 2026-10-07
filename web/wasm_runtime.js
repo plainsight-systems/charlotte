@@ -28,7 +28,10 @@ import { streamFile } from './load.js';
 
 // Starts the module and the device check, which reports through `onDevice`.
 // Resolves with the runtime once the module is instantiated.
-export async function createRuntime({ onDevice, runBench }) {
+// With `profileSteps` (?profile, a diagnostic build's alone), the device is
+// asked for timestamp queries, each load sets the runtime's step observer,
+// and a turn's result carries its steps (web/dev/step_profile.js).
+export async function createRuntime({ onDevice, runBench, profileSteps = false }) {
   // The device's granted limits, once the device check reports: what preflight
   // judges fit against. Null when no device was acquired.
   let reportLimits;
@@ -43,7 +46,7 @@ export async function createRuntime({ onDevice, runBench }) {
   globalThis.bllmOnText = (call, text) => streams.get(call)?.(text);
 
   const module = await createModule();
-  startDeviceCheck(module, { onDevice, runBench });
+  startDeviceCheck(module, { onDevice, runBench, profileSteps });
   // Only a diagnostic module checks a load.
   const canCheck = typeof module._bllm_check_begin === 'function';
 
@@ -99,6 +102,9 @@ export async function createRuntime({ onDevice, runBench }) {
           finish: (call) => module._bllm_load_finish(call),
         });
         const { contextOffered } = loaded;
+        if (profileSteps && module._bllm_observe_steps(1) !== 1) {
+          throw new Error('the step observer could not be set: the device grants no timestamp queries');
+        }
         if (!canCheck) return { check: null, contextOffered };
         const checked = await pass('check', {
           begin: async ({ maxChunk: chunkBytes }) => {
@@ -136,8 +142,13 @@ export async function createRuntime({ onDevice, runBench }) {
       try {
         const answer = await answered;
         if (!answer.ok) throw new ModuleError(answer);
-        const { stopReason, tokens, promptTokens, reusedTokens } = answer;
-        return { stopReason, tokens, promptTokens, reusedTokens };
+        const { stopReason, tokens, promptTokens, reusedTokens, steps } = answer;
+        const result = { stopReason, tokens, promptTokens, reusedTokens };
+        if (steps !== undefined) {
+          result.steps = steps.map(([prefill, position, count, beginNs, endNs, reportMs]) =>
+            ({ prefill: prefill === 1, position, tokens: count, beginNs, endNs, reportMs }));
+        }
+        return result;
       } finally {
         streams.delete(call);
         turns.delete(id);
@@ -153,8 +164,19 @@ export async function createRuntime({ onDevice, runBench }) {
   };
 }
 
-function startDeviceCheck(module, { onDevice, runBench }) {
-  if (!runBench) {
+function startDeviceCheck(module, { onDevice, runBench, profileSteps }) {
+  if (profileSteps) {
+    if (typeof module._bllm_run_profile_check === 'function') {
+      // Present only in a diagnostic build.
+      module._bllm_run_profile_check();
+    } else {
+      onDevice({
+        ok: false,
+        stage: 'request',
+        error: 'the step profile is not compiled into this build; serve the diagnostic site (make serve-diag)',
+      });
+    }
+  } else if (!runBench) {
     module._bllm_run_self_check();
   } else if (typeof module._bllm_run_readback_bench === 'function') {
     // Present only in a diagnostic build.

@@ -23,7 +23,8 @@ const postDevice = (device) => self.postMessage({ kind: Notice.DEVICE, device })
 // deployed site; asking for it there fails at this import, by name.
 const runtimeModule = flags.has('fake-runtime') ? './dev/fake_runtime.js' : './wasm_runtime.js';
 const runtimePromise = import(runtimeModule)
-  .then(({ createRuntime }) => createRuntime({ onDevice: postDevice, runBench: flags.has('bench') }));
+  .then(({ createRuntime }) => createRuntime({ onDevice: postDevice, runBench: flags.has('bench'),
+    profileSteps: flags.has('profile') }));
 runtimePromise.catch((error) =>
   postDevice({ ok: false, stage: 'runtime', error: String(error?.message ?? error) }));
 

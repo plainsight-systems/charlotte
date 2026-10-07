@@ -25,7 +25,7 @@ EMSDK_IMAGE := emscripten/emsdk:6.0.8
 # directory is incompatible -- see tools/ensure_container_cache.sh.
 CONTAINER_SRC := /src
 
-.PHONY: test test-data dawn test-native test-web bench profile check wasm wasm-diag dist serve serve-dev clean
+.PHONY: test test-data dawn test-native test-web bench profile check wasm wasm-diag dist serve serve-dev serve-diag clean
 
 ## Every unit test. No browser; the GPU tests run on this machine's GPU,
 ## through native Dawn.
@@ -114,5 +114,12 @@ serve-dev: wasm
 	./tools/assemble_site.sh --dev
 	cd dist-dev && python3 -m http.server 8081
 
+## Serve the diagnostic site, the wasm-diag module with web/dev/, for
+## ?profile (web/dev/step_profile.js). Never deployed; its numbers are
+## diagnostic, never throughput.
+serve-diag: wasm-diag
+	./tools/assemble_site.sh --diag
+	cd dist-diag && python3 -m http.server 8082
+
 clean:
-	rm -rf build dist dist-dev
+	rm -rf build dist dist-dev dist-diag
