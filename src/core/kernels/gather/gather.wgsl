@@ -38,7 +38,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let group = id.x % gather.groups_per_row;
-    let weights_of = unpack(gather.blocks_in_piece, (token - gather.first_row) * gather.groups_per_row + group);
+    let weights_of = unpack(0u, gather.blocks_in_piece, (token - gather.first_row) * gather.groups_per_row + group);
     let at = (row * gather.groups_per_row + group) * 8u;
     for (var v = 0u; v < 8u; v++) {
         hidden[at + v] = weights_of[v] * gather.scale;

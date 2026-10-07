@@ -36,7 +36,7 @@ inline constexpr std::string_view kUnpackHarnessHead = R"(
 )";
 
 inline constexpr std::string_view kUnpackHarnessMain = R"(
-struct Params { blocks_in_piece: u32, groups: u32 }
+struct Params { blocks_in_piece: u32, groups: u32, base: u32 }
 @group(0) @binding(1) var<storage, read_write> decoded: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
@@ -44,7 +44,7 @@ struct Params { blocks_in_piece: u32, groups: u32 }
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let group = id.x;
     if (group >= params.groups) { return; }
-    let v = unpack(params.blocks_in_piece, group);
+    let v = unpack(params.base, params.blocks_in_piece, group);
     for (var i = 0u; i < 8u; i++) {
         decoded[group * 8u + i] = v[i];
     }
@@ -69,11 +69,16 @@ inline std::vector<float> run_unpack(WGPUInstance instance, const gpu::Device& d
                                      const formats::DeviceLayout& layout, std::span<const std::byte> stored,
                                      std::uint32_t groups) {
     const auto blocks = static_cast<std::uint32_t>(stored.size() / layout.block_bytes);
-    const std::vector<std::byte> on_device = lay_out(layout, stored);
+    // The piece 7 words into its binding, after words no unpack should read,
+    // as a fused group's later member is (format.h's base).
+    constexpr std::uint32_t kBase = 7;
+    std::vector<std::byte> on_device(kBase * 4, std::byte{0xA5});
+    const std::vector<std::byte> piece = lay_out(layout, stored);
+    on_device.insert(on_device.end(), piece.begin(), piece.end());
     const std::string source = std::string(kUnpackHarnessHead) + std::string(unpack_wgsl) +
                                std::string(kUnpackHarnessMain);
     const std::vector<std::byte> out = run_compute(instance, device, source, on_device,
-                                                   std::uint64_t{groups} * 32 * sizeof(float), {blocks, groups, 0, 0},
+                                                   std::uint64_t{groups} * 32 * sizeof(float), {blocks, groups, kBase, 0},
                                                    (groups + 63) / 64);
     std::vector<float> decoded(std::size_t{groups} * 32);
     std::memcpy(decoded.data(), out.data(), out.size());

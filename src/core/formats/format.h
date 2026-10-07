@@ -39,15 +39,18 @@ namespace bllm::formats {
 //   // kernels/interface.h gives the weight a launch reads:
 //   @group(0) @binding(2) var<storage, read> weights: array<u32>;
 //   // supplied by the format, in formats/<format>/<format>.wgsl:
-//   fn unpack(blocks_in_piece: u32, group: u32) -> array<vec4<f32>, 8>
+//   fn unpack(base: u32, blocks_in_piece: u32, group: u32) -> array<vec4<f32>, 8>
 //
 //   - It returns the 32 consecutive weights of `group` in one piece: a whole
 //     block of Q4_0, Q4_1 or Q8_0, one of the eight 32-weight groups of a
 //     Q6_K super-block, 32 floats of F32. Every kernel steps through a row 32
 //     weights at a time, whatever the format, so no kernel knows one.
 //   - `blocks_in_piece` locates each stream: a stream starts after every
-//     earlier stream's fields for the whole piece (device_layout.h). Kernels
-//     pass it as a uniform.
+//     earlier stream's fields for the whole piece (device_layout.h). `base`
+//     is the piece's first word within the binding: 0 where the binding is
+//     the piece, and a member's own first word where one binding spans a
+//     fused group's members (kernels/matmul/matmul.h). Kernels pass both as
+//     uniforms.
 //   - Weights decode in the kernel's load path, into registers, and are never
 //     written back out expanded (GDSA.18).
 //   - A kernel asks only for groups within a row, so every row must be a whole
