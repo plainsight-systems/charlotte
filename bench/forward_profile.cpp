@@ -5,11 +5,16 @@
 // quoted as throughput (TLM.6). A clean build's throughput is measured where
 // the page runs.
 //
-// Why natively: the kernels are the same — Tint compiles the same WGSL to
-// Metal for Dawn here and for Chrome on the target — and here the GPU's
-// timestamps are exact, where Chrome rounds them to 100 µs, longer than most
-// of a step's dispatches (WASM.12). What the browser adds lies outside the
-// GPU's time: its process boundary and its event loop.
+// Why natively: there the GPU's timestamps are unrounded, to its counter's
+// resolution, which the report states, where Chrome rounds them to 100 µs,
+// longer than most of a step's dispatches (WASM.12); and a step is timed
+// launch by launch. What it measures is native evidence: Dawn here is the
+// release emdawnwebgpu is built from, not Chrome's own Dawn and Tint, so the
+// Metal they generate, and the time it takes, may differ. Its findings are
+// relative — which launch takes the step's time, against what floor — and
+// each is confirmed in Chrome by the step's whole time there, the page's
+// prefill and decode rates, before a change is built on it. Both
+// toolchains' versions head the report.
 //
 //     charlotte_profile_forward <model.gguf> [--csv <file>]
 //
@@ -18,24 +23,38 @@
 // DiagnosticRequest), then times three workloads:
 //   1. Decode steps at positions 0, 1,024 and 8,192, those within the
 //      context offered, the cache first filled by prefill to that position.
-//   2. Prefill steps of 1, 8, 64, 128 and 512 tokens at position 0: the
-//      products change form between decode and prefill, and with the tile a
-//      step's token count selects (kernels/matmul/matmul.h).
-//   3. Pipelined decode: 128 steps fed on the GPU, two outstanding, as the
-//      runtime runs them (runtime/runtime.h). Their wall time against the sum
-//      of their Step-grain GPU times is the share the GPU sat idle between
-//      steps — whether the CPU's submission or the readback's round trip
-//      leaves it waiting, GPU.10's first question, before any kernel's.
-// The first two at both grains of a profiled step (kernels/program.h): Step,
-// the step's GPU time as run() spends it, and Launch, each launch's. Each
-// timed step runs 5 times after 2 discarded warm-ups, and the median is
-// reported with the least and the most. The conditions head every report:
-// the build, the adapter and its backend, Dawn's version, the model file's
-// SHA-256, runs and warm-ups (WASM.11).
+//   2. Prefill steps of 1, 8, 16, 32, 64, 128 and 512 tokens at position 0:
+//      the products change form between decode and prefill, and with the
+//      tile a step's token count selects (kernels/matmul/matmul.h).
+//   3. Pipelined decode: 128 whole steps fed on the GPU, two outstanding, as
+//      the runtime runs them (runtime/runtime.h), each profiled, so the run
+//      is timed as it runs: the GPU idled for the run's span on its own
+//      clock — the last step's end less the first's beginning, less the
+//      steps' times — and, apart, on the CPU's, each step's submission and
+//      its record's arrival after its end. GPU.10's first question, whether
+//      the GPU waits on the CPU, before any kernel's.
+// A launch's time, in workloads 1 and 2, in the one pass a step runs in
+// (kernels/program.h):
+//   - where the device grants timestamps inside a pass, the step's own, a
+//     launch at a time;
+//   - otherwise, as on the target, a prefix's: the step run through its
+//     first k launches takes T(k), and launch k's time is T(k) − T(k − 1),
+//     what adding it costs the step in the shape it runs in. A prefix costs
+//     a step's time up to it, so the prefixes run are those through the
+//     embedding, through the first layer of each kind the graph builds —
+//     Gemma 3's window and global layers are two — and through the output
+//     block; every other layer repeats a first layer's launches over the
+//     same shapes. The check that they do: the step's whole time less its
+//     time through those first layers, over the layers left, against a
+//     first layer's, reported, and a failure named past 10%.
+// Each time is the median of 5 runs after 2 discarded warm-ups — the GPU
+// clocks up under load — reported with the least and the most. The
+// conditions head every report: the build, the adapter and its backend, both
+// toolchains' versions, the timestamp counter's resolution, the model
+// file's SHA-256, runs and warm-ups (WASM.11).
 //
 // Reported, for each step timed:
-//   - Its Step-grain GPU time; the Launch grain's sum; and their ratio, the
-//     instrument's cost (TLM.6).
+//   - Its whole GPU time, from its pass's two timestamps.
 //   - By role and entry point (graph/graph.h): the launches, the median time
 //     a launch, the total, and its share of the step; and, for a launch that
 //     reads its bindings once each — a product's weights, a norm, the gather
@@ -55,9 +74,10 @@
 //   - A profiled step at either grain draws the same record and leaves the
 //     same logits, bit for bit, as run() over the same step: the instrument
 //     changes no result.
-//   - At Launch grain, one time for each launch the step dispatches, in the
-//     graph's order, each named, each ending at or after it begins; at Step
-//     grain, one.
+//   - A step's timestamps in order: its pass's end at or after its
+//     beginning, and any timestamps inside it, one for each launch it
+//     dispatched, in the graph's order, between the two.
+//   - The repetition check above, on the target.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -66,9 +86,10 @@
 //            against them.
 //   C++ performance guidelines
 //     GPU.10 Profile with GPU timelines and counters before optimizing — GPU
-//            timestamps a launch, each named, and the idle share first.
+//            timestamps in the step's own pass, each launch named, and the
+//            idle share first.
 //     TLM.6  Diagnostic mode is not benchmark mode — a diagnostic build's
-//            tool, its instrument's cost reported.
+//            tool, its findings confirmed in Chrome before they are built on.
 //     WASM.12 Keep the compute core natively buildable so it can be
 //            profiled — the same kernels, timed natively.
 //     WASM.11 State the measurement conditions — they head every report.

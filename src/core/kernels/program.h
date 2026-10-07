@@ -5,6 +5,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <webgpu/webgpu.h>
@@ -70,26 +71,28 @@ namespace bllm::kernels {
 //
 // Profiling, in a diagnostic build alone (core/diagnostics.h; TLM.1): the
 // clean build compiles none of it, and its module has no symbol of it
-// (TLM.8). A profiled step runs as run() does, its launches in the graph's
-// order over the same pipelines and bind groups, with GPU timestamps written
-// at one of two grains:
-//   - Step: one compute pass, timestamps at its beginning and end — the
-//     step's GPU time as run() spends it, but for those two writes.
-//   - Launch: each launch that dispatches in a compute pass of its own,
-//     timestamps at its beginning and end — what each launch takes. A pass
-//     a launch perturbs the step: each boundary may drain the GPU's work
-//     before the next begins, where one pass lets dispatches overlap as
-//     their buffer use allows. So the launches' sum against a Step-grain
-//     run of the same step is the instrument's cost, and every profile
-//     reports both (TLM.6).
-// The timestamps are resolved into a buffer, copied to a mappable one and
-// read back with the step; WebGPU gives them in nanoseconds. A query set of
-// two entries a launch, its resolve buffer and its readback buffer are made
-// at the first profiled step, outside any step a throughput is quoted from.
-// A profiled step runs only with no step outstanding, and on a device that
-// granted the timestamp-query feature (gpu/device.h's DiagnosticRequest);
-// otherwise it is refused at once, named. Its results are the same bits as
-// run()'s: timestamps write no buffer a kernel reads.
+// (TLM.8). A profiled step runs as run() does — its launches in the graph's
+// order, in its one compute pass, over the same pipelines and bind groups —
+// but may stop after its first `launches` launches, and is timed by the GPU:
+//   - a timestamp at the pass's beginning and one at its end, always — the
+//     time the step, or its prefix, takes in the shape run() gives it;
+//   - and, on a device that grants timestamps inside a pass, one after each
+//     launch it dispatches, so each launch's time in that same pass. The
+//     target's Metal adapter does not offer them: there a launch's time is
+//     what adding it to a prefix adds (bench/forward_profile.cpp).
+// No pass is split: a pass a launch would drain the GPU at every boundary,
+// timing each launch in a shape run() never gives it, and add three calls
+// into Dawn a launch.
+// The timestamps are resolved into a buffer and copied to a mappable one
+// with the step's readback, and reported with it; WebGPU gives them in
+// nanoseconds, at the resolution of the GPU's counter. Each of the two slots
+// a step may be outstanding in has its own query set, resolve buffer and
+// readback buffer, made at the first profiled step — so profiled steps
+// pipeline as run()'s do, and a run of them is timed as it runs. A profiled
+// step runs only on a device that granted the timestamp-query feature
+// (gpu/device.h's DiagnosticRequest), and not beside an unprofiled one;
+// otherwise it is refused at once, named. Its results are run()'s: no
+// timestamp writes a buffer a kernel reads.
 //
 // What a step costs, counted: calls into WebGPU are 1 writeBuffer of 48
 // bytes for a fed step and 48 + 16 × ceil(tokens / 4) for another, 1
@@ -124,11 +127,9 @@ namespace bllm::kernels {
 //            its callbacks carry the program's own state, so it allocates
 //            nothing on the heap.
 //     GPU.10 Profile with GPU timelines before optimizing — a profiled step,
-//            timed by the GPU's own timestamps, a launch at a time, each named.
+//            timed by the GPU's own timestamps in the shape run() gives it.
 //     TLM.1  Compile telemetry out by default — the profiled step is the
 //            diagnostic build's alone.
-//     TLM.6  Diagnostic mode is not benchmark mode — Launch grain's cost is
-//            reported beside it, against Step grain.
 
 enum class ProgramError {
     Ok,
@@ -168,23 +169,25 @@ public:
                       std::optional<Binding> readback, BuildCallback done, void* userdata);
 
 #if BLLM_DIAGNOSTICS_ENABLED
-    enum class ProfileGrain { Step, Launch };
-
-    // The GPU time of a launch — its index in the graph's launches — or, at
-    // Step grain, of the whole step, whose index is the launches' count.
-    struct Timed {
-        std::uint32_t launch;
+    // A profiled step's GPU timestamps, in nanoseconds: its pass's beginning
+    // and end, and, where the device grants timestamps inside a pass, the
+    // end of each launch dispatched, by the launch's index in the graph.
+    struct Timestamps {
         std::uint64_t begin_ns;
         std::uint64_t end_ns;
+        std::span<const std::pair<std::uint32_t, std::uint64_t>> launches;
     };
-    // `times`, in the order run, is valid only during the call; empty for a
-    // step refused or failed.
-    using ProfileCallback = void (*)(ProgramError error, std::string_view message, std::span<const Timed> times,
-                                     void* userdata);
+    // `times` is valid only during the call; zero for a step refused or
+    // failed.
+    using ProfileCallback = void (*)(ProgramError error, std::string_view message, std::span<const std::byte> readback,
+                                     const Timestamps& times, void* userdata);
 
-    // Runs one step as run() does, timed at `grain` (above). `done` is
-    // called once. Preconditions: run()'s, and no step outstanding.
-    void run_profiled(const Step& step, ProfileGrain grain, ProfileCallback done, void* userdata);
+    // Runs one step as run() does, but only its first `launches` launches
+    // in the graph's order — all of them for a whole step — timed (above).
+    // `done` is called once, in run order with other profiled steps.
+    // Preconditions: run()'s; launches <= the graph's; no unprofiled step
+    // outstanding.
+    void run_profiled(const Step& step, std::uint32_t launches, ProfileCallback done, void* userdata);
 #endif
 
     // Runs one step. `done` is called once: when the queue has finished it,

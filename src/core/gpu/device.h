@@ -84,11 +84,14 @@ struct DeviceStatus {
 // the harness itself asks for no optional feature, so it runs wherever
 // WebGPU's defaults do, and a clean build cannot ask (TLM.1).
 //   - timestamps: the timestamp-query feature, which a profiled step needs
-//     (kernels/program.h). Natively it also disables Dawn's
-//     timestamp_quantization toggle, which otherwise rounds every
-//     timestamp — a browser's protection against timing attacks, and coarser
-//     than the dispatches it would time. An adapter without the feature is a
-//     failure, named, not a device without it.
+//     (kernels/program.h), and timestamps inside a pass where the adapter
+//     offers them — natively behind Dawn's allow_unsafe_apis toggle, which
+//     this enables; the target's Metal adapter does not offer them.
+//     Natively it also disables Dawn's timestamp_quantization toggle, which
+//     otherwise rounds every timestamp — a browser's protection against
+//     timing attacks, and coarser than the dispatches it would time. An
+//     adapter without the feature is a failure, named, not a device without
+//     it.
 struct DiagnosticRequest {
     bool timestamps = false;
 };
@@ -120,8 +123,10 @@ public:
     static void request(WGPUInstance instance, RequestCallback callback, void* userdata,
                         const WGPURequestAdapterOptions* options, const DiagnosticRequest& diagnostic);
 
-    // Whether the device granted timestamp queries.
+    // Whether the device granted timestamp queries, and timestamps inside a
+    // pass.
     bool timestamps() const { return timestamps_; }
+    bool timestamps_inside_passes() const { return timestamps_inside_passes_; }
 #endif
 
     // The same, from an instance of its own: the browser's path, where the
@@ -172,6 +177,7 @@ private:
     std::shared_ptr<DeviceStatus> status_;   // shared with the device-lost callback
 #if BLLM_DIAGNOSTICS_ENABLED
     bool timestamps_ = false;
+    bool timestamps_inside_passes_ = false;
 #endif
     DeviceLimits limits_;          // of the acquired device
     DeviceLimits adapter_maxima_;  // of the adapter, informational
