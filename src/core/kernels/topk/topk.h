@@ -24,10 +24,11 @@ namespace bllm::kernels {
 //     bit flipped for a positive number, every bit for a negative — compared
 //     as integers, so no
 //     float comparison decides it and WGSL's freedom to assume no NaN or
-//     infinity cannot reorder it. A NaN orders by its bits: above +∞ with its
-//     sign clear, below −∞ with it set; the draw refuses a candidate that is
-//     not finite (sampler.h), so a NaN that reaches the top is reported, not
-//     sampled.
+//     infinity cannot reorder it. Every NaN, whatever its sign, is given the
+//     largest key, above +∞, so any NaN in the row reaches the top, where the
+//     draw refuses a candidate that is not finite (sampler.h): reported, never
+//     sampled, and never summed into a softmax. −∞ keeps its place below
+//     every finite logit, a weight of zero.
 //   - A tile is 1,024 entries, a workgroup of 256 invocations, 4 each: keys
 //     and token ids, 8 KiB of workgroup memory. Bitonic select (Shanbhag,
 //     Pirk, Madden, SIGMOD 2018): each run of 64 sorted by a bitonic network,
@@ -59,8 +60,9 @@ namespace bllm::kernels {
 // run side by side within a pass. What a pass's latency adds is its 49
 // stages one after another, each a barrier: at about 50 cycles a stage on
 // the M3 Max's cores near 1.4 GHz — an estimate, not counted from the
-// design, to be calibrated — 1.75 µs a pass, 5 µs for the three. About
-// 13 µs a sampled step, under 1% of a 1.7 ms decode step.
+// design, to be calibrated — 1.75 µs a pass, 5 µs for the three; and the
+// draw's own work, about 2 µs (sampler.h). About 15 µs a sampled step,
+// under 1% of a 1.7 ms decode step.
 // Optimization (practice): select, not sort — 64 kept from each tile of
 // 1,024, never a sorted vocabulary, as FlashInfer's and Faiss's GPU
 // selection do (GDSA.7).

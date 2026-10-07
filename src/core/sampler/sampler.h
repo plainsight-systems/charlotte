@@ -27,8 +27,11 @@ namespace bllm::sampler {
 // largest first, in llama.cpp's order (common.h's default chain, at the
 // commit tools/make_reference_logits.sh pins):
 //   1. top-k: the first top_k candidates.
-//   2. top-p: their softmax at temperature 1; the shortest prefix whose
-//      probabilities sum to top_p or more, one candidate at least.
+//   2. top-p: below 1, their softmax at temperature 1, and the shortest
+//      prefix whose probabilities sum to top_p or more, one candidate at
+//      least; at 1, nothing — as llama.cpp's top-p returns at once for p of
+//      1 or more — since an f32 softmax would round a far tail to zero and
+//      drop it.
 //   3. min-p: of those, each whose logit is at least the first's + ln
 //      min_p.
 //   4. temperature: zero draws the first candidate; otherwise each
@@ -113,8 +116,12 @@ namespace bllm::sampler {
 //     runtime's tests can hold it.
 //
 // What it costs, a sampled step: the draw is one launch, 1.5 µs, over 512
-// bytes, writing 16, one Philox and at most 128 exponentials; with the
-// selection, about 13 µs (kernels/topk/topk.h), under 1% of a decode step.
+// bytes, writing 16. Its work is one invocation's, in order: Philox's 10
+// rounds, at most 128 exponentials, ln min_p, and two running sums over at
+// most 64 entries — about 3,000 cycles, near 2 µs, at an estimated 20
+// cycles an exponential and its adds, to be calibrated as the selection's
+// stages are. With the selection, about 15 µs (kernels/topk/topk.h), under
+// 1% of a decode step.
 // The readback copies 16 bytes and maps them while the next step runs, so a
 // decode step's critical path no longer holds the map's round trip, 0.5 ms
 // median and 0.8 ms at p95 on the target. On the CPU, a token costs one
@@ -122,6 +129,14 @@ namespace bllm::sampler {
 // Optimization (practice): the token drawn and kept on the GPU, the readback
 // a step behind, as vLLM samples on the device to avoid synchronizing with
 // the CPU (GDSA.21, GPU.1, GPU.7).
+//
+// Levers not taken:
+//   - The draw folded into the selection's last pass, whose one workgroup
+//     already holds the 64 candidates: one launch fewer, about 1.5 µs, two
+//     calls out of the module and a 512-byte read a sampled step — 0.09% of
+//     a decode step — at the cost of the sampling method living inside the
+//     selection kernel, so that a new method would change the selection
+//     (docs/architecture/change-axes.md: axis F apart from E).
 //
 // Verification the implementation is held to:
 //   - On the GPU against a CPU reference of the same steps in f64: each
