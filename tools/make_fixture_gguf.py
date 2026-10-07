@@ -213,6 +213,59 @@ def norm_rows(widths=(1024, 1152, 2048), rows=4, seed=0x6C8E9CF5):
     return build(tensors)
 
 
+def matmul_rows(seed=0x85EBCA6B):
+    """Weights and input rows for the matrix products: each listed weight
+    format at widths whose 32 ranges are one group (1,024), unequal (1,152)
+    and three groups (3,072), with row counts that leave decode workgroups
+    and prefill tiles part full; a Q, K and V with a tensor between them in
+    file order, as a fused group's span holds; and a gate and up. Weights
+    are pseudo-random blocks, codes of every value and fp16 scales of either
+    sign, small enough that sums stay well inside f32. Input rows are filled
+    on the GPU by the test."""
+    state = seed
+
+    def u32():
+        nonlocal state
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        return state
+
+    def raw(n):
+        return bytes((u32() >> 24) & 0xFF for _ in range(n))
+
+    def half():
+        return struct.pack("<e", ((u32() >> 8) % 2001 - 1000) / 20000.0)
+
+    block = {
+        T_Q4_0: (32, lambda: half() + raw(16)),
+        T_Q4_1: (32, lambda: half() + half() + raw(16)),
+        T_Q8_0: (32, lambda: half() + raw(32)),
+        T_Q6_K: (Q6_K_BLOCK_ELEMENTS, lambda: raw(128) + raw(64) + raw(16) + half()),
+    }
+
+    def weight(name, ggml_type, width, rows):
+        elements, make = block[ggml_type]
+        data = b"".join(make() for _ in range(rows * width // elements))
+        return (name.encode(), [width, rows], ggml_type, data)
+
+    def floats(values):
+        return b"".join(struct.pack("<f", v) for v in values)
+
+    tensors = [
+        weight("w_q4_0", T_Q4_0, 1024, 140),
+        weight("w_q4_1_1152", T_Q4_1, 1152, 72),
+        weight("w_q4_1_3072", T_Q4_1, 3072, 40),
+        weight("w_q8_0", T_Q8_0, 1024, 48),
+        weight("w_q6_k", T_Q6_K, 1024, 40),
+        weight("qkv_k", T_Q4_0, 1024, 32),
+        (b"qkv_between", [256], T_F32, floats([0.0] * 256)),
+        weight("qkv_q", T_Q4_0, 1024, 64),
+        weight("qkv_v", T_Q4_0, 1024, 32),
+        weight("ffn_gate", T_Q4_0, 1024, 72),
+        weight("ffn_up", T_Q4_0, 1024, 72),
+    ]
+    return build(tensors)
+
+
 def rope_rows(rows=4, seed=0x1B873593):
     """For each listed model's attention shape — Qwen3 0.6B's 16 query and 8
     key-value heads of 128, Llama 3.2 1B's 32 and 8 of 64, Gemma 3 1B's 4 and
@@ -500,6 +553,8 @@ CASES = {
     # Queries, keys, values, QK-norm gains and Llama's factors, each listed
     # model's attention shape.
     "rope_rows": lambda: rope_rows(),
+    # Weights in each listed format, input rows, a Q, K and V, a gate and up.
+    "matmul_rows": lambda: matmul_rows(),
     "nested_array": lambda: build(
         [], metadata=[kv(b"bad", ARRAY, struct.pack("<IQ", ARRAY, 1))]
     ),

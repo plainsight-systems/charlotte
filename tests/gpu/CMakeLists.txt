@@ -6,6 +6,7 @@ add_executable(charlotte_gpu_tests
     device_test.cpp
     gather_test.cpp
     attention_test.cpp
+    matmul_test.cpp
     norm_test.cpp
     program_test.cpp
     rope_test.cpp

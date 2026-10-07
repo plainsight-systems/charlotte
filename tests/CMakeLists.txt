@@ -42,6 +42,7 @@ add_executable(charlotte_tests
     kernels_gather_test.cpp
     kernels_attention_test.cpp
     kernels_geometry_test.cpp
+    kernels_matmul_test.cpp
     kernels_norm_test.cpp
     kernels_rope_test.cpp
     residency_piece_writer_test.cpp

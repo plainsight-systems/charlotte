@@ -22,6 +22,7 @@
 #include "core/kernels/attention/attention.h"
 #include "core/quant/q4_0.h"
 #include "support/acquire.h"
+#include "support/fill.h"
 #include "support/program.h"
 #include "support/upload.h"
 
@@ -43,32 +44,6 @@ constexpr Shape kLlama{"llama", 32, 8, 64, 131072, kSlots};
 // A window of 300 over a ring of 320 slots, so positions past 320 wrap.
 constexpr Shape kGemma{"gemma", 4, 1, 256, 300, 320};
 
-// Test-only: fills a buffer with deterministic pseudo-random values in
-// [−amplitude, amplitude): f32, or pairs of halves.
-constexpr std::string_view kFill = R"(
-struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
-struct Fill { seed: u32, count: u32, amplitude: f32, halves: u32 }
-override workgroup_size: u32;
-@group(0) @binding(0) var<uniform> step: Step;
-@group(0) @binding(1) var<uniform> fill: Fill;
-@group(0) @binding(2) var<storage, read_write> out: array<u32>;
-fn hash(x: u32) -> u32 {
-    var v = x * 747796405u + 2891336453u;
-    v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
-    return (v >> 22u) ^ v;
-}
-fn unit(x: u32) -> f32 { return f32(hash(x) >> 8u) / 8388608.0 - 1.0; }
-@compute @workgroup_size(workgroup_size)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if (i >= fill.count || step.tokens == 0u) { return; }
-    if (fill.halves == 1u) {
-        out[i] = pack2x16float(vec2<f32>(unit(fill.seed + 2u * i), unit(fill.seed + 2u * i + 1u)) * fill.amplitude);
-    } else {
-        out[i] = bitcast<u32>(unit(fill.seed + i) * fill.amplitude);
-    }
-}
-)";
 
 // Test-only: copies rows first .. first + tokens of the source into the
 // query buffer.
@@ -103,15 +78,6 @@ std::vector<std::byte> words(std::initializer_list<std::uint32_t> values) {
     return bytes;
 }
 
-std::vector<std::byte> fill_constants(std::uint32_t seed, std::uint32_t count, float amplitude, bool halves) {
-    std::vector<std::byte> bytes(16);
-    const std::uint32_t h = halves ? 1 : 0;
-    std::memcpy(bytes.data(), &seed, 4);
-    std::memcpy(bytes.data() + 4, &count, 4);
-    std::memcpy(bytes.data() + 8, &amplitude, 4);
-    std::memcpy(bytes.data() + 12, &h, 4);
-    return bytes;
-}
 
 Uploaded upload_buffers(WGPUInstance instance, const gpu::Device& device) {
     Uploaded u;

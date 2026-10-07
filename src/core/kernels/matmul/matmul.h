@@ -38,11 +38,14 @@ namespace bllm::kernels {
 //
 // each range's sum s_r taken from zero over its weights in order, and the
 // ranges added to a total that starts at zero, in order: 32 adds. Each
-// multiply-add is written as acc + w × x in both forms. That gives the
-// compiler the same expression in each, but WGSL lets each pipeline fuse a
-// multiply and add, or reassociate, as it chooses — fma() itself may round
-// twice — so equal bits are what the target's compiler gives, which the
-// GPU test checks, not what WGSL promises.
+// multiply-add is an explicit fma in both forms. Written as acc + w × x,
+// the target's compiler contracted it in one pipeline and not the other,
+// and the decode and prefill bits differed; an explicit fma it fuses in
+// both. The gated activation likewise takes its e^x from explicit
+// arithmetic, every multiply-add an fma: the built-in exp gave different
+// bits in the two pipelines. WGSL lets fma() round twice and lets each
+// pipeline reassociate, so equal bits are what the target's compiler gives,
+// which the GPU test checks, not what WGSL promises.
 //
 //   - Decode, one token: a matrix times a vector, bound by reading each
 //     weight once. A workgroup of 64 invocations is two sets of 32, each
@@ -99,9 +102,10 @@ namespace bllm::kernels {
 //     gate and up weight is one piece.
 //   - Formats. Each format a weight uses is a pipeline: Q4_0 for most,
 //     Q4_1 for a few layers' down projections, Q6_K and Q8_0 for heads.
-//   - Variants are override constants — `rows` (N), `columns` (K), the
-//     epilogue, the QKV split rows, the activation — so indices fold when
-//     the pipeline is built.
+//   - Each form and epilogue is an entry point of one module, binding only
+//     the outputs it writes; `columns` (K), a write's `out_width` and the
+//     activation are override constants, so indices fold when the pipeline
+//     is built.
 //   - Constants (binding 1): struct Matmul { members: array<vec4<u32>, 3> }
 //     — for each member of the product, or its one piece: its first word
 //     within the binding, its blocks, for unpack, and its first output row
@@ -273,8 +277,6 @@ struct MatmulLaunch {
     // activation, in outputs[0].
     std::array<residency::BufferRange, 3> outputs;
     Epilogue epilogue;
-    std::uint32_t key_rows_from;                     // QKV: the first K row, H_q × d
-    std::uint32_t value_rows_from;                   // QKV: the first V row
     model::FeedForwardActivation activation;         // GatedActivation's
     Rows rows;                                       // LastToken for the head
 };
