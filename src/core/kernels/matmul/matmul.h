@@ -101,13 +101,15 @@ namespace bllm::kernels {
 //     whole vec4s: a write to one component of a vector in workgroup memory
 //     may write all four, so two invocations never share one (SIMD.2). Row
 //     slot s's group, decoded, is its 8 k-quads at vec4 9s, a vec4 of
-//     padding a slot so the 16 slots a read takes fall in distinct banks;
+//     padding a slot so the 16 slots a read takes spread over the banks;
 //     token i's 32 inputs are its 8 at vec4 8i. The invocations stride over
 //     both jobs together — 64 row decodes and 8τ input vec4s, each read
 //     coalesced along its row — then a barrier, the products, a barrier.
 //     Within a read of the products the 16 lanes of a token quad take 16
-//     slots 9 vec4s apart, 8 to a bank cycle, and a 32-lane SIMD-group's
-//     two token quads two vec4s, each broadcast (GPU.5). Workgroup memory:
+//     slots 9 vec4s apart: over 32 banks of a word, 8 vec4s a cycle, lanes
+//     l and l + 8 share a bank phase, so the read takes two cycles, the
+//     floor for 16 16-byte loads; a 32-lane SIMD-group's two token quads
+//     read two vec4s, each broadcast (GPU.5). Workgroup memory:
 //     9 KiB of weights and τ / 8 KiB of inputs, 10, 11 or 13 KiB.
 //     Workgroups are numbered token tile first, so the token tiles reading
 //     one weight tile are dispatched together and may find it in the GPU's
@@ -126,9 +128,14 @@ namespace bllm::kernels {
 //     A step's last token tile holds its remainder: an invocation whose token
 //     quad lies wholly past the step stages and passes both barriers, as
 //     every invocation must, but skips the products, so a tile runs the
-//     products of its live quads alone — at most 3 padded tokens a step, at
-//     33 tokens the second tile's first quad, one 32-lane SIMD-group of its
-//     four; at 2 tokens the 8-token tile's first quad of two. Past 32 tokens
+//     products of its live quads alone. The target issues a 32-lane
+//     SIMD-group's work together, two token quads, so a step's products run
+//     to the next 8 tokens — at most 7 padded a step: at 33 tokens the
+//     second tile's first SIMD-group of its four; at 2 tokens the 8-token
+//     tile's one, the guard skipping nothing. Guarding each token's chain
+//     of fmas instead would cut that to the next quad, in a step's last
+//     tile alone, for a branch a token on every k-quad of every tile, the
+//     full tiles' included; not taken. Past 32 tokens
 //     the 32-token tile keeps a step to the fewest weight passes, decodes
 //     and barriers, and the guard its multiply-adds to the step's. Tile
 //     width and the guard change no output's order of addition, so every
