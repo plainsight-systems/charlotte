@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "core/gguf/reader.h"
 #include "core/capability/capability.h"
@@ -174,10 +175,12 @@ TEST_CASE("a model that fits is judged for Run by its architecture's graph, whic
         CAPTURE(id);
         const testing::ReadHeader header = testing::read_model_header(id);
         const Verdict verdict = preflight::preflight(header.index, defaults, policy::LoadPolicy{});
-        REQUIRE(verdict.fit.has_value());
+        CHECK(verdict.reached() == Stage::Upload);
+        std::vector<std::string> run;
         for (const Blocker& b : verdict.blockers) {
-            if (b.stage == Stage::Run) CHECK(b.detail == "the run stage is not implemented in this build");
+            if (b.stage == Stage::Run) run.push_back(b.detail);
         }
+        CHECK(run == std::vector<std::string>{"the run stage is not implemented in this build"});
     }
 }
 
