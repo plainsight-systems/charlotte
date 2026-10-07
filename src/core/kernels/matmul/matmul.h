@@ -66,28 +66,47 @@ namespace bllm::kernels {
 //     for Qwen3's 3,072-wide down projection, 8 for Llama 3.2's 8,192 —
 //     each line's rest read by the same invocation's next n − 1 steps, from
 //     the GPU's caches. The bytes from device memory are the weights, once.
-//   - Prefill, two to 512 tokens: a tiled matrix product. A workgroup of 64
-//     takes a tile of 32 tokens × 64 outputs and steps along K 32 at a time,
-//     a group a step: the step's 32 × 32 input floats into workgroup memory,
-//     coalesced, and the 64 rows' groups unpacked there, one group an
-//     invocation, 8 KiB of f32; a barrier; then each invocation adds a
-//     4-token × 8-output micro-tile's 1,024 multiply-adds from 12 reads of
-//     workgroup memory a step of k, into each output's range sum; at a
-//     range's last group it adds the range sum into the output's total and
-//     starts the next from zero — two accumulators an output, 64 an
-//     invocation; a barrier. 12.3 KiB of workgroup memory, its weight rows
-//     padded a word against bank conflicts (GPU.5). Workgroups are numbered
-//     token tile first, so the token tiles reading one weight tile are
-//     dispatched together and may find it in the GPU's caches (costs,
-//     below).
+//   - Prefill, two to 512 tokens: a tiled matrix product. A workgroup takes
+//     a tile of τ tokens × 64 outputs, τ 8, 16 or 32, and steps along K 32
+//     at a time, a group a step. Its 4τ invocations — 32, 64 or 128, under
+//     WebGPU's default limit of 256 — each own a micro-tile of 4 consecutive
+//     tokens × 4 consecutive outputs: invocation t token quad t / 16 and
+//     output quad t % 16. So every tile's invocations run one inner loop,
+//     its bounds WGSL constants rather than the tile's override: for each of
+//     the step's 32 k, one vec4 read of its 4 tokens' inputs and one of its
+//     4 outputs' weights, then 4 vec4 fmas, a token each, into that token's
+//     4 range sums — 16 multiply-adds from 2 reads of workgroup memory. Each
+//     token's range sums and totals are named vec4s, 8 of them, 32
+//     accumulators: the 4 × 4 micro-tile llama.cpp's and MLC's WebGPU
+//     kernels hold, never an array indexed by loop counters, which the
+//     compiler may keep in memory rather than registers (GPU.3). At a
+//     range's last group each total adds its range sum, componentwise, and
+//     the range sum restarts from zero, so each output's order of addition
+//     is decode's.
+//     Before each step's products the tile is staged in workgroup memory,
+//     k-major, so those reads are whole vec4s (SIMD.2): the 64 rows' groups
+//     decoded, row slot r's weight k at component r % 4 of vec4
+//     16k + r / 4; and the τ tokens' 32 input floats, token i's input k at
+//     component i % 4 of vec4 (τ / 4)k + i / 4. The invocations stride over
+//     both jobs together — 64 row decodes and 8τ input vec4s, each read
+//     coalesced along its row and written as 4 components — then a barrier,
+//     the products, a barrier. Within a read of the products the 16 output
+//     quads adjacent invocations take are 16 adjacent vec4s, and a 32-lane
+//     SIMD-group's token quads two vec4s, each broadcast, so no two lanes
+//     wait on one bank (GPU.5); the
+//     staging writes, 4 components a vec4, may, once a step. Workgroup
+//     memory: 8 KiB of weights and τ / 8 KiB of inputs, 9, 10 or 12 KiB.
+//     Workgroups are numbered token tile first, so the token tiles reading
+//     one weight tile are dispatched together and may find it in the GPU's
+//     caches (costs, below).
 //     Shorter steps take narrower tiles of the same 64 outputs, 16 tokens or
-//     8, an invocation's micro-tile 2 tokens or 1 × 8 outputs (GDSA.6): a
+//     8, with fewer invocations of the same micro-tile (GDSA.6): a
 //     step takes the narrowest tile that holds it whole, 8 for 2 to 8 tokens
 //     and 16 for 9 to 16, and the 32-token tile from 17. Each token tile
 //     reads and decodes the whole weight, so the rule first keeps a step to
 //     the fewest weight passes — one up to 32 tokens — and among those takes
 //     the narrowest. A workgroup with a tile of τ tokens, for each group of
-//     32 along K, does 2,048τ multiply-adds and 2,048 × (τ / 8 + 8) reads of
+//     32 along K, does 2,048τ multiply-adds and 256τ vec4 reads of
 //     workgroup memory, loads 32τ input floats, decodes 64 weight blocks and
 //     passes two barriers: a narrower tile holding the step does fewer
 //     multiply-adds, reads and loads, and the same decodes and barriers. Past
@@ -112,7 +131,8 @@ namespace bllm::kernels {
 //   - gated activation: the layer's gate and up weights as one product,
 //     likewise, rows gate then up; a decode set's 4 rows are 2 gate rows
 //     and the same 2 of up, a prefill tile's 64 outputs 32 and the same 32,
-//     so the invocation that finishes an output holds both values, and writes
+//     staged so output quad c holds gate rows 2c and 2c + 1 and the same up
+//     rows, so the invocation that finishes an output holds both values, and writes
 //     activation(gate) × up — SiLU for Qwen3 and Llama 3.2, GELU's tanh
 //     form for Gemma 3, as the model description states — never gate or up
 //     themselves. The down projection reads it.
@@ -195,13 +215,16 @@ namespace bllm::kernels {
 //     the layers, each multiplied by 512 tokens: 450 × 10⁹ operations,
 //     about 32 ms at the M3 Max's roughly 14 f32 TFLOPS (third-party
 //     figure) if the tile ran at peak; the head adds one token's. How near
-//     peak it runs is the tile's: 2.7 multiply-adds a read of workgroup
+//     peak it runs is the tile's: 8 multiply-adds a vec4 read of workgroup
 //     memory, and 2 barriers a step of 32 along K — 64 for Qwen3's
-//     1,024-wide inputs — and the registers an invocation holds: 64
-//     accumulators, the range sum and total of its 32 outputs that batch
-//     invariance asks, and 12 operands, about 76 values, where 32
-//     accumulators would serve a kernel free to add in its own order; more
-//     registers can mean fewer resident workgroups (GPU.3). Each weight is
+//     1,024-wide inputs — and the registers an invocation holds: 32
+//     accumulators, the range sum and total of its 16 outputs that batch
+//     invariance asks, and 8 operand floats, about 40 values; a kernel free
+//     to add in its own order would keep the 16 totals alone, and more
+//     registers can mean fewer resident workgroups (GPU.3). Each input
+//     float is loaded once an output tile: MACs / 64 loads, 14 GB of f32
+//     from the GPU's caches for a 512-token step, beside the weights'
+//     3.97 GB below. Each weight is
 //     decoded once a token tile, 16 times for 512 tokens: 3.97 GB of weight
 //     loads. From device memory that is between 248 MB, if a weight tile
 //     stays in the GPU's caches while its 16 token tiles run, and the whole
@@ -224,6 +247,17 @@ namespace bllm::kernels {
 // Optimization (practice): decode reuses each input value it loads for 4
 // rows, and prefill each decoded weight for its tile's 32 tokens, or 16 or
 // 8, and each input for 64 outputs (GPU.2, GPU.5).
+// Optimization (practice): a prefill invocation's micro-tile is 4 tokens ×
+// 4 outputs, its accumulators named vec4s and its loops' bounds constants,
+// as llama.cpp's, MLC's and ONNX Runtime's WebGPU kernels keep 16 to 32
+// accumulators an invocation, unrolled or constant-indexed: the 32-token
+// tile's 4 × 8 micro-tile, 64 accumulators in arrays indexed by loop
+// counters, took each launch of a 32-token step 13.7 to 16 times as long
+// as the 16-token tile's 2 × 8 took a 16-token step's, for twice the
+// tokens (docs/research/2026-10-07-forward-pass-profile.md) (GPU.3).
+// Optimization (practice): the staged tiles are k-major, so each k of the
+// products is 2 vec4 reads, where 4 tokens and 4 outputs read as scalars
+// would be 8 (SIMD.2, GPU.5).
 // Optimization (practice): one order of addition for both forms, fixed by
 // K, so a token's projections do not depend on its step — the fixed split
 // Thinking Machines' batch-invariant kernels use (GDSA.2).
@@ -251,12 +285,21 @@ namespace bllm::kernels {
 //     interleave, at the cost of a token's bits depending on its step.
 //   - Larger tiles from a raised workgroup-memory limit: the harness asks
 //     for WebGPU's defaults alone.
+//   - 32-output tiles, llama.cpp's and MLC's 32 × 32: each input float is
+//     loaded once 32 outputs, not 64 — 28 GB from the GPU's caches for a
+//     512-token Qwen3 step against 14. They stage inputs at f16, halving
+//     that; here that needs the optional shader-f16 feature, and inputs
+//     rounded to f16 would no longer be the f32 decode reads, so a token's
+//     bits would depend on its step.
+//   - f16 accumulators, ONNX Runtime's default: the same feature, and
+//     llama.cpp moved to f32 after f16 sums gave NaNs on Qwen models.
 //
 // Verification the implementation is held to, on the GPU against f64 over
 // the format's CPU-decoded weights: each form, each epilogue, each listed
 // format, at each listed model's widths; prefill steps of 2 and 8 tokens,
-// in the 8-token tile, 9 and 16, in the 16-token, and 17, 33 and 64, in the
-// 32-token; a weight
+// in the 8-token tile of 32 invocations, 9 and 16, in the 16-token of 64,
+// and 17, 33 and 64, in the 32-token of 128 — every token quad and output
+// quad of each; a weight
 // split into pieces; QKV outputs landing in their buffers; the activation
 // for SiLU and GELU; and a token's outputs the same bits decoded alone and
 // prefilled in each of those steps, at tokens on each tile's edges, at widths
@@ -271,6 +314,8 @@ namespace bllm::kernels {
 //     F.20   Prefer return values to out parameters.
 //     I.4    Make interfaces precisely and strongly typed — the epilogue is
 //            an enumeration.
+//     ES.45  Avoid magic constants — the micro-tile's 4 × 4 and the tiles'
+//            widths are named.
 //   C++ performance guidelines
 //     GDSA.18 Store numbers as block-scaled codes decoded in the load path.
 //     GDSA.6 Count passes over global memory — the bytes above, and the
@@ -282,6 +327,9 @@ namespace bllm::kernels {
 //     GDSA.16 Stream through on-chip tiles — prefill steps along K through
 //            workgroup memory, each output written once.
 //     GPU.6  Batch tiny GPU work — fused weights, fewer launches.
+//     GPU.3  Treat occupancy as latency-hiding budget — 32 accumulators an
+//            invocation, named, not 64 in arrays.
+//     SIMD.2 Lay out data so vector loads are linear — the k-major tiles.
 
 // What a product writes.
 enum class Epilogue {
