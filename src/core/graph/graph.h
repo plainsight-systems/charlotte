@@ -127,8 +127,9 @@ namespace bllm::graph {
 //     constant-time workgroups_for each, and calls out of the module 14
 //     times and 3 a dispatch — a bind group, the dispatch, and a pipeline,
 //     which changes at every dispatch since no two consecutive launches
-//     share one: 695 calls a step, 779 when split. At about 1.5 µs a
-//     dispatch (kernels/interface.h), 0.34 to 0.38 ms of GPU time.
+//     share one: 695 calls a step, 779 when split, 689 without logits. At
+//     about 1.5 µs a dispatch (kernels/interface.h), 0.34 to 0.38 ms of GPU
+//     time.
 //   - Bytes, a decode step at position p: the weights once, 376 MB
 //     (kernels/matmul/matmul.h); the cache, 4 KiB a position a layer — 8
 //     key-value heads of 128 F16 keys and values — 112 KiB a position, read
