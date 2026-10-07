@@ -122,8 +122,10 @@ namespace bllm::sampler {
 //     state the research warned a pipeline puts at risk, stated so the
 //     runtime's tests can hold it.
 //
-// What it costs, a sampled step: the draw is one launch, 1.5 µs, over 512
-// bytes, writing 16. Its work, in order:
+// What it costs, a sampled step: the draw is one launch, 1.5 µs. It loads
+// the 512 bytes of candidates, and each invocation the first logit again —
+// 256 bytes more, logically, which the GPU's caches serve — and writes 16.
+// Its work, in order:
 //   - side by side: each invocation loads its candidate and the first from
 //     device memory, computes ln min_p, two exponentials and its min-p test,
 //     and writes them to workgroup memory; the last runs Philox's 10 rounds
@@ -136,12 +138,14 @@ namespace bllm::sampler {
 //     beside it, then the draw's running sum to u × that total, at most 64
 //     more, and writes the record.
 // Three barriers, and at most 192 adds in sequence on one invocation with
-// at most 64 more interleaved beside them. Its latency, estimated on cores
-// near 1.4 GHz from about 400 cycles for the loads, 50 a barrier and 8 an
-// add with its read, compare and loop control, is near 2,000 cycles,
-// 1.5 µs — an estimate, to be calibrated with the selection's stages once
-// they run. With the selection, about 15 µs (kernels/topk/topk.h), under
-// 1% of a decode step.
+// at most 64 more interleaved beside them. A lower bound on its latency, on
+// cores near 1.4 GHz from about 400 cycles for the loads, 50 a barrier and
+// 8 an add with its read, compare and loop control: 2,086 cycles, 1.5 µs.
+// It leaves out the exponentials' and the divisions' latency, each on the
+// path between two barriers, and the issue slots Philox and the second
+// chain take; the selection's stages and this are calibrated together once
+// they run. With the selection, 15 µs or more (kernels/topk/topk.h), under
+// 1% of a 1.7 ms decode step until that measure says otherwise.
 // The readback copies 16 bytes and maps them while the next step runs, so a
 // decode step's critical path no longer holds the map's round trip, 0.5 ms
 // median and 0.8 ms at p95 on the target. On the CPU, a token costs one
