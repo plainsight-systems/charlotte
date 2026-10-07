@@ -266,6 +266,67 @@ def matmul_rows(seed=0x85EBCA6B):
     return build(tensors)
 
 
+def forward_model(seed=0x9E3779B9):
+    """The smallest Qwen3-shaped model a whole forward pass runs: two layers,
+    width 128, heads of 64 — 4 query and 2 key-value — feed-forward 256, a
+    vocabulary of 256 and a context of 512, so a step can cross a 256-key
+    chunk. Weights are pseudo-random Q4_0 blocks, codes of every value and
+    fp16 scales of either sign, the embedding tied to the head; gains are F32
+    near 1. For the GPU test that a token's logits are the same bits however
+    its prompt is stepped."""
+    state = seed
+    width, head, heads, kv_heads, ffn, vocab, layers = 128, 64, 4, 2, 256, 256, 2
+
+    def u32():
+        nonlocal state
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        return state
+
+    def q4_0(name, dims):
+        def block():
+            return (struct.pack("<e", ((u32() >> 8) % 2001 - 1000) / 20000.0) +
+                    bytes((u32() >> 24) & 0xFF for _ in range(16)))
+        return (name.encode(), dims, T_Q4_0, b"".join(block() for _ in range(dims[0] * dims[1] // 32)))
+
+    def gain(name, n):
+        return (name.encode(), [n], T_F32,
+                b"".join(struct.pack("<f", 1.0 + 0.5 * (((u32() >> 8) % 2001 - 1000) / 1000.0)) for _ in range(n)))
+
+    keys = {
+        "block_count": (U32, struct.pack("<I", layers)),
+        "context_length": (U32, struct.pack("<I", 512)),
+        "embedding_length": (U32, struct.pack("<I", width)),
+        "feed_forward_length": (U32, struct.pack("<I", ffn)),
+        "attention.head_count": (U32, struct.pack("<I", heads)),
+        "attention.head_count_kv": (U32, struct.pack("<I", kv_heads)),
+        "attention.key_length": (U32, struct.pack("<I", head)),
+        "attention.value_length": (U32, struct.pack("<I", head)),
+        "attention.layer_norm_rms_epsilon": (F32, struct.pack("<f", 1e-6)),
+        "rope.freq_base": (F32, struct.pack("<f", 1e6)),
+    }
+    metadata = [kv(b"general.architecture", STRING, gstr(b"qwen3"))]
+    metadata += [kv(f"qwen3.{k}".encode(), t, v) for k, (t, v) in keys.items()]
+    tokens = b"".join(gstr(f"t{i}".encode()) for i in range(vocab))
+    metadata.append(kv(b"tokenizer.ggml.tokens", ARRAY, struct.pack("<IQ", STRING, vocab) + tokens))
+
+    tensors = [q4_0("token_embd.weight", [width, vocab])]
+    for layer in range(layers):
+        b = f"blk.{layer}."
+        tensors += [gain(b + "attn_norm.weight", width),
+                    q4_0(b + "attn_q.weight", [width, heads * head]),
+                    q4_0(b + "attn_k.weight", [width, kv_heads * head]),
+                    q4_0(b + "attn_v.weight", [width, kv_heads * head]),
+                    gain(b + "attn_q_norm.weight", head),
+                    gain(b + "attn_k_norm.weight", head),
+                    q4_0(b + "attn_output.weight", [heads * head, width]),
+                    gain(b + "ffn_norm.weight", width),
+                    q4_0(b + "ffn_gate.weight", [width, ffn]),
+                    q4_0(b + "ffn_up.weight", [width, ffn]),
+                    q4_0(b + "ffn_down.weight", [ffn, width])]
+    tensors.append(gain("output_norm.weight", width))
+    return build(tensors, metadata=metadata)
+
+
 def rope_rows(rows=4, seed=0x1B873593):
     """For each listed model's attention shape — Qwen3 0.6B's 16 query and 8
     key-value heads of 128, Llama 3.2 1B's 32 and 8 of 64, Gemma 3 1B's 4 and
@@ -555,6 +616,7 @@ CASES = {
     "rope_rows": lambda: rope_rows(),
     # Weights in each listed format, input rows, a Q, K and V, a gate and up.
     "matmul_rows": lambda: matmul_rows(),
+    "forward_model": lambda: forward_model(),
     "nested_array": lambda: build(
         [], metadata=[kv(b"bad", ARRAY, struct.pack("<IQ", ARRAY, 1))]
     ),
