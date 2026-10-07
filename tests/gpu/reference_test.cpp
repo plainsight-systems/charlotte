@@ -120,13 +120,18 @@ struct Agreement {
     double worst = 0;           // 1 or less: within llama.cpp's own spread everywhere
     double worst_nats = 0;
     int top_disagreements = 0;
+    int non_finite = 0;         // logits that are NaN or infinite, any of which fails
 };
+
+// The larger of the two, and NaN when either is: std::max drops a NaN.
+double worse(double so_far, double d) { return d > so_far || std::isnan(d) ? d : so_far; }
 
 Agreement compare(const std::vector<std::vector<float>>& ours) {
     Agreement a;
     for (std::size_t p = 0; p < ours.size(); ++p) {
         const ReferencePosition& ref = kReferencePositions[p];
         const std::vector<float>& l = ours[p];
+        a.non_finite += static_cast<int>(std::count_if(l.begin(), l.end(), [](float x) { return !std::isfinite(x); }));
         const double top = *std::max_element(l.begin(), l.end());
         double sum = 0;
         for (const float x : l) sum += std::exp(static_cast<double>(x) - top);
@@ -137,8 +142,8 @@ Agreement compare(const std::vector<std::vector<float>>& ours) {
         }
         for (int k = 0; k < 20; ++k) {
             const double d = std::abs((l[ref.ids[k]] - lse) - (ref.metal[k] - ref.metal_lse));
-            a.worst = std::max(a.worst, d / spread);
-            a.worst_nats = std::max(a.worst_nats, d);
+            a.worst = worse(a.worst, d / spread);
+            a.worst_nats = worse(a.worst_nats, d);
         }
         const auto argmax = static_cast<std::uint32_t>(std::max_element(l.begin(), l.end()) - l.begin());
         if (ref.metal[0] - ref.metal[1] > spread && argmax != ref.ids[0]) ++a.top_disagreements;
@@ -156,7 +161,8 @@ TEST_CASE("Qwen3 0.6B's log-probabilities are within llama.cpp's own spread, and
     const Agreement ours = compare(decode(instance.get(), *device, r, r.description, std::size(kReferenceTokens)));
     MESSAGE("worst deviation from llama.cpp's Metal logits: " << ours.worst_nats << " nats, " << ours.worst
                                                                << " of its own CPU-to-Metal spread");
-    CHECK(ours.worst <= 1.0);
+    CHECK(ours.non_finite == 0);
+    CHECK(ours.worst <= 1.0);   // NaN fails too
     CHECK(ours.top_disagreements == 0);
 
     // The check discriminates: RoPE pairing the wrong dimensions, from the
