@@ -60,12 +60,13 @@ namespace bllm::kernels {
 // weight written: 4 KiB. A 512-row prefill step reads 512 KiB and writes
 // 2 MiB; a decode step reads 1 KiB and writes 4 KiB, so decode's embedding
 // costs about its one launch's 1.5 µs. Each invocation also reads its row's
-// token, 4 bytes: the same word for every group of a row, which the GPU's
-// caches serve after the first — logically 128 bytes a row a launch for
-// Qwen3, 256 for Llama 3.2 and 144 for Gemma 3, 4 bytes from device memory.
-// Loaded once a workgroup instead, it would need a barrier, which costs more
-// than the cached reads it saves. No row of the table that the step does not
-// name is read.
+// token, 4 bytes — logically 128 bytes a row a launch for Qwen3, 256 for
+// Llama 3.2 and 144 for Gemma 3, every group of a row reading the same word;
+// how many of those reach device memory is the GPU's, and WebGPU states
+// nothing of it. Loaded once a workgroup instead, the token would need a
+// workgroup variable and a barrier in a kernel that has none, about 50 cycles
+// by top-k's estimate (kernels/topk/topk.h), on every step to spare loads of
+// one word. No row of the table that the step does not name is read.
 // Optimization (practice): an invocation writes its group's 128 bytes
 // contiguously and adjacent invocations take adjacent groups, so a
 // workgroup's writes are one contiguous run (GPU.2).
