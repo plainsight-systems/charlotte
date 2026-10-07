@@ -61,7 +61,7 @@ TEST_CASE("a product is a decode launch and a prefill launch a tile width; the h
     // 32, 9 tokens in one of 16, 8 in one of 8; 48 output tiles of 64.
     const auto workgroups = [](const kernels::Launch& l, std::uint32_t tokens) {
         return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens},
-                                       l.workgroup_size, 0, tokens);
+                                       l.workgroup_size, 0, tokens, true);
     };
     CHECK(workgroups(launches[0], 1) == 384);
     CHECK(workgroups(launches[0], 512) == 0);
@@ -118,7 +118,7 @@ TEST_CASE("gate and up run a decode workgroup a 4 pairs and a prefill tile a 32"
     REQUIRE(launches[0].bindings.size() == 3);   // weights, input, activation
     const auto workgroups = [](const kernels::Launch& l, std::uint32_t tokens) {
         return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens},
-                                       l.workgroup_size, 0, tokens);
+                                       l.workgroup_size, 0, tokens, true);
     };
     CHECK(workgroups(launches[0], 1) == 768);
     CHECK(workgroups(launches[3], 512) == 16 * 96);

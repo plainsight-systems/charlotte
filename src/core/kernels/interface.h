@@ -135,17 +135,22 @@ inline constexpr std::uint32_t kFirstWeightBinding = 2;
 //
 //   struct Step { position: u32, tokens: u32, ids: array<vec4<u32>, 128> }
 //
-// with two words of padding before `ids`, which a uniform array needs on a
-// 16-byte stride; token i's identifier is ids[i / 4][i % 4]. A step writes
-// its 16-byte head and only the identifier words it uses: 32 bytes for a
-// decode step.
+// with two words before `ids`, which a uniform array needs on a 16-byte
+// stride: the first is `logits`, which the program reads and no kernel does,
+// the second padding. Token i's identifier is ids[i / 4][i % 4]. A step
+// writes its 16-byte head and only the identifier words it uses: 32 bytes
+// for a decode step.
 // Optimization (browser): the identifiers ride in the uniform every launch
 // already binds, so a step is one write, not one for its parameters and one
 // for its tokens (WASM.2).
 struct Step {
     std::uint32_t position;   // the first token's position in the context
     std::uint32_t tokens;     // 1 .. kPrefillBlock
-    std::uint32_t padding[2];
+    // 1 when the step's last token's logits are sampled; 0 for a prefill
+    // step that does not end the prompt, which runs no launch over the last
+    // token alone — the final norm and the head (graph/graph.h).
+    std::uint32_t logits;
+    std::uint32_t padding;
     std::array<std::uint32_t, residency::kPrefillBlock> ids;
 };
 static_assert(sizeof(Step) == 16 + 4 * residency::kPrefillBlock);
@@ -229,13 +234,16 @@ struct Geometry {
 
 // The workgroups a launch of `workgroup_size` runs in a step of `tokens`
 // from `position`; 0 when it does not run: in a step outside its token
-// range, or a combine when the step does not split. A split runs its rows' or
+// range, over the last token alone in a step that asks for no `logits`, or
+// a combine when the step does not split. A split runs its rows' or
 // tiles' workgroups once for each chunk, each a whole number of
 // workgroups. Preconditions: tokens >= 1; workgroup_size >= 1; a key
 // split's window >= 1; position + tokens <= kMaxPositions.
 [[nodiscard]] constexpr std::uint64_t workgroups_for(const Geometry& g, std::uint32_t workgroup_size,
-                                                     std::uint32_t position, std::uint32_t tokens) noexcept {
+                                                     std::uint32_t position, std::uint32_t tokens,
+                                                     bool logits) noexcept {
     if (tokens < g.tokens.least || tokens > g.tokens.most) return 0;
+    if (g.rows == Rows::LastToken && !logits) return 0;
     const std::uint64_t rows = g.rows == Rows::LastToken ? 1 : tokens;
     const std::uint64_t covered =
         g.rows_per_tile == 0 ? rows * g.invocations_per_row

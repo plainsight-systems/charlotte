@@ -462,7 +462,7 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
             std::size_t current = s.pipelines.size();
             for (const State::Bound& launch : s.launches) {
                 const std::uint64_t workgroups =
-                    workgroups_for(launch.geometry, launch.workgroup_size, step.position, step.tokens);
+                    workgroups_for(launch.geometry, launch.workgroup_size, step.position, step.tokens, step.logits != 0);
                 if (workgroups == 0) continue;   // a combine, the step unsplit
                 if (workgroups > s.max_workgroups) {
                     fits = false;

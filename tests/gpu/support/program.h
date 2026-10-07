@@ -70,10 +70,12 @@ struct StepOutcome {
 // Runs one step of `tokens` tokens from `position`, identifiers `ids` where
 // given, and returns how it ended; it must be reported once.
 inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, std::uint32_t tokens,
-                            std::span<const std::uint32_t> ids = {}, std::uint32_t position = 0) {
+                            std::span<const std::uint32_t> ids = {}, std::uint32_t position = 0,
+                            bool logits = true) {
     kernels::Step step{};
     step.position = position;
     step.tokens = tokens;
+    step.logits = logits ? 1 : 0;
     std::copy(ids.begin(), ids.end(), step.ids.begin());
     struct Ran {
         kernels::ProgramError error = kernels::ProgramError::Step;
@@ -97,8 +99,8 @@ inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, st
 
 // Runs one step, as try_step; it must succeed.
 inline void run_step(WGPUInstance instance, kernels::Program& program, std::uint32_t tokens,
-                     std::span<const std::uint32_t> ids = {}, std::uint32_t position = 0) {
-    const StepOutcome ran = try_step(instance, program, tokens, ids, position);
+                     std::span<const std::uint32_t> ids = {}, std::uint32_t position = 0, bool logits = true) {
+    const StepOutcome ran = try_step(instance, program, tokens, ids, position, logits);
     REQUIRE_MESSAGE(ran.error == kernels::ProgramError::Ok, ran.message);
 }
 

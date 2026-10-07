@@ -137,7 +137,7 @@ struct Result {
 };
 
 Result run_norm(WGPUInstance instance, const gpu::Device& device, const Uploaded& u, std::uint32_t width, Variant v,
-                std::uint32_t tokens) {
+                std::uint32_t tokens, bool logits = true) {
     const std::string w = std::to_string(width);
     std::vector<kernels::Launch> launches;
     launches.push_back(copy_launch(u.view("x_" + w), u.hidden, width));
@@ -145,7 +145,7 @@ Result run_norm(WGPUInstance instance, const gpu::Device& device, const Uploaded
     launches.push_back(kernels::norm_launch({&u.view("gain_" + w), v.post ? &u.view("post_" + w) : nullptr, v.add,
                                              u.output, u.hidden, u.normed, kEpsilon, v.rows}));
     const auto program = build_program(instance, *u.upload, std::move(launches));
-    run_step(instance, *program, tokens);
+    run_step(instance, *program, tokens, {}, 0, logits);
     return {read_floats(instance, device, u.upload->buffer(u.hidden.buffer), 0, tokens * width),
             read_floats(instance, device, u.upload->buffer(u.normed.buffer), 0, tokens * width)};
 }
@@ -261,6 +261,18 @@ TEST_CASE("the final norm adds and normalizes only the step's last row") {
     }
     const Reference want = reference(u, width, v, kRows - 1);
     check_row(std::span(got.normed).subspan((kRows - 1) * width, width), want.normed);
+}
+
+TEST_CASE("the final norm runs no row in a step that asks for no logits") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_rows(instance.get(), *device);
+    const std::uint32_t width = 1024;
+    const Result got =
+        run_norm(instance.get(), *device, u, width, {true, false, kernels::Rows::LastToken}, kRows, false);
+    const auto x = u.floats("x_1024");
+    CHECK(std::equal(got.hidden.begin(), got.hidden.end(), x.begin()));
+    CHECK(std::all_of(got.normed.begin(), got.normed.end(), [](float f) { return f == 0.0f; }));
 }
 
 // Why the plan gives each working buffer a buffer of its own
