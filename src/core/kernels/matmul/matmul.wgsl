@@ -38,6 +38,7 @@ override last_token: bool = false;
 override columns: u32 = 1024;        // K
 override out_width: u32 = 1024;      // a write's output row width
 override activation: u32 = 0;       // 0 SiLU, 1 GELU in its tanh form
+override tile_tokens: u32 = 32;     // a prefill tile's tokens: 8 or 32
 
 const kRanges = 32u;
 
@@ -51,9 +52,9 @@ const kRanges = 32u;
 
 // Decode: each of 8 row slots' 32 range sums.
 var<workgroup> partials: array<f32, 256>;
-// Prefill: the step's 32 × 32 input floats and the tile's 64 rows' 32
-// decoded weights, each row padded a word against bank conflicts.
-var<workgroup> x_tile: array<f32, 32u * 33u>;
+// Prefill: the step's input floats, tile_tokens × 32, and the tile's 64
+// rows' 32 decoded weights, each row padded a word against bank conflicts.
+var<workgroup> x_tile: array<f32, tile_tokens * 33u>;
 var<workgroup> w_tile: array<f32, 64u * 33u>;
 
 // The one multiply-add both forms use: an explicit fma, which the target's
@@ -262,8 +263,9 @@ fn tile_row(out_tile: u32, i: u32, gated: bool) -> vec3<u32> {
     return locate(out_tile * 64u + i);
 }
 
-// An invocation's micro-tile: tokens 4 × (t % 8) .. + 3 and 8 outputs; for
-// a gated tile, gate outputs 4 × (t / 8) .. + 3 and the same up outputs.
+// An invocation's micro-tile: tokens tile_tokens / 8 × (t % 8) onward,
+// tile_tokens / 8 of them — 4, or 1 — and 8 outputs; for a gated tile,
+// gate outputs 4 × (t / 8) .. + 3 and the same up outputs.
 fn micro_row(t: u32, j: u32, gated: bool) -> u32 {
     let c = t / 8u;
     if (gated) {
@@ -275,7 +277,8 @@ fn micro_row(t: u32, j: u32, gated: bool) -> u32 {
 // The tile's totals, each output's ranges summed from zero and added to its
 // total in order, exactly as decode adds them.
 fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<f32, 32> {
-    let token_tiles = (step.tokens + 31u) / 32u;
+    let mine_tokens = tile_tokens / 8u;
+    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
     let token_tile = wg % token_tiles;
     let out_tile = wg / token_tiles;
     let tr = t % 8u;
@@ -289,12 +292,12 @@ fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<f32, 32> {
     for (var r = 0u; r < kRanges; r++) {
         for (var g = range_lo(r); g < range_lo(r + 1u); g++) {
             workgroupBarrier();   // the last step's tiles are read
-            // The step's input floats, 4 vec4s an invocation.
-            for (var q = 0u; q < 4u; q++) {
+            // The step's input floats, tile_tokens / 8 vec4s an invocation.
+            for (var q = 0u; q < mine_tokens; q++) {
                 let i = t + q * 64u;
                 let tok = i / 8u;
                 let v = i % 8u;
-                let token = token_tile * 32u + tok;
+                let token = token_tile * tile_tokens + tok;
                 var x = vec4<f32>(0.0);
                 if (token < step.tokens) {
                     x = input[token * (columns / 4u) + g * 8u + v];
@@ -322,13 +325,13 @@ fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<f32, 32> {
             for (var k = 0u; k < 32u; k++) {
                 var xs: array<f32, 4>;
                 var ws: array<f32, 8>;
-                for (var i = 0u; i < 4u; i++) {
-                    xs[i] = x_tile[(4u * tr + i) * 33u + k];
+                for (var i = 0u; i < mine_tokens; i++) {
+                    xs[i] = x_tile[(mine_tokens * tr + i) * 33u + k];
                 }
                 for (var j = 0u; j < 8u; j++) {
                     ws[j] = w_tile[micro_row(t, j, gated) * 33u + k];
                 }
-                for (var i = 0u; i < 4u; i++) {
+                for (var i = 0u; i < mine_tokens; i++) {
                     for (var j = 0u; j < 8u; j++) {
                         range_sum[i * 8u + j] = mac(range_sum[i * 8u + j], ws[j], xs[i]);
                     }
@@ -347,10 +350,11 @@ fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<f32, 32> {
 @compute @workgroup_size(workgroup_size)
 fn prefill_write(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
     let totals = prefill_tile(wg.x, t, false);
-    let token_tiles = (step.tokens + 31u) / 32u;
+    let mine_tokens = tile_tokens / 8u;
+    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
     let out_tile = wg.x / token_tiles;
-    for (var i = 0u; i < 4u; i++) {
-        let token = (wg.x % token_tiles) * 32u + 4u * (t % 8u) + i;
+    for (var i = 0u; i < mine_tokens; i++) {
+        let token = (wg.x % token_tiles) * tile_tokens + mine_tokens * (t % 8u) + i;
         for (var j = 0u; j < 8u; j++) {
             let at = tile_row(out_tile, micro_row(t, j, false), false);
             if (token < step.tokens && at.z == 1u) {
@@ -363,10 +367,11 @@ fn prefill_write(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation
 @compute @workgroup_size(workgroup_size)
 fn prefill_qkv(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
     let totals = prefill_tile(wg.x, t, false);
-    let token_tiles = (step.tokens + 31u) / 32u;
+    let mine_tokens = tile_tokens / 8u;
+    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
     let out_tile = wg.x / token_tiles;
-    for (var i = 0u; i < 4u; i++) {
-        let token = (wg.x % token_tiles) * 32u + 4u * (t % 8u) + i;
+    for (var i = 0u; i < mine_tokens; i++) {
+        let token = (wg.x % token_tiles) * tile_tokens + mine_tokens * (t % 8u) + i;
         for (var j = 0u; j < 8u; j++) {
             let at = tile_row(out_tile, micro_row(t, j, false), false);
             if (token < step.tokens && at.z == 1u) {
@@ -387,11 +392,12 @@ fn prefill_qkv(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
 @compute @workgroup_size(workgroup_size)
 fn prefill_gated(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
     let totals = prefill_tile(wg.x, t, true);
-    let token_tiles = (step.tokens + 31u) / 32u;
+    let mine_tokens = tile_tokens / 8u;
+    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
     let out_tile = wg.x / token_tiles;
     let width = matmul.members[0].w;
-    for (var i = 0u; i < 4u; i++) {
-        let token = (wg.x % token_tiles) * 32u + 4u * (t % 8u) + i;
+    for (var i = 0u; i < mine_tokens; i++) {
+        let token = (wg.x % token_tiles) * tile_tokens + mine_tokens * (t % 8u) + i;
         for (var j = 0u; j < 4u; j++) {
             let row = out_tile * 32u + (t / 8u) * 4u + j;
             if (token < step.tokens && row < width) {

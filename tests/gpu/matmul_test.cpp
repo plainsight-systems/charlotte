@@ -221,11 +221,12 @@ TEST_CASE("each format's product is within its bound, decoded and prefilled, and
         // Source rows of this width: the fill covers the widest; a row of
         // `columns` floats starts every `columns` floats.
         const auto launches = kernels::matmul_launches(single(u, w, kernels::Rows::EveryToken));
-        REQUIRE(launches.size() == 2);
+        REQUIRE(launches.size() == 3);
         const auto weights = decoded(u, name);
-        // Prefill steps of 2, 33 and 64 rows from row 0.
+        // Prefill steps of 2, 9 and 16 rows, in the narrow tile, and 17, 33
+        // and 64, in the wide, from row 0.
         std::vector<std::vector<float>> prefilled;
-        for (const std::uint32_t tokens : {2u, 33u, 64u}) {
+        for (const std::uint32_t tokens : {2u, 9u, 16u, 17u, 33u, 64u}) {
             CAPTURE(tokens);
             const auto got = run(instance.get(), *device, u, columns, launches, tokens, 0, {rows});
             for (std::uint32_t t = 0; t < tokens; ++t) {
@@ -241,9 +242,9 @@ TEST_CASE("each format's product is within its bound, decoded and prefilled, and
             }
             prefilled.push_back(got[0]);
         }
-        // Decoded alone, rows 0, 1, 32 and 63: the same bits as every prefill
-        // that held them.
-        for (const std::uint32_t t : {0u, 1u, 32u, 63u}) {
+        // Decoded alone, rows at each tile's edges: the same bits as every
+        // prefill that held them.
+        for (const std::uint32_t t : {0u, 1u, 7u, 8u, 15u, 16u, 32u, 63u}) {
             CAPTURE(t);
             const auto alone = run(instance.get(), *device, u, columns, launches, 1, t, {rows});
             for (std::size_t s = 0; s < prefilled.size(); ++s) {
@@ -256,13 +257,13 @@ TEST_CASE("each format's product is within its bound, decoded and prefilled, and
     MESSAGE("largest error, against its bound: " << worst);
 }
 
-TEST_CASE("a weight in pieces is a launch pair a piece, each writing its rows") {
+TEST_CASE("a weight in pieces is three launches a piece, each writing its rows") {
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     const Uploaded whole = upload_weights(instance.get(), *device);
     const Uploaded split = upload_weights(instance.get(), *device, true);
     const auto pieces = kernels::matmul_launches(single(split, split.view("w_q4_0"), kernels::Rows::EveryToken));
-    REQUIRE(pieces.size() == 4);
+    REQUIRE(pieces.size() == 6);
     const auto one = kernels::matmul_launches(single(whole, whole.view("w_q4_0"), kernels::Rows::EveryToken));
     // Every row's products in the same order whichever piece holds it.
     for (const std::uint32_t tokens : {1u, 33u}) {
@@ -298,7 +299,7 @@ TEST_CASE("Q, K and V as one product land in their three buffers, the same bits 
                                   model::FeedForwardActivation::SiLU,
                                   kernels::Rows::EveryToken};
     const auto launches = kernels::matmul_launches(m);
-    REQUIRE(launches.size() == 2);
+    REQUIRE(launches.size() == 3);
     const std::vector<std::uint32_t> widths{64, 32, 32};
     const char* names[] = {"qkv_q", "qkv_k", "qkv_v"};
     const auto prefilled = run(instance.get(), *device, u, 1024, launches, 33, 0, widths);
@@ -318,6 +319,11 @@ TEST_CASE("Q, K and V as one product land in their three buffers, the same bits 
         for (std::size_t o = 0; o < 3; ++o) {
             CHECK(std::equal(alone[o].begin(), alone[o].end(), prefilled[o].begin() + t * widths[o]));
         }
+    }
+    // A step of 5, in the narrow tile: the same bits as the wide tile's.
+    const auto narrow = run(instance.get(), *device, u, 1024, launches, 5, 0, widths);
+    for (std::size_t o = 0; o < 3; ++o) {
+        CHECK(std::equal(narrow[o].begin(), narrow[o].end(), prefilled[o].begin()));
     }
 }
 
@@ -358,5 +364,7 @@ TEST_CASE("gate and up as one product write activation(gate) x up, for SiLU and 
             const auto alone = run(instance.get(), *device, u, 1024, launches, 1, t, {72});
             CHECK(std::equal(alone[0].begin(), alone[0].end(), prefilled[0].begin() + t * 72));
         }
+        const auto narrow = run(instance.get(), *device, u, 1024, launches, 5, 0, {72});
+        CHECK(std::equal(narrow[0].begin(), narrow[0].end(), prefilled[0].begin()));
     }
 }

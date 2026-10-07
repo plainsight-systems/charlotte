@@ -26,9 +26,9 @@ namespace bllm::kernels {
 // weight is written out expanded (GDSA.18).
 //
 // Two forms, one per regime, each its own launch; a step runs one (the
-// launch contract's regime, below). The head is the exception: it covers
-// the step's last token alone, in both regimes, so its one launch is the
-// decode form, run in every step.
+// launch contract's token range, below), prefill in one of two tile widths.
+// The head is the exception: it covers the step's last token alone, in
+// both regimes, so its one launch is the decode form, run in every step.
 // Both forms add each output's products in one order, fixed by K alone
 // (GDSA.2). A row's K / 32 groups are cut into 32 ranges at fixed
 // boundaries — range r is groups floor(r × G / 32) up to floor((r + 1) × G /
@@ -80,6 +80,23 @@ namespace bllm::kernels {
 //     token tile first, so the token tiles reading one weight tile are
 //     dispatched together and may find it in the GPU's caches (costs,
 //     below).
+//     A step of 2 to 16 tokens takes a narrow tile instead, 8 tokens × 64
+//     outputs, one token × 8 outputs an invocation (GDSA.6). Counted per
+//     output and step of K, with d the instructions to decode a weight into
+//     workgroup memory: the wide tile issues 32 multiply-adds, 12 reads, half
+//     an input load and a weight's decode, 44.5 + d, whatever the step's
+//     tokens; the narrow tile, for each of its tiles — the step's n tokens
+//     over 8, rounded up — 8 multiply-adds, 9 reads, an eighth of an input
+//     load and a decode, 17.1 + d. Two narrow tiles issue fewer than one wide
+//     for any d below 10, three always more, so steps of up to 16 tokens take
+//     the narrow tile; the second tile's weight reads, 8.9 MB a layer for
+//     Qwen3, are of a weight tile the first has just read, dispatched beside
+//     it. Steps of 17 or more take the wide tile, whose last tile holds the
+//     step's remainder and runs all 32 slots, as llama.cpp's mul_mm does:
+//     1.88 times the useful products at 17 tokens, 1.94 at 33, none extra at
+//     64 or 512; the narrow tile runs 4 times at 2 tokens, where the wide
+//     would run 16, and 1.78 at 9. Tile width changes no output's order of
+//     addition, so the narrow tile's bits are the wide one's and decode's.
 //
 // Epilogues — what a product writes — are variants, override constants:
 //   - write: y to one buffer: the output projection and down projection
@@ -116,9 +133,10 @@ namespace bllm::kernels {
 //     written — one, or query, key and value. Five at most.
 //
 // What it asks of the other contracts:
-//   - kernels/interface.h: a launch may run in one regime only, Decode a
-//     step of one token, Prefill one of more (regime_for), and is not
-//     dispatched in the other; Geometry gains the regime.
+//   - kernels/interface.h: a launch may run in a range of token counts
+//     only — a regime's, Decode a step of one token and Prefill one of more
+//     (regime_for, tokens_of), or part of one, as the two prefill tiles
+//     take — and is not dispatched outside it; Geometry gains the range.
 //   - residency/plan.h: a layer's Q, K and V, and its gate and up, each
 //     lie in one buffer, within one binding's span from the first to the
 //     last — the plan opens a new buffer for a group that would not fit the
@@ -201,8 +219,8 @@ namespace bllm::kernels {
 // launch of its own: 48 KiB a token and a layer saved of the 60 KiB
 // separate kernels would move (GDSA.6).
 // Optimization (practice): decode reuses each input value it loads for 4
-// rows, and prefill each decoded weight for 32 tokens and each input for 64
-// outputs (GPU.2, GPU.5).
+// rows, and prefill each decoded weight for its tile's 32 tokens, or 8,
+// and each input for 64 outputs (GPU.2, GPU.5).
 // Optimization (practice): one order of addition for both forms, fixed by
 // K, so a token's projections do not depend on its step — the fixed split
 // Thinking Machines' batch-invariant kernels use (GDSA.2).
@@ -233,12 +251,13 @@ namespace bllm::kernels {
 //
 // Verification the implementation is held to, on the GPU against f64 over
 // the format's CPU-decoded weights: each form, each epilogue, each listed
-// format, at each listed model's widths; prefill steps of 2, 31, 32, 33 and
-// 512 tokens; a weight split into pieces; QKV outputs landing in their
-// buffers; the activation for SiLU and GELU; and a token's outputs the same
-// bits decoded alone and prefilled in steps of 2, 33 and 512, at widths
+// format, at each listed model's widths; prefill steps of 2, 9 and 16
+// tokens, in the narrow tile, and 17, 33 and 64, in the wide; a weight
+// split into pieces; QKV outputs landing in their buffers; the activation
+// for SiLU and GELU; and a token's outputs the same bits decoded alone and
+// prefilled in each of those steps, at tokens on each tile's edges, at widths
 // whose ranges are one group, several, and of unequal sizes (Gemma 3's
-// 1,152 and 6,912). On the CPU: each launch's geometry, regime, bindings
+// 1,152 and 6,912). On the CPU: each launch's geometry, token range, bindings
 // and variant, and the range boundaries.
 //
 // Guidelines, by corpus:
@@ -282,9 +301,9 @@ struct MatmulLaunch {
     Rows rows;                                       // LastToken for the head
 };
 
-// The product's launches: for each piece of the weight, a decode form and a
-// prefill form, each in its regime; or for the head, the decode form alone,
-// in every regime. Preconditions: K is a whole number of 32-weight groups;
+// The product's launches: for each piece of the weight, a decode launch,
+// and narrow and wide prefill launches, each in its token range; or for the
+// head, the decode form alone, in every step. Preconditions: K is a whole number of 32-weight groups;
 // a fused group's members lie in one buffer within a binding's span, and
 // their rows are the epilogue's.
 [[nodiscard]] std::vector<Launch> matmul_launches(const MatmulLaunch& matmul);

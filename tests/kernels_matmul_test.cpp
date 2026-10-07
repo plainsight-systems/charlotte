@@ -38,34 +38,40 @@ std::array<std::uint32_t, 12> members_of(const kernels::Launch& l) {
 
 }  // namespace
 
-TEST_CASE("a product is a decode and a prefill launch, each in its regime; the head one launch in every regime") {
+TEST_CASE("a product is a decode launch and narrow and wide prefill launches; the head one launch in every step") {
     const auto w = q4_0(1024, 3072, 0);
     const auto launches = kernels::matmul_launches(
         {{&w, nullptr, nullptr}, 1, kIn, {kQ, kK, kV}, Epilogue::Write, model::FeedForwardActivation::SiLU,
          kernels::Rows::EveryToken});
-    REQUIRE(launches.size() == 2);
+    REQUIRE(launches.size() == 3);
     CHECK(launches[0].entry_point == "decode_write");
-    CHECK(launches[0].regime == Regime::Decode);
+    CHECK(launches[0].tokens == kernels::tokens_of(Regime::Decode));
     CHECK(launches[1].entry_point == "prefill_write");
-    CHECK(launches[1].regime == Regime::Prefill);
-    CHECK(launches[1].rows_per_tile == 32);
-    // Decode: 3,072 rows, 8 a workgroup. Prefill: 512 tokens in 16 tiles, 48
-    // output tiles of 64.
+    CHECK(launches[1].tokens == kernels::TokenRange{2, 16});
+    CHECK(launches[1].rows_per_tile == 8);
+    CHECK(launches[2].entry_point == "prefill_write");
+    CHECK(launches[2].tokens == kernels::TokenRange{17, UINT32_MAX});
+    CHECK(launches[2].rows_per_tile == 32);
+    // Decode: 3,072 rows, 8 a workgroup. Prefill: 512 tokens in 16 tiles of
+    // 32, or 9 tokens in two of 8; 48 output tiles of 64.
     const auto workgroups = [](const kernels::Launch& l, std::uint32_t tokens) {
-        return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.regime},
+        return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens},
                                        l.workgroup_size, 0, tokens);
     };
     CHECK(workgroups(launches[0], 1) == 384);
     CHECK(workgroups(launches[0], 512) == 0);
-    CHECK(workgroups(launches[1], 512) == 16 * 48);
-    CHECK(workgroups(launches[1], 1) == 0);
+    CHECK(workgroups(launches[1], 9) == 2 * 48);
+    CHECK(workgroups(launches[1], 17) == 0);
+    CHECK(workgroups(launches[2], 512) == 16 * 48);
+    CHECK(workgroups(launches[2], 16) == 0);
+    CHECK(workgroups(launches[2], 1) == 0);
 
     const auto head = kernels::matmul_launches(
         {{&w, nullptr, nullptr}, 1, kIn, {kQ, kK, kV}, Epilogue::Write, model::FeedForwardActivation::SiLU,
          kernels::Rows::LastToken});
     REQUIRE(head.size() == 1);
     CHECK(head[0].entry_point == "decode_write");
-    CHECK_FALSE(head[0].regime.has_value());
+    CHECK(head[0].tokens == kernels::TokenRange{});
     CHECK(workgroups(head[0], 1) == 384);
     CHECK(workgroups(head[0], 512) == 384);
 }
@@ -76,7 +82,7 @@ TEST_CASE("a fused group binds the span of its members and reads each from its o
     const auto launches = kernels::matmul_launches(
         {{&q, &k, &v}, 3, kIn, {kQ, kK, kV}, Epilogue::QKV, model::FeedForwardActivation::SiLU,
          kernels::Rows::EveryToken});
-    REQUIRE(launches.size() == 2);
+    REQUIRE(launches.size() == 3);
     CHECK(launches[0].entry_point == "decode_qkv");
     REQUIRE(launches[0].bindings.size() == 5);   // weights, input, query, key, value
     CHECK(launches[0].bindings[0].offset == 0);
@@ -100,15 +106,15 @@ TEST_CASE("gate and up run a decode workgroup a 4 pairs and a prefill tile a 32"
     const auto launches = kernels::matmul_launches(
         {{&gate, &up, nullptr}, 2, kIn, {kQ, kK, kV}, Epilogue::GatedActivation,
          model::FeedForwardActivation::GeluTanh, kernels::Rows::EveryToken});
-    REQUIRE(launches.size() == 2);
+    REQUIRE(launches.size() == 3);
     CHECK(launches[0].entry_point == "decode_gated");
     REQUIRE(launches[0].bindings.size() == 3);   // weights, input, activation
     const auto workgroups = [](const kernels::Launch& l, std::uint32_t tokens) {
-        return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.regime},
+        return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens},
                                        l.workgroup_size, 0, tokens);
     };
     CHECK(workgroups(launches[0], 1) == 768);
-    CHECK(workgroups(launches[1], 512) == 16 * 96);
+    CHECK(workgroups(launches[2], 512) == 16 * 96);
     bool gelu = false;
     for (const auto& o : launches[0].overrides) {
         if (o.name == "activation") gelu = o.value == 1.0;

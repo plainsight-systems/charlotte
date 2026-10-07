@@ -16,7 +16,12 @@ namespace {
 constexpr std::uint32_t kWorkgroupSize = 64;
 constexpr std::uint32_t kDecodeRows = 8;        // a decode workgroup's rows
 constexpr std::uint32_t kDecodePairs = 4;       // or gate-and-up pairs
-constexpr std::uint32_t kTileTokens = 32;       // a prefill tile's tokens
+// A prefill tile's tokens: 8 for steps of up to 16 tokens, where the
+// narrow tile issues fewer instructions than one mostly empty wide tile,
+// and 32 above (matmul.h, prefill) (GDSA.6).
+constexpr std::uint32_t kNarrowTokens = 8;
+constexpr std::uint32_t kNarrowMost = 16;   // the narrow tile's longest step
+constexpr std::uint32_t kWideTokens = 32;
 constexpr std::uint32_t kTileOutputs = 64;      // and outputs
 constexpr std::uint32_t kTilePairs = 32;        // or gate-and-up pairs
 
@@ -56,7 +61,7 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     for (std::uint32_t o = 0; o < outputs; ++o) {
         bindings.push_back({m.outputs[o].buffer, m.outputs[o].offset, m.outputs[o].length});
     }
-    const std::vector<Override> overrides{
+    std::vector<Override> overrides{
         {"columns", static_cast<double>(columns)},
         {"out_width", static_cast<double>(head.shape().dimensions[1])},
         {"activation", m.activation == model::FeedForwardActivation::GeluTanh ? 1.0 : 0.0}};
@@ -77,23 +82,29 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
         out.push_back(std::move(decode));   // the head: every regime
         return;
     }
-    decode.regime = Regime::Decode;
-
-    // Prefill: tiles of kTileTokens tokens, each a workgroup an output tile.
-    const std::uint32_t out_tiles = gated ? ceil_div(rows / 2, kTilePairs) : ceil_div(rows, kTileOutputs);
-    Launch prefill{shaders::matmul,
-                   format,
-                   std::vector<std::byte>(bytes.begin(), bytes.end()),
-                   bindings,
-                   out_tiles * kWorkgroupSize / kTileTokens,
-                   kWorkgroupSize,
-                   Rows::EveryToken,
-                   overrides};
-    prefill.entry_point = entry.prefill;
-    prefill.rows_per_tile = kTileTokens;
-    prefill.regime = Regime::Prefill;
+    decode.tokens = tokens_of(Regime::Decode);
     out.push_back(std::move(decode));
-    out.push_back(std::move(prefill));
+
+    // Prefill: tiles of 8 tokens for a step of up to 16, of 32 above, each a
+    // workgroup an output tile.
+    const std::uint32_t out_tiles = gated ? ceil_div(rows / 2, kTilePairs) : ceil_div(rows, kTileOutputs);
+    for (const auto [tile, steps] : {std::pair{kNarrowTokens, TokenRange{2, kNarrowMost}},
+                                     std::pair{kWideTokens, TokenRange{kNarrowMost + 1, UINT32_MAX}}}) {
+        std::vector<Override> with_tile = overrides;
+        with_tile.push_back({"tile_tokens", static_cast<double>(tile)});
+        Launch prefill{shaders::matmul,
+                       format,
+                       std::vector<std::byte>(bytes.begin(), bytes.end()),
+                       bindings,
+                       out_tiles * kWorkgroupSize / tile,
+                       kWorkgroupSize,
+                       Rows::EveryToken,
+                       std::move(with_tile)};
+        prefill.entry_point = entry.prefill;
+        prefill.rows_per_tile = tile;
+        prefill.tokens = steps;
+        out.push_back(std::move(prefill));
+    }
 }
 
 }  // namespace

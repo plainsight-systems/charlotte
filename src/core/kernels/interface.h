@@ -55,9 +55,10 @@ namespace bllm::kernels {
 //     disagree. A launch may instead cover tiles of rows — attention's
 //     query tiles — and may multiply its workgroups by the step's key
 //     chunks or run only when the step splits them, and may run in one
-//     regime only (key_chunks, regime_for, workgroups_for below); a launch that does not run in a step is not
-//     dispatched. A module may hold several entry points, and a launch
-//     names its own.
+//     range of token counts — a regime, or part of one (key_chunks,
+//     regime_for, TokenRange, workgroups_for below); a launch that does not
+//     run in a step is not dispatched. A module may hold several entry
+//     points, and a launch names its own.
 //   - Variants: a kernel's other override constants select among its forms —
 //     the norm with or without the residual add — so one WGSL source serves
 //     them. The program compiles each distinct kernel, unpack and pack
@@ -110,6 +111,19 @@ enum class Regime {
 // about the step: one token decodes, more prefill.
 [[nodiscard]] constexpr Regime regime_for(std::uint32_t tokens_in_step) noexcept {
     return tokens_in_step == 1 ? Regime::Decode : Regime::Prefill;
+}
+
+// The steps a launch runs in, by token count, both ends included: a
+// regime's, or a part of prefill's, as a matrix product's narrow and wide
+// tiles take (kernels/matmul/matmul.h).
+struct TokenRange {
+    std::uint32_t least = 1;
+    std::uint32_t most = UINT32_MAX;
+    friend bool operator==(const TokenRange&, const TokenRange&) = default;
+};
+
+[[nodiscard]] constexpr TokenRange tokens_of(Regime r) noexcept {
+    return r == Regime::Decode ? TokenRange{1, 1} : TokenRange{2, UINT32_MAX};
 }
 
 inline constexpr std::uint32_t kBindGroup = 0;
@@ -209,19 +223,19 @@ struct Geometry {
     std::uint32_t rows_per_tile;   // 0: a launch over rows
     KeySplit key_split;
     std::uint32_t window;
-    // The regime it runs in, or every regime when empty.
-    std::optional<Regime> regime = std::nullopt;
+    // The steps it runs in, by token count; every step by default.
+    TokenRange tokens = {};
 };
 
 // The workgroups a launch of `workgroup_size` runs in a step of `tokens`
-// from `position`; 0 when it does not run: in a regime not its own, or a
-// combine when the step does not split. A split runs its rows' or
+// from `position`; 0 when it does not run: in a step outside its token
+// range, or a combine when the step does not split. A split runs its rows' or
 // tiles' workgroups once for each chunk, each a whole number of
 // workgroups. Preconditions: tokens >= 1; workgroup_size >= 1; a key
 // split's window >= 1; position + tokens <= kMaxPositions.
 [[nodiscard]] constexpr std::uint64_t workgroups_for(const Geometry& g, std::uint32_t workgroup_size,
                                                      std::uint32_t position, std::uint32_t tokens) noexcept {
-    if (g.regime && *g.regime != regime_for(tokens)) return 0;
+    if (tokens < g.tokens.least || tokens > g.tokens.most) return 0;
     const std::uint64_t rows = g.rows == Rows::LastToken ? 1 : tokens;
     const std::uint64_t covered =
         g.rows_per_tile == 0 ? rows * g.invocations_per_row
@@ -272,9 +286,10 @@ struct Launch {
     // The WGSL entry point: one module may hold two roles, which share its
     // functions and not each other's workgroup memory.
     std::string_view entry_point = "main";
-    // The regime the launch runs in, or every regime when empty: a matrix
-    // product's decode and prefill forms are two launches, one each.
-    std::optional<Regime> regime = std::nullopt;
+    // The steps the launch runs in, by token count, every step by default:
+    // a matrix product's decode form runs in tokens_of(Regime::Decode), its
+    // prefill tiles in parts of prefill's.
+    TokenRange tokens = {};
 };
 
 }  // namespace bllm::kernels

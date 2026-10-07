@@ -62,17 +62,21 @@ TEST_CASE("a launch runs its rows, its tiles, its splits, or not at all, in whol
     CHECK(workgroups_for({Rows::EveryToken, 512, 0, KeySplit::WhenSplit, 40960}, 64, 0, 512) == 0);
 }
 
-TEST_CASE("a step of one token decodes and of more prefills, and a launch runs in its regime alone") {
+TEST_CASE("a step of one token decodes and of more prefills, and a launch runs in its token range alone") {
     CHECK(regime_for(1) == Regime::Decode);
     CHECK(regime_for(2) == Regime::Prefill);
     CHECK(regime_for(512) == Regime::Prefill);
-    const Geometry decode{Rows::EveryToken, 64, 0, KeySplit::None, 0, Regime::Decode};
-    const Geometry prefill{Rows::EveryToken, 64, 0, KeySplit::None, 0, Regime::Prefill};
+    const Geometry decode{Rows::EveryToken, 64, 0, KeySplit::None, 0, tokens_of(Regime::Decode)};
+    const Geometry narrow{Rows::EveryToken, 64, 0, KeySplit::None, 0, {2, 8}};
+    const Geometry wide{Rows::EveryToken, 64, 0, KeySplit::None, 0, {9, 512}};
     const Geometry every{Rows::LastToken, 64, 0, KeySplit::None, 0};
     CHECK(workgroups_for(decode, 64, 0, 1) == 1);
     CHECK(workgroups_for(decode, 64, 0, 2) == 0);
-    CHECK(workgroups_for(prefill, 64, 0, 1) == 0);
-    CHECK(workgroups_for(prefill, 64, 0, 2) == 2);
+    CHECK(workgroups_for(narrow, 64, 0, 1) == 0);
+    CHECK(workgroups_for(narrow, 64, 0, 2) == 2);
+    CHECK(workgroups_for(narrow, 64, 0, 8) == 8);
+    CHECK(workgroups_for(narrow, 64, 0, 9) == 0);
+    CHECK(workgroups_for(wide, 64, 0, 9) == 9);
     CHECK(workgroups_for(every, 64, 0, 1) == 1);
     CHECK(workgroups_for(every, 64, 0, 7) == 1);
 }
