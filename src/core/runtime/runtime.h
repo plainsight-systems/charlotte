@@ -82,10 +82,12 @@ namespace bllm::runtime {
 //     4 bytes each; and a prefill step for each kPrefillBlock of them.
 //   - Its first token waits on the prefill steps and the last one's map, 0.5
 //     ms median on the target (sampler/sampler.h); every later token arrives
-//     a step after it was drawn. A stop is reported once the one step queued
-//     behind it has run, about 1.7 ms. A cancel waits for every step already
-//     run, at most two — about 3.4 ms of decode, or two prefill blocks —
-//     since the next step is run before the token callback that may cancel.
+//     a step after it was drawn. A stop is reported once any step queued
+//     behind it has run — at most one; none at the limit or the context. A
+//     cancel waits for every step already run, at most two, since the next
+//     step is run before the token callback that may cancel: two decode
+//     steps, each at position p no less than its weights' and cache's reads,
+//     0.94 ms + 0.29 µs × p for Qwen3 (graph/graph.h), or two prefill blocks.
 //   - Nothing is allocated after construction: the held tokens are reserved
 //     at the context offered plus one, the step is the runtime's own, and the
 //     turn is a value (MEM.9).
