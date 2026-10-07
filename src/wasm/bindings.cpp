@@ -28,10 +28,13 @@
 //     adapter grants none.
 //   bllm_observe_steps(on)
 //     Sets or clears the loaded runtime's step observer
-//     (runtime/runtime.h), between turns. Each step's report crosses as
-//     bllm_step_times(prefill, position, tokens, begin_ns, end_ns), the GPU
-//     times as doubles, exact below 2^53 ns, about 104 days: one crossing a
-//     step, the profile's whole cost at the boundary (WASM.2).
+//     (runtime/runtime.h), between turns. The observer appends each step's
+//     record — prefill, position, tokens, its GPU begin and end, and
+//     emscripten_get_now() at the report — to a buffer reserved at the
+//     context offered plus a prefill step per block, so no step allocates;
+//     the turn's records cross once, as doubles, with its result: GPU times
+//     exact below 2^53 ns, about 104 days. A step's only cost at the
+//     boundary is the clock's import call (WASM.2).
 //
 // Contract 11, the boundary: this file and web/worker.js are the only two
 // places JavaScript and C++ meet. The crossings are preflight a header prefix;

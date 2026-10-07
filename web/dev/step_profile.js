@@ -6,15 +6,22 @@
 // serve-diag`, its wasm the wasm-diag build — and selected by ?profile. The
 // worker then checks the device with bllm_run_profile_check, asking for
 // timestamp queries, and after each load sets the runtime's step observer
-// (bllm_observe_steps, src/wasm/bindings.cpp). Each step's report crosses as
-// { prefill, position, tokens, beginNs, endNs }, the worker adding its own
-// performance.now() at the report, reportMs; at the turn's end it posts the
-// turn's steps to the page, which passes them to summarize() and logs the
-// result with console.table, keeping each on window.bllmProfiles. A deployed
-// page asked for ?profile fails by name: the check is not compiled in.
+// (bllm_observe_steps, src/wasm/bindings.cpp). A turn's steps cross once, at
+// its end, each { prefill, position, tokens, beginNs, endNs, reportMs } —
+// reportMs the module's clock at the report, read after the turn has run
+// its next steps; the worker posts them to the page, which passes them to
+// summarize() and logs the result with console.table, keeping each on
+// window.bllmProfiles. A deployed page asked for ?profile fails by name: the
+// check is not compiled in.
 //
 // summarize(steps) — for the turn's decode steps, all but the first two,
-// which fill the pipeline:
+// which fill the pipeline. A decode step's time grows with its position, so
+// the in-pass time is given by position, never as one median over a turn:
+//   reference    the median in-pass time of steps at positions 64 to 191,
+//                the native profiler's pipelined run's — 128 steps from 64,
+//                4.31 ms a step on average, a step's sampling as the
+//                runtime's — or null when the turn did not reach them
+//   byPosition   the median in-pass time in each 128-position bucket
 //   decodeSteps  how many were summarized
 //   inPassMs     median of endNs − beginNs: a step's GPU time in its pass
 //   periodMs     median of beginNs_k − beginNs_(k−1): a step's share of the
@@ -35,9 +42,10 @@
 //
 // What the numbers decide (GPU.10): periodMs near inPassMs, outsidePct small
 // and reportMs near periodMs says the GPU is kept fed, and a token costs its
-// step's GPU time — Chrome's code then slower than native's 4.31 ms a step
-// at position 64 (docs/research/2026-10-07-forward-pass-profile.md) by
-// inPassMs's excess. A large outsidePct says the GPU waits between steps, on
-// the turn loop or the browser.
+// step's GPU time. Chrome's code is then slower than native's by reference's
+// excess over the native run of the same positions and build, made by
+// `make profile` at the same commit (bench/forward_profile.cpp) — never
+// against a figure from another commit. A large outsidePct says the GPU
+// waits between steps, on the turn loop or the browser.
 //
 // Pure (F.8): no DOM and no clock; tested in tests/web/step_profile.test.js.

@@ -73,14 +73,17 @@ namespace bllm::runtime {
 // runs profiled — kernels/program.h's run_profiled, through all its
 // launches — timed by the GPU at its one pass's beginning and end and
 // reading back its record as run() does, so the turn's tokens are the same.
-// As each step reports, before the turn's work on it, the observer is
-// called with the step's kind, position and tokens and its two GPU times.
-// The runtime reads no clock: a caller wanting the CPU's time of each
+// As each step reports, the turn decides its draw and runs the steps it
+// plans next, as without an observer; then the observer is called with the
+// reporting step's kind, position and tokens and its two GPU times, so its
+// work falls after the GPU has its next steps, never between a report and
+// them. The runtime reads no clock: a caller wanting the CPU's time of each
 // report reads its own clock in the observer, and the two clocks are never
 // subtracted (TLM.11). What it perturbs: each step also writes two
 // timestamps and resolves and reads back two queries, within its one
-// submit. The clean build has none of it, which
-// tools/check_diagnostics_excluded.sh checks.
+// submit; and the observer's own work, after the next steps are run. The
+// clean build has none of it, which tools/check_diagnostics_excluded.sh
+// checks.
 //
 // What it costs, counted:
 //   - A decoded token, on the CPU: one report from the program, the turn's
