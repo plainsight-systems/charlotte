@@ -64,9 +64,9 @@ namespace bllm::kernels {
 // Llama 3.2 and 144 for Gemma 3, every group of a row reading the same word;
 // how many of those reach device memory is the GPU's, and WebGPU states
 // nothing of it. Loaded once a workgroup instead, the token would need a
-// workgroup variable and a barrier in a kernel that has none, about 50 cycles
-// by top-k's estimate (kernels/topk/topk.h), on every step to spare loads of
-// one word. No row of the table that the step does not name is read.
+// workgroup variable and a barrier in a kernel that has none, every
+// invocation waiting at it each step, to spare loads of one word. No row of
+// the table that the step does not name is read.
 // Optimization (practice): an invocation writes its group's 128 bytes
 // contiguously and adjacent invocations take adjacent groups, so a
 // workgroup's writes are one contiguous run (GPU.2).

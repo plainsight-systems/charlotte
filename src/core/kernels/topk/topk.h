@@ -62,7 +62,8 @@ namespace bllm::kernels {
 // barriers one after another: at about 50 cycles a stage on the M3 Max's
 // cores near 1.4 GHz — an estimate, not counted from the design, to be
 // calibrated — 1.79 µs a pass, 5.4 µs for the three; and the
-// draw's own work, estimated at 1.5 µs at a top_k of 64 (sampler.h). About
+// draw's own work, estimated at 1.9 µs at a top_k of 64 and a top_p below 1
+// (sampler.h), apart from its launch. About
 // 15 µs a sampled step, estimated: the selection and draw are measured
 // together once they run, and that measure gives their share of a step.
 // Optimization (practice): select, not sort — 64 kept from each tile of
