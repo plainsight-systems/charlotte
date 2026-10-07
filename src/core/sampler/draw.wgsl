@@ -97,7 +97,9 @@ fn main(@builtin(local_invocation_index) t: u32) {
         }
     }
     if (t == workgroup_size - 1u) {
-        u = unit_interval(philox(vec4<u32>(step.position, 0u, 0u, 0u), step.seed).x);
+        // Counted by the position the drawn token takes, however the
+        // tokens before it were stepped (sampler.h).
+        u = unit_interval(philox(vec4<u32>(step.position + step.tokens, 0u, 0u, 0u), step.seed).x);
     }
     workgroupBarrier();
     if (top_p) {

@@ -75,10 +75,10 @@ struct Drawn {
 };
 
 Drawn draw(WGPUInstance instance, const gpu::Device& device, const Drawing& d, const policy::SamplingSettings& s,
-           std::uint64_t seed, std::uint32_t position) {
+           std::uint64_t seed, std::uint32_t position, std::uint32_t tokens = 1) {
     kernels::Step step{};
     step.position = position;
-    step.tokens = 1;
+    step.tokens = tokens;
     step.logits = 1;
     sampler::apply(s, policy::Seed{seed}, step);
     const StepOutcome ran = try_step(instance, *d.program, step);
@@ -111,9 +111,17 @@ TEST_CASE("the draw's uniform is the reference Philox's, bit for bit") {
         for (const std::uint32_t position : {0u, 1u, 2u, 1000u, 40'959u, 16'777'215u}) {
             CAPTURE(seed);
             CAPTURE(position);
+            // A one-token step at `position` draws the token at position + 1.
             CHECK(std::bit_cast<std::uint32_t>(draw(instance.get(), *device, *d, {}, seed, position).u) ==
-                  std::bit_cast<std::uint32_t>(uniform(seed, position)));
+                  std::bit_cast<std::uint32_t>(uniform(seed, position + 1)));
         }
+    }
+    // A step of many tokens draws the token after its last: the same uniform
+    // however the tokens before it were stepped.
+    for (const std::uint32_t tokens : {2u, 17u, 512u}) {
+        CAPTURE(tokens);
+        CHECK(std::bit_cast<std::uint32_t>(draw(instance.get(), *device, *d, {}, 7, 100, tokens).u) ==
+              std::bit_cast<std::uint32_t>(uniform(7, 100 + tokens)));
     }
 }
 

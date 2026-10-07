@@ -52,11 +52,13 @@ namespace bllm::sampler {
 //      and one uniform draws where a random-key race spends one a candidate
 //      (GDSA.21's caveat).
 //   - u is Philox4x32-10's first word (Salmon et al., SC '11) keyed by the
-//     turn's 64-bit seed with the token's position as the counter: its top
-//     23 bits scaled by 2⁻²³, plus 2⁻²⁴, so u lies in [2⁻²⁴, 1 − 2⁻²⁴], every
-//     value exact in f32 and neither 0 nor 1. A pure function of seed and
-//     position, so a run replays from its seed and any step replays alone
-//     (GDSA.3). WGSL has no 64-bit integers; Philox's 32-bit high products
+//     turn's 64-bit seed with the drawn token's position as the counter —
+//     the step's position plus its tokens, so a token's draw is the same
+//     whether its prompt was prefilled in one step or resumed from the
+//     cache: its top 23 bits scaled by 2⁻²³, plus 2⁻²⁴, so u lies in
+//     [2⁻²⁴, 1 − 2⁻²⁴], every value exact in f32 and neither 0 nor 1. A pure
+//     function of seed and position, so a run replays from its seed and any
+//     step replays alone (GDSA.3). WGSL has no 64-bit integers; Philox's 32-bit high products
 //     are formed from 16-bit halves. The same draw on the target's GPU and
 //     compiler; WGSL's exp may round differently elsewhere, which moves a
 //     draw only when u falls within that rounding of a boundary.
