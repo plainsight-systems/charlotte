@@ -322,7 +322,7 @@ struct Launch {
     // prefill tiles in parts of prefill's.
     TokenRange tokens = {};
     // What the launch does in the model, and its layer, as the graph names
-    // them (graph/graph.h): a profile's and a GPU capture's name for it, since
+    // them (graph/graph.h): a profile's name for it, since
     // one kernel serves many roles — the matrix product is every projection
     // and the head (GPU.10). The program runs a launch the same whatever its
     // name; a launcher leaves both for the graph to set.

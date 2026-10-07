@@ -108,9 +108,10 @@ namespace bllm::graph {
 //     one step, in several, or decoded a token at a time, on the target's
 //     compiler, as each kernel states.
 //   - Names: every launch a block appends carries its role and its layer
-//     (kernels/interface.h), so a profile and a GPU capture name what they
-//     time: "embed"; "attention.norm", "attention.qkv" — or "attention.q",
-//     "attention.k" and "attention.v" where the three cannot be one group —
+//     (kernels/interface.h), so a profile (bench/forward_profile.cpp) names
+//     what it times: "embed"; "attention.norm", "attention.qkv" — or
+//     "attention.q", "attention.k" and "attention.v" where the three cannot
+//     be one group —
 //     "attention.rope", "attention.scores", "attention.combine" and
 //     "attention.output"; "ffn.norm", "ffn.gate_up" and "ffn.down"; and the
 //     output block's "output.norm", "output.head", "output.select" and
