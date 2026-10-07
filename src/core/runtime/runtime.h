@@ -79,9 +79,12 @@ namespace bllm::runtime {
 // work falls after the GPU has its next steps, never between a report and
 // them. The runtime reads no clock: a caller wanting the CPU's time of each
 // report reads its own clock in the observer, and the two clocks are never
-// subtracted (TLM.11). What it perturbs: each step also writes two
-// timestamps and resolves and reads back two queries, within its one
-// submit; and the observer's own work, after the next steps are run. The
+// subtracted (TLM.11). What it perturbs: each step's pass also writes two
+// timestamps, and the step resolves them and copies them to a buffer of
+// their own, which it maps, reads and unmaps — five more calls into WebGPU,
+// 22 with run()'s 17 (kernels/program.h), and one more callback, which the
+// step's report waits on — and the observer's own work, after the next
+// steps are run. The
 // clean build has none of it, which tools/check_diagnostics_excluded.sh
 // checks.
 //
@@ -246,7 +249,8 @@ public:
 
 #if BLLM_DIAGNOSTICS_ENABLED
     // Sets the step observer, or with null clears it; false, changing
-    // nothing, while a turn runs.
+    // nothing, while a turn runs or, setting one, when the program's device
+    // granted no timestamp queries (kernels/program.h, can_profile).
     bool observe_steps(StepObserver observer, void* userdata) noexcept;
 #endif
 

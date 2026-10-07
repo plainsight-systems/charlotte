@@ -199,6 +199,10 @@ public:
 
     // The graph's launches: a whole step's bound for run_profiled.
     [[nodiscard]] std::uint32_t launch_count() const noexcept;
+
+    // Whether the device granted timestamp queries, read once at build:
+    // without them run_profiled refuses every step.
+    [[nodiscard]] bool can_profile() const noexcept;
 #endif
 
     // Runs one step. `done` is called once: when the queue has finished it,

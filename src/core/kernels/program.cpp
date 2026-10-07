@@ -92,6 +92,7 @@ struct Program::State {
     };
     std::array<Timer, Order::kOutstanding> timers;
     bool timed = false;            // the timers are made
+    bool timestamps = false;       // the device granted timestamp queries, read once at build
     bool inside_passes = false;    // timestamps inside a pass granted
     std::uint32_t query_count = 0;
     std::uint32_t profiled_outstanding = 0;   // never beside an unprofiled step
@@ -360,6 +361,9 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     state->device = gpu::retain(upload.device());
     state->device_status = upload.device_status();
     WGPUDevice device = state->device.get();
+#if BLLM_DIAGNOSTICS_ENABLED
+    state->timestamps = wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery);
+#endif
     state->queue = gpu::Queue(wgpuDeviceGetQueue(device));
     WGPULimits limits = WGPU_LIMITS_INIT;
     wgpuDeviceGetLimits(device, &limits);
@@ -762,10 +766,14 @@ std::uint32_t Program::launch_count() const noexcept {
     return static_cast<std::uint32_t>(state_->launches.size());
 }
 
+bool Program::can_profile() const noexcept {
+    return state_->timestamps;
+}
+
 void Program::run_profiled(const Step& step, std::uint32_t launches, ProfileCallback done, void* userdata) {
     State& s = *state_;
     const auto refuse = [&](std::string_view why) { done(ProgramError::Step, why, {}, Timestamps{0, 0, {}}, userdata); };
-    if (!wgpuDeviceHasFeature(s.device.get(), WGPUFeatureName_TimestampQuery)) {
+    if (!s.timestamps) {
         refuse("the device did not grant timestamp queries");
         return;
     }

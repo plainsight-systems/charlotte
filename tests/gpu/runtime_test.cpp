@@ -429,4 +429,17 @@ TEST_CASE("an observed turn draws the same tokens, each step reported in order w
     CHECK(again->result->failure == TurnFailure::None);
 }
 
+TEST_CASE("a runtime whose device grants no timestamp queries refuses an observer, and its turns run") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());   // the harness's own: no timestamps
+    auto s = open(instance.get(), *device, "forward_model", {0});
+    Observed seen;
+    seen.runtime = s->runtime.get();
+    CHECK_FALSE(s->runtime->observe_steps(record_step, &seen));
+    CHECK(s->runtime->observe_steps(nullptr, nullptr));   // clearing is always allowed between turns
+    const auto t = turn(instance.get(), *s, pseudo_random(30, 4), 5);
+    CHECK(t->result->failure == TurnFailure::None);
+    CHECK(seen.steps.empty());
+}
+
 #endif

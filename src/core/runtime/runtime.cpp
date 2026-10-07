@@ -232,7 +232,9 @@ std::uint32_t Runtime::capacity() const noexcept { return state_->cache.capacity
 #if BLLM_DIAGNOSTICS_ENABLED
 bool Runtime::observe_steps(StepObserver observer, void* userdata) noexcept {
     State& s = *state_;
-    if (s.turn) return false;
+    // Refused while a turn runs, and for a program that cannot profile: its
+    // every step would be refused, at once, inside the turn's own loop.
+    if (s.turn || (observer != nullptr && (s.program == nullptr || !s.program->can_profile()))) return false;
     s.observer = observer;
     s.observer_data = userdata;
     return true;
