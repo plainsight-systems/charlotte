@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <initializer_list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -230,10 +232,26 @@ private:
         const residency::WeightView* post_gain = nullptr;     // the writer's post-norm, or null
     };
 
+    // The plan's working buffers, by what they hold.
+    struct Buffers {
+        residency::BufferRange hidden, normed, query, key, value, attention, partials, partial_stats, output,
+            activation, logits;
+    };
+
+    [[nodiscard]] const residency::WeightView& view(gguf::TensorId tensor) const;
+    // The layer's weight in `role`, or null where it has none.
+    [[nodiscard]] const residency::WeightView* role(std::uint32_t layer, model::Role role) const;
+    // The plan's group whose members, in order, are `members`, or null.
+    [[nodiscard]] const residency::PlannedGroup* group(std::initializer_list<std::optional<gguf::TensorId>> members) const;
+    void product(const residency::WeightView& weight, const residency::BufferRange& input,
+                 const residency::BufferRange& output, kernels::Rows rows);
+
     const model::ModelDescription* model_;
     const residency::ResidencyPlan* plan_;
     const formats::Format* cache_format_;
     std::vector<kernels::Launch>* out_;
+    std::vector<const residency::WeightView*> views_;   // by tensor id; null for a tensor the plan did not place
+    Buffers buffers_;
     Pending pending_;
 };
 

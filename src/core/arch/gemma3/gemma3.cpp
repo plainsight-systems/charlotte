@@ -89,8 +89,24 @@ DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription&
     return apply_sliding_window(index, out);
 }
 
+// Each layer attention then the gated feed-forward block, each block's
+// output through its post-norm before it is added (graph/graph.h), and the
+// embedding scaled by the square root of its width in f32, as llama.cpp's
+// build_inp_embd(tok_embd, sqrtf(n_embd)) does for Gemma 3.
+graph::GraphResult graph(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
+                         const formats::Format& cache_format, std::vector<kernels::Launch>& out) {
+    graph::Builder b(model, plan, cache_format, out);
+    b.embed(std::sqrt(static_cast<float>(model.embedding_width)));
+    for (std::uint32_t layer = 0; layer < model.layers.size(); ++layer) {
+        if (auto r = b.attention(layer); !r.ok()) return r;
+        if (auto r = b.gated_feed_forward(layer); !r.ok()) return r;
+    }
+    b.output();
+    return {};
+}
+
 }  // namespace
 
-const Architecture kGemma3{"gemma3", describe};
+const Architecture kGemma3{"gemma3", describe, graph};
 
 }  // namespace bllm::arch

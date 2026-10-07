@@ -29,6 +29,7 @@ add_library(charlotte_core STATIC
     src/core/arch/gemma3/gemma3.cpp
     src/core/arch/llama/llama.cpp
     src/core/arch/qwen3/qwen3.cpp
+    src/core/graph/graph.cpp
     src/core/capability/capability.cpp
     src/core/gguf/arrays.cpp
     src/core/gguf/index.cpp

@@ -34,8 +34,22 @@ DescribeResult describe(const gguf::TensorIndex& index, model::ModelDescription&
                            out);
 }
 
+// Each layer attention then the gated feed-forward block, the embedding
+// unscaled, as llama.cpp's graph for Qwen3 runs them.
+graph::GraphResult graph(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
+                         const formats::Format& cache_format, std::vector<kernels::Launch>& out) {
+    graph::Builder b(model, plan, cache_format, out);
+    b.embed(1.0f);
+    for (std::uint32_t layer = 0; layer < model.layers.size(); ++layer) {
+        if (auto r = b.attention(layer); !r.ok()) return r;
+        if (auto r = b.gated_feed_forward(layer); !r.ok()) return r;
+    }
+    b.output();
+    return {};
+}
+
 }  // namespace
 
-const Architecture kQwen3{"qwen3", describe};
+const Architecture kQwen3{"qwen3", describe, graph};
 
 }  // namespace bllm::arch
