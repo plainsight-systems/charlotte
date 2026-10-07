@@ -4,10 +4,13 @@ import { Notice, Reply } from './protocol.js';
 // `code`, where the runtime gives one, what the page can act on, as
 // "prompt-too-long".
 export class WorkerError extends Error {
-  constructor({ stage, message }) {
+  constructor({ stage, message, code, counts }) {
     super(message);
     this.name = 'WorkerError';
     this.stage = stage;
+    this.code = code;
+    // For "prompt-too-long": { promptTokens, contextTokens }.
+    this.counts = counts;
   }
 }
 

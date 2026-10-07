@@ -25,3 +25,38 @@ export function splitThinking(text) {
     answer: rest.slice(close + '</think>'.length).trimStart(),
   };
 }
+
+// The conversation shortened to fit the context, after the runtime refused it
+// with `counts`, { promptTokens, contextTokens }. Drops the oldest exchanges —
+// each a user message and the replies before the next user message — whose
+// share of the messages' text covers the prompt's excess over three quarters
+// of the context, leaving a quarter for the reply; at least one. System
+// messages and the newest message, the user's turn, are kept. Returns
+// { messages, dropped }, or null when there is nothing left to drop.
+export function shortened(messages, { promptTokens, contextTokens }) {
+  const newest = messages.length - 1;
+  const total = messages.reduce((sum, m) => sum + m.content.length, 0);
+  const target = Math.floor((contextTokens * 3) / 4);
+  const need = promptTokens > target ? ((promptTokens - target) / promptTokens) * total : 0;
+  const kept = [];
+  let dropped = 0;
+  let droppedText = 0;
+  let dropping = true;
+  for (let i = 0; i < newest; i++) {
+    const m = messages[i];
+    if (m.role === 'system') {
+      kept.push(m);
+      continue;
+    }
+    // Stop only where an exchange begins, once enough has gone.
+    if (dropping && m.role === 'user' && dropped > 0 && droppedText >= need) dropping = false;
+    if (dropping) {
+      dropped++;
+      droppedText += m.content.length;
+    } else {
+      kept.push(m);
+    }
+  }
+  if (dropped === 0) return null;
+  return { messages: [...kept, messages[newest]], dropped };
+}

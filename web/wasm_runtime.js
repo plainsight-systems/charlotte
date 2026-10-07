@@ -40,6 +40,7 @@ export async function createRuntime({ onDevice, runBench }) {
     onDevice(device);
   };
   globalThis.bllmOnReply = answer;
+  globalThis.bllmOnText = (call, text) => streams.get(call)?.(text);
 
   const module = await createModule();
   startDeviceCheck(module, { onDevice, runBench });
@@ -47,17 +48,18 @@ export async function createRuntime({ onDevice, runBench }) {
   const canCheck = typeof module._bllm_check_begin === 'function';
 
   return {
-    preflight: async (bytes, totalSize) => {
+    preflight: async (bytes, totalSize, policy) => {
       const limits = await deviceLimits;
       return withBytesInModule(module, bytes, (pointer, length) =>
-        callModule((call) => module._bllm_preflight(call, pointer, length, totalSize,
-          limits?.maxBufferSize ?? 0, limits?.maxStorageBufferBindingSize ?? 0,
-          limits?.minStorageBufferOffsetAlignment ?? 0)));
+        withPolicy(module, policy, (fields) =>
+          callModule((call) => module._bllm_preflight(call, pointer, length, totalSize,
+            limits?.maxBufferSize ?? 0, limits?.maxStorageBufferBindingSize ?? 0,
+            limits?.minStorageBufferOffsetAlignment ?? 0, ...fields))));
     },
 
     canCheck,
 
-    loadFromCache: async ({ name, indexBytes, confirmed, maxChunk, onProgress, signal }) => {
+    loadFromCache: async ({ name, indexBytes, confirmed, maxChunk, policy, onProgress, signal }) => {
       const root = await navigator.storage.getDirectory();
       const handle = await (await root.getFileHandle(name)).createSyncAccessHandle();
       try {
@@ -78,15 +80,16 @@ export async function createRuntime({ onDevice, runBench }) {
           onProgress: (done, total) => onProgress?.({ phase, done, total }),
         });
 
-        await pass('load', {
+        const loaded = await pass('load', {
           begin: async ({ maxChunk: chunkBytes }) => {
             const prefix = module._malloc(indexBytes);
             const ids = module._malloc(Math.max(4, confirmed.length * 4));
             try {
               readInto(prefix, 0, indexBytes);
               module.HEAPU8.set(new Uint8Array(u32s(confirmed)), ids);
-              chunkPointer = settled(await callModule((call) => module._bllm_load_begin(
-                call, prefix, indexBytes, size, ids, confirmed.length, chunkBytes))).chunkPointer;
+              chunkPointer = settled(await withPolicy(module, policy, (fields) => callModule((call) =>
+                module._bllm_load_begin(call, prefix, indexBytes, size, ids, confirmed.length, chunkBytes,
+                  ...fields)))).chunkPointer;
             } finally {
               module._free(prefix);
               module._free(ids);
@@ -95,7 +98,8 @@ export async function createRuntime({ onDevice, runBench }) {
           chunk: (call, offset, length) => module._bllm_load_chunk(call, offset, length),
           finish: (call) => module._bllm_load_finish(call),
         });
-        if (!canCheck) return { check: null };
+        const { contextOffered } = loaded;
+        if (!canCheck) return { check: null, contextOffered };
         const checked = await pass('check', {
           begin: async ({ maxChunk: chunkBytes }) => {
             chunkPointer = settled(await callModule((call) => module._bllm_check_begin(call, chunkBytes))).chunkPointer;
@@ -103,18 +107,49 @@ export async function createRuntime({ onDevice, runBench }) {
           chunk: (call, offset, length) => module._bllm_check_chunk(call, offset, length),
           finish: (call) => module._bllm_check_finish(call),
         });
-        return { check: { mismatches: checked.mismatches } };
+        return { check: { mismatches: checked.mismatches }, contextOffered };
       } finally {
         handle.close();
       }
     },
 
-    generate: () => {
-      throw new Error('generating text is not implemented in this build');
+    generate: async ({ id, prompt, sampling, seed, maxTokens, onText }) => {
+      const bytes = new TextEncoder().encode(prompt);
+      const pointer = module._malloc(Math.max(1, bytes.length));
+      if (pointer === 0) throw new Error(`could not allocate ${bytes.length} bytes in the module`);
+      let call;
+      let answered;
+      try {
+        module.HEAPU8.set(bytes, pointer);
+        answered = callModule((c) => {
+          call = c;
+          streams.set(c, onText);
+          turns.set(id, c);
+          module._bllm_generate(c, pointer, bytes.length, sampling === undefined ? 0 : 1,
+            sampling?.temperature ?? 0, sampling?.topK ?? 0, sampling?.topP ?? 0, sampling?.minP ?? 0,
+            seed, maxTokens ?? 0xFFFFFFFF);
+        });
+      } finally {
+        // The module encoded the prompt during the call.
+        module._free(pointer);
+      }
+      try {
+        const answer = await answered;
+        if (!answer.ok) throw new ModuleError(answer);
+        const { stopReason, tokens, promptTokens, reusedTokens } = answer;
+        return { stopReason, tokens, promptTokens, reusedTokens };
+      } finally {
+        streams.delete(call);
+        turns.delete(id);
+      }
     },
 
-    // Nothing generates, so there is nothing to stop.
-    cancel: () => false,
+    // Ends a generate's turn, named by its request; false when none runs.
+    cancel: async (target) => {
+      const call = turns.get(target);
+      if (call === undefined) return false;
+      return (await callModule((c) => module._bllm_cancel(c, call))).running;
+    },
   };
 }
 
@@ -150,6 +185,51 @@ function callModule(start) {
     pendingCalls.set(call, resolve);
     start(call);
   });
+}
+
+// Each running generate's text callback, by its call id; and its call id, by
+// the worker's request id, for cancel.
+const streams = new Map();
+const turns = new Map();
+
+// A failure the module answered, with its code where it gave one.
+class ModuleError extends Error {
+  constructor({ error, subject, code, promptTokens, contextTokens }) {
+    super(subject ? `${error} (${subject})` : error);
+    this.code = code;
+    if (code === 'prompt-too-long') this.counts = { promptTokens, contextTokens };
+  }
+}
+
+// The cache precisions, in CachePrecision's order (core/policy/policy.h).
+const PRECISIONS = ['F16', 'BF16', 'Q8_0'];
+
+// The model's load policy as the module reads it (src/wasm/bindings.cpp),
+// for the duration of `use`: each field, or its stand-in for unset; the stop
+// texts' UTF-8 bytes in one buffer, and their lengths.
+async function withPolicy(module, policy = {}, use) {
+  const precision = policy.cachePrecision === undefined ? -1 : PRECISIONS.indexOf(policy.cachePrecision);
+  if (precision === -1 && policy.cachePrecision !== undefined) {
+    throw new Error(`cache precision "${policy.cachePrecision}" is not one this build names`);
+  }
+  const encoder = new TextEncoder();
+  const stops = (policy.stop ?? []).map((text) => encoder.encode(text));
+  const total = stops.reduce((sum, bytes) => sum + bytes.length, 0);
+  const bytes = module._malloc(Math.max(1, total));
+  const lengths = module._malloc(Math.max(4, stops.length * 4));
+  try {
+    let at = 0;
+    for (const stop of stops) {
+      module.HEAPU8.set(stop, bytes + at);
+      at += stop.length;
+    }
+    module.HEAPU8.set(new Uint8Array(u32s(stops.map((stop) => stop.length))), lengths);
+    return await use([precision, policy.memoryBudget ?? NaN, policy.rollbackReserve ?? 0xFFFFFFFF,
+      bytes, lengths, stops.length]);
+  } finally {
+    module._free(bytes);
+    module._free(lengths);
+  }
 }
 
 // A load answer, or its failure thrown, named.

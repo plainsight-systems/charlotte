@@ -33,12 +33,14 @@ export function createModelController({ element, client, cache, onLoaded, onCach
     return step.signal;
   };
 
-  // Preflight over any range source: the network, or a cached file.
-  const readVerdict = (fetchRangeOf) => preflight({
+  // Preflight over any range source: the network, or a cached file, under
+  // the model's load policy.
+  const readVerdict = (model, fetchRangeOf) => preflight({
     fetchRange: fetchRangeOf,
     readIndex: (bytes, totalSize) => {
       const copy = bytes.slice().buffer;
-      return client.request(Request.PREFLIGHT, { bytes: copy, totalSize }, { transfer: [copy] });
+      return client.request(Request.PREFLIGHT, { bytes: copy, totalSize, policy: model.policy?.load },
+        { transfer: [copy] });
     },
   });
 
@@ -47,7 +49,7 @@ export function createModelController({ element, client, cache, onLoaded, onCach
     show({ phase: 'checking', model });
     try {
       const file = await cache.file(cacheKey(model));
-      const verdict = await readVerdict(file !== null
+      const verdict = await readVerdict(model, file !== null
         ? rangesOfFile(file)
         : (start, end) => fetchRange(model.url, start, end, { signal }));
       if (!signal.aborted) show({ phase: file !== null ? 'cached' : 'downloadable', model, verdict });
@@ -69,7 +71,7 @@ export function createModelController({ element, client, cache, onLoaded, onCach
         },
       });
       onCacheChanged();
-      const copy = await readVerdict(rangesOfFile(await cache.file(cacheKey(model))));
+      const copy = await readVerdict(model, rangesOfFile(await cache.file(cacheKey(model))));
       if (copy.tensorCount !== verdict.tensorCount || copy.architecture !== verdict.architecture) {
         throw new Error('the downloaded copy does not read the same as the file on the server');
       }
@@ -90,7 +92,8 @@ export function createModelController({ element, client, cache, onLoaded, onCach
       // opens the file, which locks it while it reads.
       const confirmed = await confirmDuplicates({ file, candidates: verdict.fit?.duplicates ?? [], signal });
       const { id, reply } = client.send(Request.LOAD,
-        { name: cachedFileName(cacheKey(model)), indexBytes: verdict.indexBytes, confirmed, maxChunk: LOAD_CHUNK_BYTES },
+        { name: cachedFileName(cacheKey(model)), indexBytes: verdict.indexBytes, confirmed, maxChunk: LOAD_CHUNK_BYTES,
+          policy: model.policy?.load },
         {
           // A diagnostic build reads every byte back after loading them.
           onProgress: ({ phase, done, total }) => {

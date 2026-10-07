@@ -26,26 +26,26 @@ export async function createRuntime({ onDevice, runBench }) {
   const cancelled = new Set();
 
   return {
-    preflight: async (bytes, totalSize) => {
-      const answer = await real.preflight(bytes, totalSize);
+    preflight: async (bytes, totalSize, policy) => {
+      const answer = await real.preflight(bytes, totalSize, policy);
       if (answer.status !== 'read') return answer;
       return { ...answer, reached: 'run', blockers: [] };
     },
 
     // Loads nothing, and says so: no check is made.
     canCheck: false,
-    loadFromCache: async () => ({ check: null }),
+    loadFromCache: async () => ({ check: null, contextOffered: 0 }),
 
     generate: async ({ id, prompt, onText }) => {
       const text = `${REPLY}The rendered prompt was ${prompt.length} characters.`;
       let tokens = 0;
       for (const word of text.split(/(?<= )/)) {
-        if (cancelled.delete(id)) return { stopReason: 'cancelled', tokens };
+        if (cancelled.delete(id)) return { stopReason: 'cancelled', tokens, promptTokens: 0, reusedTokens: 0 };
         await new Promise((resolve) => setTimeout(resolve, WORD_DELAY_MS));
         onText(word);
         tokens++;
       }
-      return { stopReason: 'end', tokens };
+      return { stopReason: 'stop', tokens, promptTokens: 0, reusedTokens: 0 };
     },
 
     cancel: (target) => {

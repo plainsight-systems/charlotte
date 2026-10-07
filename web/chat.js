@@ -27,7 +27,7 @@
 // that grows with the square of its length; a frame at a time, with the
 // frames' count, about 60 a second, not the tokens', several hundred.
 
-import { splitThinking, withAssistant, withUser } from './conversation.js';
+import { shortened, splitThinking, withAssistant, withUser } from './conversation.js';
 import { h } from './dom.js';
 import { compileTemplate, offersThinking } from './template.js';
 
@@ -78,43 +78,66 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
     error.textContent = '';
 
     const mode = thinking?.checked ? 'thinking' : 'default';
-    const turn = withUser(messages, text);
-    let prompt;
-    try {
-      const variables = thinking === null ? {} : { enable_thinking: thinking.checked };
-      prompt = render(turn, { variables, now: new Date() });
-    } catch (failure) {
-      error.textContent = failure.message;
-      return;
-    }
+    const variables = thinking === null ? {} : { enable_thinking: thinking.checked };
+    let turn = withUser(messages, text);
 
     const userBubble = h('div', { className: 'message user', text });
-    const replyBubble = h('div', { className: 'message assistant' });
+    // The reply's text in a part of its own, so a redraw leaves the facts
+    // appended after it.
+    const replyText = h('div');
+    const replyBubble = h('div', { className: 'message assistant' }, replyText);
     log.append(userBubble, replyBubble);
     input.value = '';
 
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
     const started = performance.now();
+    // The reply redrawn at most once a frame (see the top of this file).
     let reply = '';
-    const { id, reply: done } = generate(prompt, {
-      sampling: model.policy?.sampling?.[mode],
-      seed,
-      onText: (piece) => {
-        reply += piece;
-        renderReply(replyBubble, reply);
-        log.scrollTop = log.scrollHeight;
-      },
-    });
-    session.generating = id;
+    let drawing = false;
+    const draw = () => {
+      drawing = false;
+      renderReply(replyText, reply);
+      log.scrollTop = log.scrollHeight;
+    };
+    const onText = (piece) => {
+      reply += piece;
+      if (!drawing) {
+        drawing = true;
+        requestAnimationFrame(draw);
+      }
+    };
     button.textContent = 'Stop';
 
+    let dropped = 0;
     try {
-      const { stopReason, tokens } = await done;
+      let result;
+      for (;;) {
+        const prompt = render(turn, { variables, now: new Date() });
+        const { id, reply: done } = generate(prompt, { sampling: model.policy?.sampling?.[mode], seed, onText });
+        session.generating = id;
+        try {
+          result = await done;
+          break;
+        } catch (failure) {
+          // Longer than the context: drop the oldest exchanges and resend.
+          const shorter = failure.code === 'prompt-too-long' ? shortened(turn, failure.counts) : null;
+          if (shorter === null) throw failure;
+          turn = shorter.messages;
+          dropped += shorter.dropped;
+        }
+      }
+      draw();
       messages = withAssistant(turn, reply);
+      if (dropped > 0) {
+        log.insertBefore(h('p', { className: 'message-facts',
+          text: `${dropped} earlier messages dropped to fit the context` }), userBubble);
+      }
+      const { stopReason, tokens, promptTokens, reusedTokens } = result;
       const seconds = (performance.now() - started) / 1000;
+      const ended = { cancelled: ' · stopped', context: ' · context full', limit: ' · limit reached' }[stopReason] ?? '';
       replyBubble.append(h('p', { className: 'message-facts',
-        text: `${tokens} tokens · ${(tokens / seconds).toFixed(1)} tok/s · seed ${seed}` +
-              (stopReason === 'cancelled' ? ' · stopped' : '') }));
+        text: `${tokens} tokens · ${(tokens / seconds).toFixed(1)} tok/s · ` +
+              `${reusedTokens} of ${promptTokens} prompt tokens cached · seed ${seed}${ended}` }));
     } catch (failure) {
       // The turn did not happen: take it back out, and return the text.
       userBubble.remove();

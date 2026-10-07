@@ -34,19 +34,19 @@ const loads = new Map();
 // the ways to answer before it is done — `token` streams text, `progress`
 // reports a load's progress; it returns the request's result or throws.
 const handlers = {
-  [Request.PREFLIGHT]: (runtime, { bytes, totalSize }) => runtime.preflight(bytes, totalSize),
-  [Request.LOAD]: async (runtime, { id, name, indexBytes, confirmed, maxChunk }, { progress }) => {
+  [Request.PREFLIGHT]: (runtime, { bytes, totalSize, policy }) => runtime.preflight(bytes, totalSize, policy),
+  [Request.LOAD]: async (runtime, { id, name, indexBytes, confirmed, maxChunk, policy }, { progress }) => {
     const controller = new AbortController();
     loads.set(id, controller);
     try {
-      return await runtime.loadFromCache({ name, indexBytes, confirmed, maxChunk, onProgress: progress,
+      return await runtime.loadFromCache({ name, indexBytes, confirmed, maxChunk, policy, onProgress: progress,
         signal: controller.signal });
     } finally {
       loads.delete(id);
     }
   },
-  [Request.GENERATE]: (runtime, { id, prompt, sampling, seed }, { token }) =>
-    runtime.generate({ id, prompt, sampling, seed, onText: token }),
+  [Request.GENERATE]: (runtime, { id, prompt, sampling, seed, maxTokens }, { token }) =>
+    runtime.generate({ id, prompt, sampling, seed, maxTokens, onText: token }),
   [Request.CANCEL]: (runtime, { target }) => {
     const load = loads.get(target);
     if (load === undefined) return runtime.cancel(target);
@@ -68,6 +68,7 @@ self.addEventListener('message', async ({ data: request }) => {
     const progress = (value) => reply({ kind: Reply.PROGRESS, progress: value });
     reply({ kind: Reply.DONE, value: await handler(runtime, request, { token, progress }) });
   } catch (error) {
-    reply({ kind: Reply.FAILED, error: { stage: request.kind, message: String(error?.message ?? error) } });
+    reply({ kind: Reply.FAILED, error: { stage: request.kind, message: String(error?.message ?? error),
+      code: error?.code, counts: error?.counts } });
   }
 });

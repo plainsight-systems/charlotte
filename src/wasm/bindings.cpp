@@ -110,6 +110,7 @@
 #include <emscripten/eventloop.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -121,12 +122,19 @@
 #include <string_view>
 #include <utility>
 
+#include "core/arch/architecture.h"
+#include "core/cache/kv.h"
 #include "core/capability/capability.h"
 #include "core/gguf/reader.h"
 #include "core/gpu/device.h"
 #include "core/preflight/preflight.h"
+#include "core/kernels/program.h"
 #include "core/residency/upload.h"
 #include "core/run_guard.h"
+#include "core/runtime/generator.h"
+#include "core/runtime/stops.h"
+#include "core/sampler/sampler.h"
+#include "core/tokenizer/tokenizer.h"
 #include "core/gpu/self_check.h"
 #include "core/diagnostics.h"
 #if BLLM_DIAGNOSTICS_ENABLED
@@ -278,7 +286,7 @@ std::string fit_json(const std::optional<bllm::preflight::FitSummary>& fit) {
 // read, or the verdict on a file that can.
 std::string preflight_json(bllm::gguf::ByteSource& source, const bllm::gguf::ReadResult& read,
                            const bllm::gguf::TensorIndex& index,
-                           const bllm::residency::DeviceLimits& limits) {
+                           const bllm::residency::DeviceLimits& limits, const bllm::policy::LoadPolicy& policy) {
     using bllm::gguf::ReadError;
     if (read.error == ReadError::NeedMoreBytes) {
         return "{\"status\":\"need-bytes\",\"bytesNeeded\":" +
@@ -288,9 +296,7 @@ std::string preflight_json(bllm::gguf::ByteSource& source, const bllm::gguf::Rea
         return "{\"status\":\"unreadable\",\"error\":" +
                json_string(bllm::gguf::to_string(read.error)) + "}";
     }
-    // Every listed model is unmeasured, so each runs on the load policy's
-    // defaults.
-    const auto verdict = bllm::preflight::preflight(source, index, limits, bllm::policy::LoadPolicy{});
+    const auto verdict = bllm::preflight::preflight(source, index, limits, policy);
     std::string_view architecture;
     const bool named = index.read_string("general.architecture", architecture) ==
                        bllm::gguf::MetadataError::Ok;
@@ -337,10 +343,23 @@ void disarm_timeout() {
 
 // The session's state across crossings (see the top of this file).
 struct Load {
+    std::uint32_t begin_request = 0;
     std::unique_ptr<bllm::residency::Upload> upload;   // null until begin's answer
     std::vector<std::byte> chunk;                      // the chunk buffer
     std::uint64_t file_size = 0;
     bool settled = false;   // finished or failed: the next begin replaces it
+    // What begin made from the prefix, for finish: the description, the
+    // tokenizer and the stop set, or why the tokenizer could not be made.
+    bllm::model::ModelDescription description;
+    const bllm::arch::Architecture* architecture = nullptr;
+    bllm::policy::CachePrecision precision = bllm::policy::CachePrecision::F16;
+    std::unique_ptr<bllm::tokenizer::Tokenizer> tokenizer;
+    bllm::runtime::StopSet stops;
+    std::string tokenizer_failure;
+    // Begin answers once both the buffers' answer and the tokenizer are in.
+    bool prepared = false;
+    bool ready = false;
+    std::string ready_failure;   // the buffers' failure, when `ready` and no upload
 };
 
 #if BLLM_DIAGNOSTICS_ENABLED
@@ -356,6 +375,10 @@ struct Session {
     std::unique_ptr<Load> load;
     std::unique_ptr<bllm::residency::Upload> loaded;    // the model a load finished
     std::uint64_t loaded_file_size = 0;
+    // Over `loaded`, whose buffers its program borrows: declared after it, so
+    // released before it.
+    std::unique_ptr<bllm::runtime::Generator> generator;
+    std::uint32_t turn_request = 0;   // the generate whose turn runs, or 0
 #if BLLM_DIAGNOSTICS_ENABLED
     std::unique_ptr<Check> check;   // declared after `loaded`, so released before it
 #endif
@@ -370,22 +393,71 @@ std::string failure_json(std::string_view error, std::string_view subject = {}) 
     return "{\"ok\":false,\"error\":" + json_string(error) + ",\"subject\":" + json_string(subject) + "}";
 }
 
+constexpr double kMaxExactInteger = 9007199254740992.0;   // 2^53
+
+bool exact_integer(double v) {
+    return v >= 0 && v <= kMaxExactInteger && v == static_cast<double>(static_cast<std::uint64_t>(v));
+}
+
+// The model's load policy as the page writes it (see the top of this file):
+// a field's stand-in for unset leaves the default. Empty on success, else
+// what is wrong with it.
+std::string read_load_policy(std::int32_t precision, double memory_budget, std::uint32_t rollback_reserve,
+                             const char* stop_bytes, const std::uint32_t* stop_lengths, std::uint32_t stop_count,
+                             bllm::policy::LoadPolicy& out) {
+    if (precision != -1) {
+        if (precision < 0 || precision > static_cast<std::int32_t>(bllm::policy::CachePrecision::Q8_0)) {
+            return "the cache precision passed in is not one this build names";
+        }
+        out.cache_precision = static_cast<bllm::policy::CachePrecision>(precision);
+    }
+    if (!std::isnan(memory_budget)) {
+        if (!exact_integer(memory_budget)) return "the memory budget passed in is not valid";
+        out.memory_budget = static_cast<std::uint64_t>(memory_budget);
+    }
+    if (rollback_reserve != UINT32_MAX) out.rollback_reserve = rollback_reserve;
+    std::size_t at = 0;
+    for (std::uint32_t i = 0; i < stop_count; ++i) {
+        out.stop.emplace_back(stop_bytes + at, stop_lengths[i]);
+        at += stop_lengths[i];
+    }
+    return {};
+}
+
+// Begin's answer, once both halves are in: the buffers, which the device
+// creates, and the tokenizer and stop set, made meanwhile.
+void answer_begin(Load& load) {
+    if (!load.prepared || !load.ready) return;
+    if (!load.ready_failure.empty() || !load.tokenizer_failure.empty()) {
+        load.settled = true;
+        load.upload.reset();
+        bllm_reply(load.begin_request,
+                   failure_json(load.ready_failure.empty() ? load.tokenizer_failure : load.ready_failure).c_str());
+        return;
+    }
+    const std::string json = "{\"ok\":true,\"chunkPointer\":" +
+                             std::to_string(reinterpret_cast<std::uintptr_t>(load.chunk.data())) +
+                             ",\"chunkBytes\":" + std::to_string(load.chunk.size()) + "}";
+    bllm_reply(load.begin_request, json.c_str());
+}
+
 // The load an answer belongs to may have been replaced by a later begin;
 // the request id carries it, so the answer still reaches its request.
 void on_load_ready(std::unique_ptr<bllm::residency::Upload> upload, bllm::residency::UploadError error,
                    const char* subject, void* userdata) {
     const std::uint32_t request = to_generation(userdata);
     Load* load = session().load.get();
-    if (upload == nullptr || load == nullptr) {
-        if (load != nullptr) load->settled = true;
-        bllm_reply(request, failure_json(bllm::residency::to_string(error), subject).c_str());
+    if (load == nullptr || load->begin_request != request) {
+        bllm_reply(request, failure_json("the load was replaced by another").c_str());
         return;
     }
+    load->ready = true;
+    if (upload == nullptr) {
+        const std::string named(bllm::residency::to_string(error));
+        load->ready_failure = subject != nullptr && *subject != '\0' ? named + " (" + subject + ")" : named;
+    }
     load->upload = std::move(upload);
-    const std::string json = "{\"ok\":true,\"chunkPointer\":" +
-                             std::to_string(reinterpret_cast<std::uintptr_t>(load->chunk.data())) +
-                             ",\"chunkBytes\":" + std::to_string(load->chunk.size()) + "}";
-    bllm_reply(request, json.c_str());
+    answer_begin(*load);
 }
 
 void on_load_accepted(bllm::residency::UploadError error, void* userdata) {
@@ -398,21 +470,109 @@ void on_load_accepted(bllm::residency::UploadError error, void* userdata) {
     bllm_reply(request, "{\"ok\":true}");
 }
 
+// The program is built: the cache at the context offered, the runtime and
+// the generator, and finish's answer.
+void on_program_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kernels::ProgramError error,
+                      std::string_view message, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    Session& s = session();
+    Load* load = s.load.get();
+    if (load == nullptr || load->settled || s.loaded == nullptr) {
+        bllm_reply(request, failure_json("the load was replaced by another").c_str());
+        return;
+    }
+    load->settled = true;
+    if (error != bllm::kernels::ProgramError::Ok) {
+        s.loaded.reset();
+        bllm_reply(request, failure_json("the model's kernels did not build", message).c_str());
+        return;
+    }
+    const bllm::residency::ResidencyPlan& plan = s.loaded->plan();
+    bllm::cache::KvCache cache{load->description, plan, load->precision, plan.context_offered};
+    auto runtime = std::make_unique<bllm::runtime::Runtime>(std::move(program), std::move(cache), load->stops);
+    s.generator = std::make_unique<bllm::runtime::Generator>(std::move(load->tokenizer), std::move(runtime));
+    bllm_reply(request, ("{\"ok\":true,\"contextOffered\":" + std::to_string(plan.context_offered) + "}").c_str());
+}
+
 void on_load_finished(bllm::residency::UploadError error, void* userdata) {
     const std::uint32_t request = to_generation(userdata);
     Session& s = session();
-    if (s.load != nullptr) s.load->settled = true;
-    if (error != bllm::residency::UploadError::Ok) {
+    Load* load = s.load.get();
+    if (error != bllm::residency::UploadError::Ok || load == nullptr) {
+        if (load != nullptr) load->settled = true;
         bllm_reply(request, failure_json(bllm::residency::to_string(error)).c_str());
         return;
     }
     // The finished Upload owns the model's buffers: it stays as the loaded
     // model. The chunk buffer goes with the load.
-    if (s.load != nullptr) {
-        s.loaded = std::move(s.load->upload);
-        s.loaded_file_size = s.load->file_size;
+    s.loaded = std::move(load->upload);
+    s.loaded_file_size = load->file_size;
+    // The graph over the plan, and its program, reading back the draw's
+    // record; every pipeline compiles together (kernels/program.h).
+    const bllm::residency::ResidencyPlan& plan = s.loaded->plan();
+    std::vector<bllm::kernels::Launch> launches;
+    const bllm::graph::GraphResult built = load->architecture->graph(
+        load->description, plan, *bllm::capability::find_format(plan.cache_type), launches);
+    std::optional<bllm::kernels::Binding> sampled;
+    for (const bllm::residency::PlannedScratch& scratch : plan.scratch) {
+        if (scratch.purpose == "sampled") {
+            sampled = bllm::kernels::Binding{scratch.range.buffer, scratch.range.offset,
+                                             sizeof(bllm::sampler::SampledRecord)};
+        }
     }
-    bllm_reply(request, "{\"ok\":true}");
+    if (!built.ok() || !sampled) {
+        load->settled = true;
+        s.loaded.reset();
+        bllm_reply(request, failure_json("the model's graph does not build", built.subject).c_str());
+        return;
+    }
+    bllm::kernels::Program::build(*s.loaded, std::move(launches), sampled, on_program_built, to_userdata(request));
+}
+
+// A piece of a reply's text, read from the module's memory during the call.
+EM_JS(void, bllm_text, (std::uint32_t request, const char* text, std::uint32_t length), {
+    globalThis.bllmOnText(request, new TextDecoder().decode(HEAPU8.subarray(text, text + length)));
+});
+
+void on_turn_text(std::string_view text, void* userdata) {
+    bllm_text(to_generation(userdata), text.data(), static_cast<std::uint32_t>(text.size()));
+}
+
+std::string_view stop_reason(bllm::runtime::TurnEnd end) {
+    switch (end) {
+        case bllm::runtime::TurnEnd::Stop: return "stop";
+        case bllm::runtime::TurnEnd::Limit: return "limit";
+        case bllm::runtime::TurnEnd::Context: return "context";
+        case bllm::runtime::TurnEnd::Cancelled: return "cancelled";
+    }
+    return "cancelled";
+}
+
+void on_turn_end(const bllm::runtime::TurnResult& result, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    Session& s = session();
+    if (s.turn_request == request) s.turn_request = 0;
+    using bllm::runtime::TurnFailure;
+    switch (result.failure) {
+        case TurnFailure::None:
+            bllm_reply(request, ("{\"ok\":true,\"stopReason\":" + json_string(stop_reason(result.end)) +
+                                 ",\"tokens\":" + std::to_string(result.emitted) +
+                                 ",\"promptTokens\":" + std::to_string(result.prompt) +
+                                 ",\"reusedTokens\":" + std::to_string(result.reused) + "}")
+                                    .c_str());
+            return;
+        case TurnFailure::NonFinite:
+            bllm_reply(request, failure_json("the model's logits were not finite",
+                                             "after " + std::to_string(result.emitted) + " tokens")
+                                    .c_str());
+            return;
+        case TurnFailure::Step:
+            bllm_reply(request, failure_json("a step failed on the GPU", result.message).c_str());
+            return;
+        case TurnFailure::DeviceLost:
+            bllm_reply(request, failure_json("the GPU device was lost", result.message).c_str());
+            return;
+    }
 }
 
 // The device arrives inside the result and is released when it goes out of
@@ -598,17 +758,23 @@ EMSCRIPTEN_KEEPALIVE void bllm_run_self_check() {
 EMSCRIPTEN_KEEPALIVE void bllm_preflight(std::uint32_t request, const std::byte* resident,
                                          std::uint32_t resident_length, double file_size,
                                          double max_buffer_size, double max_binding_size,
-                                         std::uint32_t offset_alignment) {
+                                         std::uint32_t offset_alignment, std::int32_t precision,
+                                         double memory_budget, std::uint32_t rollback_reserve,
+                                         const char* stop_bytes, const std::uint32_t* stop_lengths,
+                                         std::uint32_t stop_count) {
     // Checked before any conversion: casting a NaN, a negative or a
     // fractional double to an integer is undefined or lossy, and the values
     // come from outside C++. The resident prefix cannot exceed the file.
-    constexpr double kMaxExactInteger = 9007199254740992.0;   // 2^53
-    const auto exact = [](double v) {
-        return v >= 0 && v <= kMaxExactInteger && v == static_cast<double>(static_cast<std::uint64_t>(v));
-    };
-    if (!exact(file_size) || file_size < resident_length || !exact(max_buffer_size) ||
-        !exact(max_binding_size)) {
+    if (!exact_integer(file_size) || file_size < resident_length || !exact_integer(max_buffer_size) ||
+        !exact_integer(max_binding_size)) {
         bllm_reply(request, "{\"status\":\"unreadable\",\"error\":\"the sizes passed in are not valid\"}");
+        return;
+    }
+    bllm::policy::LoadPolicy policy;
+    if (const std::string wrong = read_load_policy(precision, memory_budget, rollback_reserve, stop_bytes,
+                                                   stop_lengths, stop_count, policy);
+        !wrong.empty()) {
+        bllm_reply(request, ("{\"status\":\"unreadable\",\"error\":" + json_string(wrong) + "}").c_str());
         return;
     }
     bllm::gguf::MemoryByteSource source{{resident, resident_length},
@@ -618,7 +784,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_preflight(std::uint32_t request, const std::byte*
                                                offset_alignment};
     bllm::gguf::TensorIndex index;
     const auto read = bllm::gguf::read_index(source, index);
-    bllm_reply(request, preflight_json(source, read, index, limits).c_str());
+    bllm_reply(request, preflight_json(source, read, index, limits, policy).c_str());
 }
 
 // Begins a load: see the top of this file. `confirmed` holds `confirmed_count`
@@ -626,7 +792,9 @@ EMSCRIPTEN_KEEPALIVE void bllm_preflight(std::uint32_t request, const std::byte*
 EMSCRIPTEN_KEEPALIVE void bllm_load_begin(std::uint32_t request, const std::byte* prefix,
                                           std::uint32_t prefix_length, double file_size,
                                           const std::uint32_t* confirmed, std::uint32_t confirmed_count,
-                                          std::uint32_t max_chunk) {
+                                          std::uint32_t max_chunk, std::int32_t precision, double memory_budget,
+                                          std::uint32_t rollback_reserve, const char* stop_bytes,
+                                          const std::uint32_t* stop_lengths, std::uint32_t stop_count) {
     Session& s = session();
     if (s.device == nullptr) {
         bllm_reply(request, failure_json("no checked GPU device to load onto").c_str());
@@ -636,10 +804,15 @@ EMSCRIPTEN_KEEPALIVE void bllm_load_begin(std::uint32_t request, const std::byte
         bllm_reply(request, failure_json("a load is already in progress").c_str());
         return;
     }
-    constexpr double kMaxExactInteger = 9007199254740992.0;   // 2^53
-    if (!(file_size >= prefix_length && file_size <= kMaxExactInteger &&
-          file_size == static_cast<double>(static_cast<std::uint64_t>(file_size))) || max_chunk == 0) {
+    if (!exact_integer(file_size) || file_size < prefix_length || max_chunk == 0) {
         bllm_reply(request, failure_json("the sizes passed in are not valid").c_str());
+        return;
+    }
+    bllm::policy::LoadPolicy policy;
+    if (const std::string wrong = read_load_policy(precision, memory_budget, rollback_reserve, stop_bytes,
+                                                   stop_lengths, stop_count, policy);
+        !wrong.empty()) {
+        bllm_reply(request, failure_json(wrong).c_str());
         return;
     }
     const auto size = static_cast<std::uint64_t>(file_size);
@@ -655,8 +828,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_load_begin(std::uint32_t request, const std::byte
                                                granted.min_storage_buffer_offset_alignment};
     bllm::model::ModelDescription description;
     bllm::residency::ResidencyPlan plan;
-    if (const std::string stop = bllm::preflight::plan_load(index, limits, bllm::policy::LoadPolicy{},
-                                                            description, plan);
+    if (const std::string stop = bllm::preflight::plan_load(index, limits, policy, description, plan);
         !stop.empty()) {
         bllm_reply(request, failure_json(stop).c_str());
         return;
@@ -664,18 +836,43 @@ EMSCRIPTEN_KEEPALIVE void bllm_load_begin(std::uint32_t request, const std::byte
     std::vector<bllm::gguf::TensorId> duplicates;
     for (std::uint32_t i = 0; i < confirmed_count; ++i) duplicates.push_back(bllm::gguf::TensorId{confirmed[i]});
 
+    std::string_view architecture;
+    (void)index.read_string("general.architecture", architecture);
+
     // A new load replaces the model loaded before it, releasing its buffers
-    // first so the two are never on the device together; any check of it
-    // goes first, since it must not outlive what it checks.
+    // first so the two are never on the device together: its generator
+    // first, so a turn running finishes cancelled and the program borrowing
+    // the buffers goes; any check of it too, since it must not outlive what
+    // it checks.
+    s.generator.reset();
 #if BLLM_DIAGNOSTICS_ENABLED
     s.check.reset();
 #endif
     s.loaded.reset();
     s.load = std::make_unique<Load>();
-    s.load->chunk.resize(max_chunk);
-    s.load->file_size = size;
+    Load& load = *s.load;
+    load.begin_request = request;
+    load.chunk.resize(max_chunk);
+    load.file_size = size;
+    load.description = description;
+    load.architecture = bllm::capability::find_architecture(architecture);
+    load.precision = policy.cache_precision;
     bllm::residency::Upload::begin(*s.device, index, plan, size, bllm::capability::find_format, duplicates,
                                    max_chunk, on_load_ready, to_userdata(request));
+    // While the device creates the buffers, the tokenizer from the prefix and
+    // the stop set over its vocabulary; begin answers once both are in.
+    // Optimization (browser): 20 to 56 ms of the CPU's for the listed models,
+    // overlapped with the GPU's work rather than ahead of it.
+    load.tokenizer_failure = bllm::preflight::load_tokenizer(source, index, load.tokenizer);
+    if (load.tokenizer_failure.empty()) {
+        const bllm::runtime::StopsResult stops =
+            bllm::runtime::resolve_stops(index, load.tokenizer->vocabulary(), policy.stop, load.stops);
+        if (stops.error != bllm::runtime::StopsError::Ok) {
+            load.tokenizer_failure = "the stop tokens cannot be resolved: " + stops.subject;
+        }
+    }
+    load.prepared = true;
+    answer_begin(load);
 }
 
 // The page has copied `length` bytes at `file_offset` into the chunk buffer.
@@ -701,6 +898,66 @@ EMSCRIPTEN_KEEPALIVE void bllm_load_finish(std::uint32_t request) {
         return;
     }
     load->upload->finish(on_load_finished, to_userdata(request));
+}
+
+// Starts a turn: see the top of this file.
+EMSCRIPTEN_KEEPALIVE void bllm_generate(std::uint32_t request, const char* text, std::uint32_t text_length,
+                                        std::uint32_t sampled, float temperature, std::uint32_t top_k, float top_p,
+                                        float min_p, double seed, std::uint32_t max_tokens) {
+    Session& s = session();
+    if (s.generator == nullptr) {
+        bllm_reply(request, failure_json("no model is loaded").c_str());
+        return;
+    }
+    if (!exact_integer(seed) || seed >= kMaxExactInteger) {
+        bllm_reply(request, failure_json("the seed passed in is not valid").c_str());
+        return;
+    }
+    bllm::policy::TurnPolicy policy;
+    if (sampled == 1) policy.sampling = {temperature, top_k, top_p, min_p};
+    policy.seed = bllm::policy::Seed{static_cast<std::uint64_t>(seed)};
+    policy.max_tokens = max_tokens;
+    const bllm::runtime::GenerateResult started = s.generator->start(
+        {text, text_length}, policy, on_turn_text, on_turn_end, to_userdata(request));
+    if (started.encode != bllm::tokenizer::EncodeError::Ok) {
+        bllm_reply(request, failure_json(started.encode == bllm::tokenizer::EncodeError::InvalidUtf8
+                                             ? "the prompt is not valid UTF-8"
+                                             : "the prompt is too long to encode")
+                                .c_str());
+        return;
+    }
+    using bllm::runtime::StartError;
+    switch (started.start.error) {
+        case StartError::Ok:
+            s.turn_request = request;
+            return;
+        case StartError::PromptTooLong:
+            bllm_reply(request, ("{\"ok\":false,\"error\":\"the conversation is longer than the context\""
+                                 ",\"code\":\"prompt-too-long\",\"subject\":" +
+                                 json_string(started.start.subject) +
+                                 ",\"promptTokens\":" + std::to_string(started.start.prompt_tokens) +
+                                 ",\"contextTokens\":" + std::to_string(started.start.context) + "}")
+                                    .c_str());
+            return;
+        case StartError::Busy:
+            bllm_reply(request, failure_json("a turn is running", started.start.subject).c_str());
+            return;
+        case StartError::DeviceLost:
+            bllm_reply(request, failure_json("the GPU device was lost", started.start.subject).c_str());
+            return;
+        case StartError::EmptyPrompt:
+        case StartError::Settings:
+            bllm_reply(request, failure_json("the turn cannot start", started.start.subject).c_str());
+            return;
+    }
+}
+
+// Ends the turn `target` started: see the top of this file.
+EMSCRIPTEN_KEEPALIVE void bllm_cancel(std::uint32_t request, std::uint32_t target) {
+    Session& s = session();
+    const bool running = s.generator != nullptr && target != 0 && s.turn_request == target;
+    if (running) s.generator->cancel();
+    bllm_reply(request, running ? "{\"ok\":true,\"running\":true}" : "{\"ok\":true,\"running\":false}");
 }
 
 #if BLLM_DIAGNOSTICS_ENABLED
