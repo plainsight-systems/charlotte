@@ -8,6 +8,7 @@ add_executable(charlotte_gpu_tests
     forward_test.cpp
     topk_test.cpp
     draw_test.cpp
+    runtime_test.cpp
     reference_test.cpp
     attention_test.cpp
     matmul_test.cpp

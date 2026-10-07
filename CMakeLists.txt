@@ -113,6 +113,7 @@ add_library(charlotte_gpu STATIC
     src/core/residency/mapping.cpp
     src/core/residency/upload.cpp
     src/core/residency/witness.cpp
+    src/core/runtime/runtime.cpp
 )
 target_link_libraries(charlotte_gpu PUBLIC charlotte_core)
 # Not compiled at all in a clean build (upload_check.h, TLM.8).
@@ -135,6 +136,7 @@ set(BLLM_GPU_HEADERS
     core/residency/mapping.h
     core/residency/upload.h
     core/residency/upload_check.h
+    core/runtime/runtime.h
 )
 set(BLLM_GPU_HEADER_CHECKS "")
 foreach(header IN LISTS BLLM_GPU_HEADERS)

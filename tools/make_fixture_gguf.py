@@ -266,14 +266,18 @@ def matmul_rows(seed=0x85EBCA6B):
     return build(tensors)
 
 
-def forward_model(seed=0x9E3779B9):
+def forward_model(seed=0x9E3779B9, arch="qwen3"):
     """The smallest Qwen3-shaped model a whole forward pass runs: two layers,
     width 128, heads of 64 — 4 query and 2 key-value — feed-forward 256, a
     vocabulary of 256 and a context of 512, so a step can cross a 256-key
     chunk. Weights are pseudo-random Q4_0 blocks, codes of every value and
     fp16 scales of either sign, the embedding tied to the head; gains are F32
     near 1. For the GPU test that a token's logits are the same bits however
-    its prompt is stepped."""
+    its prompt is stepped.
+
+    As `gemma3`, the same shapes with Gemma 3's two further norms a layer, a
+    context of 2,048, and a window of 16 on layer 0, layer 1 global: for the
+    runtime's tests of a sliding-window ring past wrapping."""
     state = seed
     width, head, heads, kv_heads, ffn, vocab, layers = 128, 64, 4, 2, 256, 256, 2
 
@@ -294,7 +298,7 @@ def forward_model(seed=0x9E3779B9):
 
     keys = {
         "block_count": (U32, struct.pack("<I", layers)),
-        "context_length": (U32, struct.pack("<I", 512)),
+        "context_length": (U32, struct.pack("<I", 512 if arch == "qwen3" else 2048)),
         "embedding_length": (U32, struct.pack("<I", width)),
         "feed_forward_length": (U32, struct.pack("<I", ffn)),
         "attention.head_count": (U32, struct.pack("<I", heads)),
@@ -304,8 +308,11 @@ def forward_model(seed=0x9E3779B9):
         "attention.layer_norm_rms_epsilon": (F32, struct.pack("<f", 1e-6)),
         "rope.freq_base": (F32, struct.pack("<f", 1e6)),
     }
-    metadata = [kv(b"general.architecture", STRING, gstr(b"qwen3"))]
-    metadata += [kv(f"qwen3.{k}".encode(), t, v) for k, (t, v) in keys.items()]
+    if arch == "gemma3":
+        keys["attention.sliding_window"] = (U32, struct.pack("<I", 16))
+        keys["attention.sliding_window_pattern"] = (U32, struct.pack("<I", 2))
+    metadata = [kv(b"general.architecture", STRING, gstr(arch.encode()))]
+    metadata += [kv(f"{arch}.{k}".encode(), t, v) for k, (t, v) in keys.items()]
     tokens = b"".join(gstr(f"t{i}".encode()) for i in range(vocab))
     metadata.append(kv(b"tokenizer.ggml.tokens", ARRAY, struct.pack("<IQ", STRING, vocab) + tokens))
 
@@ -323,6 +330,9 @@ def forward_model(seed=0x9E3779B9):
                     q4_0(b + "ffn_gate.weight", [width, ffn]),
                     q4_0(b + "ffn_up.weight", [width, ffn]),
                     q4_0(b + "ffn_down.weight", [ffn, width])]
+        if arch == "gemma3":
+            tensors += [gain(b + "post_attention_norm.weight", width),
+                        gain(b + "post_ffw_norm.weight", width)]
     tensors.append(gain("output_norm.weight", width))
     return build(tensors, metadata=metadata)
 
@@ -617,6 +627,7 @@ CASES = {
     # Weights in each listed format, input rows, a Q, K and V, a gate and up.
     "matmul_rows": lambda: matmul_rows(),
     "forward_model": lambda: forward_model(),
+    "forward_gemma3": lambda: forward_model(arch="gemma3"),
     "nested_array": lambda: build(
         [], metadata=[kv(b"bad", ARRAY, struct.pack("<IQ", ARRAY, 1))]
     ),
