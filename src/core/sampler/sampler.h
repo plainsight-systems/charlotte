@@ -110,18 +110,22 @@ namespace bllm::sampler {
 //   - runtime/runtime.h: decode steps are submitted back to back, each
 //     `fed`; a step's token is known when its record maps, one step later.
 //     So when a token is a stop, or the turn is cancelled, the step already
-//     queued behind it runs anyway: one step's work, about 1.7 ms, is
-//     discarded, and it has written its key and value one position past the
-//     turn's end. The runtime advances the cache for every step it runs and
-//     truncates the discarded one (cache/kv.h): the cache's high-water mark
-//     counts the position written, its length does not, so the entry lies
-//     past the length — overwritten by the next token there, never read
-//     before it — and a sliding-window ring, whose slots exceed its window by
-//     a prefill block, loses no entry a query still reads. The runtime never
-//     queues a step at or past the context offered, where a full-attention
-//     layer, whose slots are the context, would wrap onto position 0; nor
-//     past a turn's token limit, which it knows ahead. This is the cache
-//     state the research warned a pipeline puts at risk, stated so the
+//     queued behind it runs anyway, about 1.7 ms, and its draw is
+//     discarded. It wrote the keys and values of its input — the stop
+//     token, or after a cancel a draw never accepted — at its position. The
+//     runtime advances the cache for every step it runs and keeps each
+//     position whose input token is accepted (runtime/turn.h): the stop
+//     token's, which the next turn's prompt holds there when its template
+//     closes the reply with it, and the diff truncates when it does not; and
+//     not a draw the turn discarded. A position truncated lies past the
+//     cache's length, and its high-water mark counts it (cache/kv.h):
+//     overwritten by the next token there, never read before it, and a
+//     sliding-window ring, whose slots exceed its window by a prefill block,
+//     loses no entry a query still reads. The runtime never queues a step at
+//     or past the context offered, where a full-attention layer, whose slots
+//     are the context, would wrap onto position 0; nor past a turn's token
+//     limit, which it knows ahead. This is the cache state the research
+//     warned a pipeline puts at risk, stated so the
 //     runtime's tests can hold it.
 //
 // What it costs, a sampled step: the draw is one launch, 1.5 µs. It loads
