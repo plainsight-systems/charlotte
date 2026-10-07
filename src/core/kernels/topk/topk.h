@@ -96,8 +96,9 @@ namespace bllm::kernels {
 //     GDSA.6 Count passes over global memory — the bytes above.
 //     GPU.6  Batch tiny GPU work — 3 launches, counted.
 
-// The candidates a selection keeps, and the draw reads.
-inline constexpr std::uint32_t kCandidates = 64;
+// The candidates a selection keeps, and the draw reads; the plan sizes the
+// buffers by it (residency/plan.h).
+inline constexpr std::uint32_t kCandidates = residency::kCandidates;
 
 // The launches that reduce `logits`, one row of `vocabulary` f32, to the
 // top kCandidates in `candidates` — (logit, token) pairs, sorted — through

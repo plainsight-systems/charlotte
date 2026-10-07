@@ -248,6 +248,7 @@ PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimit
         key_value = std::max<std::uint64_t>(key_value, std::uint64_t{l.key_value_heads} * l.head_dimension);
         feed_forward = std::max<std::uint64_t>(feed_forward, l.feed_forward_width);
     }
+    const std::uint64_t selection_tiles = (std::uint64_t{model.vocabulary_size} + kSelectionTile - 1) / kSelectionTile;
     struct Need {
         std::string_view purpose;
         std::uint64_t rows;
@@ -271,6 +272,12 @@ PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimit
         Need{"activation", kPrefillBlock, feed_forward},
         // Logits are computed for the last token of a step only.
         Need{"logits", 1, model.vocabulary_size},
+        // Selection's (logit, token) pairs, two words each, and the draw's
+        // record (sampler/sampler.h).
+        Need{"partials_a", 1, 2ull * kCandidates * selection_tiles},
+        Need{"partials_b", 1, 2ull * kCandidates * selection_tiles},
+        Need{"candidates", 1, 2ull * kCandidates},
+        Need{"sampled", 1, 4},
     };
     Packer packer{out.buffers, Pool::Scratch, limits};
     for (const Need& need : needs) {

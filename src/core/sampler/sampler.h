@@ -89,7 +89,7 @@ namespace bllm::sampler {
 //     bound read-only; a draw's token is below the vocabulary by
 //     construction.
 //   - residency/plan.h: working buffers `partials_a` and `partials_b`, 64 ·
-//     ceil(V / 1,024) pairs of 8 bytes — 76 KB for Qwen3, 128 KB for Gemma
+//     ceil(V / 1,024) pairs of 8 bytes — 76 KB for Qwen3, 131 KB for Gemma
 //     3 — `candidates`, 512 bytes, and `sampled`, 16.
 //   - graph/graph.h: output() appends the selection and the draw after the
 //     head; all of them run only in a step that asks for logits.

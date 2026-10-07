@@ -53,6 +53,12 @@ namespace bllm::residency {
 //     them, with whatever the file puts between them, so upload is the
 //     same; a span wider than a binding is not a group, and its members are
 //     multiplied apart.
+//   - Selection and the draw have four working buffers of their own
+//     (sampler/sampler.h): `partials_a` and `partials_b`, which its passes
+//     alternate between, each kCandidates (logit, token) pairs of 8 bytes for
+//     every kSelectionTile of the vocabulary — 76 KB for Qwen3, 131 KB for
+//     Gemma 3; `candidates`, the kCandidates kept, 512 bytes; and `sampled`,
+//     the draw's 16-byte record.
 //   - The working buffers hold a prefill block of kPrefillBlock tokens at f32.
 //     Attention never stores a block-by-context matrix of scores: at 512
 //     tokens, 32 heads and a 40,000-token context that is 2.6 GB. Kernels work
@@ -79,6 +85,12 @@ namespace bllm::residency {
 // The block of tokens one prefill step processes, and the shortest context
 // worth offering.
 inline constexpr std::uint32_t kPrefillBlock = 512;
+
+// The candidates top-k selection keeps for the draw, and the entries one of
+// its workgroups reduces to them (kernels/topk/topk.h): what its working
+// buffers are sized by.
+inline constexpr std::uint32_t kCandidates = 64;
+inline constexpr std::uint32_t kSelectionTile = 1024;
 
 // The limits the device was granted. How many bytes the plan may place on the
 // device is not among them — WebGPU does not report device memory — and comes
