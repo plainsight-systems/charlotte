@@ -65,9 +65,34 @@ struct Program::State {
         std::array<std::byte, kMaxReadback> bytes{};
         StepCallback done = nullptr;
         void* userdata = nullptr;
+#if BLLM_DIAGNOSTICS_ENABLED
+        // A profiled step's: its callback, the launches timed inside its
+        // pass in query order, and their timestamps once mapped.
+        bool profiled = false;
+        ProfileCallback profile_done = nullptr;
+        std::uint32_t queries = 0;
+        std::vector<std::uint32_t> timed;
+        std::vector<std::uint64_t> stamps;
+        std::vector<std::pair<std::uint32_t, std::uint64_t>> launch_times;
+#endif
     };
     std::array<Outstanding, Order::kOutstanding> steps;
     Order order;                      // reports steps in the order they ran (order.h)
+#if BLLM_DIAGNOSTICS_ENABLED
+    // A slot's timestamp storage, made at the first profiled step
+    // (program.h): two queries for the pass, and one a launch inside it
+    // where the device grants that.
+    struct Timer {
+        gpu::QuerySet queries;
+        gpu::Buffer resolve;    // QUERY_RESOLVE | COPY_SRC
+        gpu::Buffer readback;   // MAP_READ | COPY_DST
+    };
+    std::array<Timer, Order::kOutstanding> timers;
+    bool timed = false;            // the timers are made
+    bool inside_passes = false;    // timestamps inside a pass granted
+    std::uint32_t query_count = 0;
+    std::uint32_t profiled_outstanding = 0;   // never beside an unprofiled step
+#endif
     std::shared_ptr<State> in_flight;
 };
 
@@ -474,6 +499,21 @@ void report(Program::State& s) {
         const std::span<const std::byte> bytes =
             error == ProgramError::Ok && o.reads_back ? std::span<const std::byte>(o.bytes.data(), s.readback->size)
                                                       : std::span<const std::byte>{};
+#if BLLM_DIAGNOSTICS_ENABLED
+        if (o.profiled) {
+            --s.profiled_outstanding;
+            Program::Timestamps times{0, 0, {}};
+            if (error == ProgramError::Ok && o.stamps.size() >= 2) {
+                times.begin_ns = o.stamps[0];
+                times.end_ns = o.stamps[1];
+                o.launch_times.clear();
+                for (std::size_t i = 0; i < o.timed.size(); ++i) o.launch_times.emplace_back(o.timed[i], o.stamps[2 + i]);
+                times.launches = o.launch_times;
+            }
+            o.profile_done(error, o.message, bytes, times, o.userdata);
+            continue;
+        }
+#endif
         o.done(error, o.message, bytes, o.userdata);
     }
 }
@@ -495,8 +535,17 @@ void settle(Program::State& s, Program::State::Outstanding& o, ProgramError e, W
 
 }  // namespace
 
-void Program::run(const Step& step, StepCallback done, void* userdata) {
-    State& s = *state_;
+namespace {
+
+// Records and submits one step: run()'s, and in a diagnostic build
+// run_profiled()'s — its first `limit` launches, timed when `profiled`.
+void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, const Step& step, std::uint32_t limit,
+                bool profiled, StepCallback done,
+#if BLLM_DIAGNOSTICS_ENABLED
+                Program::ProfileCallback profile_done,
+#endif
+                void* userdata) {
+    using State = Program::State;
     // Two outstanding: a third would copy into a slot still mapped.
     if (s.order.full()) {
         done(ProgramError::Step, "a third step while two are outstanding", {}, userdata);
@@ -513,7 +562,18 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
     o.reads_back = s.readback.has_value() && step.logits != 0;
     o.done = done;
     o.userdata = userdata;
-    s.in_flight = state_;
+    s.in_flight = self;
+#if BLLM_DIAGNOSTICS_ENABLED
+    o.profiled = profiled;
+    o.profile_done = profile_done;
+    if (profiled) ++s.profiled_outstanding;
+    o.queries = 0;
+    o.timed.clear();
+    o.stamps.clear();
+    State::Timer* timer = profiled ? &s.timers[number % Order::kOutstanding] : nullptr;
+#else
+    (void)profiled;
+#endif
 
     // The scopes cover the step's write too, so a write WebGPU refuses fails
     // the step rather than leaving it to run on the last step's parameters.
@@ -530,9 +590,22 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
     if (fits) {
         const gpu::CommandEncoder encoder(wgpuDeviceCreateCommandEncoder(device, nullptr));
         {
-            const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), nullptr));
+            WGPUComputePassDescriptor pass_desc = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
+#if BLLM_DIAGNOSTICS_ENABLED
+            // The pass's beginning and end, in queries 0 and 1 (program.h).
+            WGPUPassTimestampWrites writes = WGPU_PASS_TIMESTAMP_WRITES_INIT;
+            if (timer != nullptr) {
+                writes.querySet = timer->queries.get();
+                writes.beginningOfPassWriteIndex = 0;
+                writes.endOfPassWriteIndex = 1;
+                pass_desc.timestampWrites = &writes;
+                o.queries = 2;
+            }
+#endif
+            const gpu::ComputePassEncoder pass(wgpuCommandEncoderBeginComputePass(encoder.get(), &pass_desc));
             std::size_t current = s.pipelines.size();
             for (const std::uint32_t index : s.schedules.of(step.tokens, step.logits != 0)) {
+                if (index >= limit) break;   // a prefix ends here; indices ascend
                 const State::Bound& launch = s.launches[index];
                 const std::uint64_t workgroups =
                     workgroups_for(launch.geometry, launch.workgroup_size, step.position, step.tokens, step.logits != 0);
@@ -547,9 +620,22 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
                 }
                 wgpuComputePassEncoderSetBindGroup(pass.get(), kBindGroup, launch.group.get(), 0, nullptr);
                 wgpuComputePassEncoderDispatchWorkgroups(pass.get(), static_cast<std::uint32_t>(workgroups), 1, 1);
+#if BLLM_DIAGNOSTICS_ENABLED
+                if (timer != nullptr && s.inside_passes) {
+                    wgpuComputePassEncoderWriteTimestamp(pass.get(), timer->queries.get(), o.queries++);
+                    o.timed.push_back(index);
+                }
+#endif
             }
             wgpuComputePassEncoderEnd(pass.get());
         }
+#if BLLM_DIAGNOSTICS_ENABLED
+        if (fits && timer != nullptr) {
+            wgpuCommandEncoderResolveQuerySet(encoder.get(), timer->queries.get(), 0, o.queries, timer->resolve.get(), 0);
+            wgpuCommandEncoderCopyBufferToBuffer(encoder.get(), timer->resolve.get(), 0, timer->readback.get(), 0,
+                                                 std::uint64_t{o.queries} * 8);
+        }
+#endif
         // The readback copied after the pass, into this step's own slot.
         if (fits && o.reads_back) {
             wgpuCommandEncoderCopyBufferToBuffer(encoder.get(), s.readback->buffer, s.readback->offset, slot, 0,
@@ -594,7 +680,34 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         info.userdata1 = &s;
         info.userdata2 = &o;
         wgpuQueueOnSubmittedWorkDone(s.queue.get(), info);
-    } else {
+    }
+#if BLLM_DIAGNOSTICS_ENABLED
+    if (fits && timer != nullptr) {
+        // The timestamps' mapping settles the step too.
+        ++o.pending;
+        WGPUBufferMapCallbackInfo info = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+        info.mode = gpu::kCallbackMode;
+        info.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* userdata1, void* userdata2) {
+            auto& state = *static_cast<State*>(userdata1);
+            auto& step = *static_cast<State::Outstanding*>(userdata2);
+            WGPUBuffer mapped = state.timers[&step - state.steps.data()].readback.get();
+            ProgramError e = ProgramError::Ok;
+            if (status == WGPUMapAsyncStatus_Success) {
+                const auto* words = static_cast<const std::uint64_t*>(
+                    wgpuBufferGetConstMappedRange(mapped, 0, std::size_t{step.queries} * 8));
+                step.stamps.assign(words, words + step.queries);
+                wgpuBufferUnmap(mapped);
+            } else {
+                e = status == WGPUMapAsyncStatus_CallbackCancelled ? ProgramError::Cancelled : ProgramError::Step;
+            }
+            settle(state, step, e, message);
+        };
+        info.userdata1 = &s;
+        info.userdata2 = &o;
+        wgpuBufferMapAsync(timer->readback.get(), WGPUMapMode_Read, 0, std::uint64_t{o.queries} * 8, info);
+    }
+#endif
+    if (!fits) {
         // A step past kMaxPositions, or too large for one dispatch's
         // workgroups: refused, not truncated.
         o.error = ProgramError::Step;
@@ -613,6 +726,71 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         wgpuDevicePopErrorScope(device, info);
     }
 }
+
+}  // namespace
+
+void Program::run(const Step& step, StepCallback done, void* userdata) {
+    State& s = *state_;
+#if BLLM_DIAGNOSTICS_ENABLED
+    if (s.profiled_outstanding > 0) {
+        done(ProgramError::Step, "a step beside a profiled one", {}, userdata);
+        return;
+    }
+#endif
+    begin_step(s, state_, step, static_cast<std::uint32_t>(s.launches.size()), false, done,
+#if BLLM_DIAGNOSTICS_ENABLED
+               nullptr,
+#endif
+               userdata);
+}
+
+#if BLLM_DIAGNOSTICS_ENABLED
+void Program::run_profiled(const Step& step, std::uint32_t launches, ProfileCallback done, void* userdata) {
+    State& s = *state_;
+    const auto refuse = [&](std::string_view why) { done(ProgramError::Step, why, {}, Timestamps{0, 0, {}}, userdata); };
+    if (!wgpuDeviceHasFeature(s.device.get(), WGPUFeatureName_TimestampQuery)) {
+        refuse("the device did not grant timestamp queries");
+        return;
+    }
+    if (!s.order.idle() && s.profiled_outstanding == 0) {
+        refuse("a profiled step beside an unprofiled one");
+        return;
+    }
+    if (launches > s.launches.size()) {
+        refuse("more launches than the graph has");
+        return;
+    }
+    if (!s.timed) {
+        // Made once, outside any step a throughput is quoted from (program.h).
+        s.inside_passes =
+            wgpuDeviceHasFeature(s.device.get(), WGPUFeatureName_ChromiumExperimentalTimestampQueryInsidePasses);
+        s.query_count = 2 + (s.inside_passes ? static_cast<std::uint32_t>(s.launches.size()) : 0);
+        for (State::Timer& t : s.timers) {
+            WGPUQuerySetDescriptor q = WGPU_QUERY_SET_DESCRIPTOR_INIT;
+            q.type = WGPUQueryType_Timestamp;
+            q.count = s.query_count;
+            t.queries.reset(wgpuDeviceCreateQuerySet(s.device.get(), &q));
+            WGPUBufferDescriptor b = WGPU_BUFFER_DESCRIPTOR_INIT;
+            b.size = std::uint64_t{s.query_count} * 8;
+            b.usage = WGPUBufferUsage_QueryResolve | WGPUBufferUsage_CopySrc;
+            t.resolve.reset(wgpuDeviceCreateBuffer(s.device.get(), &b));
+            b.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
+            t.readback.reset(wgpuDeviceCreateBuffer(s.device.get(), &b));
+        }
+        for (State::Outstanding& o : s.steps) {
+            o.timed.reserve(s.launches.size());
+            o.stamps.reserve(s.query_count);
+            o.launch_times.reserve(s.launches.size());
+        }
+        s.timed = true;
+    }
+    if (s.order.full()) {
+        refuse("a third step while two are outstanding");
+        return;
+    }
+    begin_step(s, state_, step, launches, true, nullptr, done, userdata);
+}
+#endif
 
 Program::~Program() {
     if (state_) state_->cancelled = true;

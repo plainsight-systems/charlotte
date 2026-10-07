@@ -30,6 +30,7 @@ struct Running {
     std::unique_ptr<kernels::Program> program;
     residency::BufferRange logits{};
     residency::BufferRange candidates{};
+    std::size_t launches_count = 0;   // the graph's launches
 };
 
 inline Running run_model(WGPUInstance instance, const gpu::Device& device, const std::string& fixture = "forward_model",
@@ -62,6 +63,7 @@ inline Running run_model(WGPUInstance instance, const gpu::Device& device, const
         if (s.purpose == "candidates") r.candidates = s.range;
         if (s.purpose == "sampled") sampled = s.range;
     }
+    r.launches_count = launches.size();
     // The draw's record read back from each step that asks for logits.
     r.program = build_program(instance, *r.upload, std::move(launches),
                               kernels::Binding{sampled.buffer, sampled.offset, sizeof(sampler::SampledRecord)});

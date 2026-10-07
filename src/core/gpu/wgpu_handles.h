@@ -20,6 +20,7 @@ using BindGroupLayout = UniqueHandle<WGPUBindGroupLayout, wgpuBindGroupLayoutRel
 using CommandEncoder = UniqueHandle<WGPUCommandEncoder, wgpuCommandEncoderRelease>;
 using CommandBuffer = UniqueHandle<WGPUCommandBuffer, wgpuCommandBufferRelease>;
 using ComputePassEncoder = UniqueHandle<WGPUComputePassEncoder, wgpuComputePassEncoderRelease>;
+using QuerySet = UniqueHandle<WGPUQuerySet, wgpuQuerySetRelease>;
 
 // A counted reference of one's own to a handle someone else holds. The types
 // above adopt the handle they are given — they release it, and never add a
