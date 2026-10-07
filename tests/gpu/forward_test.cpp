@@ -5,7 +5,12 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstring>
+#include <optional>
+#include <set>
+#include <thread>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -15,6 +20,7 @@
 #include "core/arch/architecture.h"
 #include "core/capability/capability.h"
 #include "core/kernels/program.h"
+#include "core/sampler/sampler.h"
 #include "core/residency/upload.h"
 #include "support/acquire.h"
 #include "support/program.h"
@@ -57,10 +63,14 @@ Running run_model(WGPUInstance instance, const gpu::Device& device) {
     const graph::GraphResult built =
         architecture->graph(r.description, plan, *capability::find_format(plan.cache_type), launches);
     REQUIRE_MESSAGE(built.ok(), built.subject);
-    r.program = build_program(instance, *r.upload, std::move(launches));
+    residency::BufferRange sampled{};
     for (const residency::PlannedScratch& s : plan.scratch) {
         if (s.purpose == "logits") r.logits = s.range;
+        if (s.purpose == "sampled") sampled = s.range;
     }
+    // The draw's record read back from each step that asks for logits.
+    r.program = build_program(instance, *r.upload, std::move(launches),
+                              kernels::Binding{sampled.buffer, sampled.offset, sizeof(sampler::SampledRecord)});
     return r;
 }
 
@@ -119,5 +129,118 @@ TEST_CASE("a token's logits are the same bits however its prompt is stepped") {
         CAPTURE(steps->size());
         const auto got = stepped(instance.get(), *device, ids, *steps);
         CHECK(std::equal(got.begin(), got.end(), want.begin(), want.end()));
+    }
+}
+
+namespace {
+
+// A step's report, for the decoding below.
+struct Decoded {
+    std::vector<std::uint32_t> tokens;   // in the order reported
+    bool failed = false;
+};
+
+struct Pending {
+    Decoded* decoded;
+};
+
+void on_decoded(kernels::ProgramError e, std::string_view message, std::span<const std::byte> bytes, void* userdata) {
+    Decoded& d = *static_cast<Pending*>(userdata)->decoded;
+    if (e != kernels::ProgramError::Ok || bytes.size() != sizeof(sampler::SampledRecord)) {
+        FAIL_CHECK("a step failed: " << message);
+        d.failed = true;
+        return;
+    }
+    sampler::SampledRecord record;
+    std::memcpy(&record, bytes.data(), sizeof record);
+    CHECK(record.failed == 0);
+    d.tokens.push_back(record.token);
+}
+
+void pump_for(WGPUInstance instance, const Decoded& d, std::size_t count) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+    while (d.tokens.size() < count && !d.failed) {
+        wgpuInstanceProcessEvents(instance);
+        if (std::chrono::steady_clock::now() > deadline) FAIL("timed out waiting for token " << count);
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+}
+
+kernels::Step prompt_step(std::span<const std::uint32_t> ids, const policy::SamplingSettings& s) {
+    kernels::Step step{};
+    step.position = 0;
+    step.tokens = static_cast<std::uint32_t>(ids.size());
+    step.logits = 1;
+    std::copy(ids.begin(), ids.end(), step.ids.begin());
+    sampler::apply(s, policy::Seed{0x5EED}, step);
+    return step;
+}
+
+kernels::Step decode_step(std::uint32_t position, std::optional<std::uint32_t> token,
+                          const policy::SamplingSettings& s) {
+    kernels::Step step{};
+    step.position = position;
+    step.tokens = 1;
+    step.logits = 1;
+    step.fed = token ? 0 : 1;
+    if (token) step.ids[0] = *token;
+    sampler::apply(s, policy::Seed{0x5EED}, step);
+    return step;
+}
+
+// Decodes `count` tokens after `ids`, each step fed its token on the GPU and
+// run before the last step's token is read back: two steps outstanding.
+std::vector<std::uint32_t> decode_pipelined(WGPUInstance instance, const gpu::Device& device,
+                                            std::span<const std::uint32_t> ids, std::size_t count,
+                                            const policy::SamplingSettings& s) {
+    Running r = run_model(instance, device);
+    Decoded d;
+    Pending pending{&d};
+    const auto prompt_length = static_cast<std::uint32_t>(ids.size());
+    r.program->run(prompt_step(ids, s), on_decoded, &pending);
+    // Token i is drawn by the step at position prompt_length + i − 1; each
+    // decode step embeds the last's draw from the GPU.
+    for (std::uint32_t i = 1; i < count; ++i) {
+        r.program->run(decode_step(prompt_length + i - 1, std::nullopt, s), on_decoded, &pending);
+        pump_for(instance, d, i);   // the one before it reported: one left outstanding
+    }
+    pump_for(instance, d, count);
+    return d.tokens;
+}
+
+// The same, a step at a time: each step waits for the last's token and is
+// given it by identifier.
+std::vector<std::uint32_t> decode_step_at_a_time(WGPUInstance instance, const gpu::Device& device,
+                                                 std::span<const std::uint32_t> ids, std::size_t count,
+                                                 const policy::SamplingSettings& s) {
+    Running r = run_model(instance, device);
+    Decoded d;
+    Pending pending{&d};
+    const auto prompt_length = static_cast<std::uint32_t>(ids.size());
+    r.program->run(prompt_step(ids, s), on_decoded, &pending);
+    pump_for(instance, d, 1);
+    for (std::uint32_t i = 1; i < count; ++i) {
+        r.program->run(decode_step(prompt_length + i - 1, d.tokens.back(), s), on_decoded, &pending);
+        pump_for(instance, d, i + 1);
+    }
+    return d.tokens;
+}
+
+}  // namespace
+
+TEST_CASE("decoding fed on the GPU, two steps outstanding, draws the tokens decoding a step at a time does") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const auto ids = prompt(20, 256);
+    for (const policy::SamplingSettings& s : {policy::SamplingSettings{0.0f, 40, 0.95f, 0.05f},
+                                              policy::SamplingSettings{0.8f, 40, 0.95f, 0.05f}}) {
+        CAPTURE(s.temperature);
+        const auto pipelined = decode_pipelined(instance.get(), *device, ids, 30, s);
+        const auto stepped = decode_step_at_a_time(instance.get(), *device, ids, 30, s);
+        REQUIRE(pipelined.size() == 30);
+        CHECK(pipelined == stepped);
+        // Sampling, not one token over and over: the draw reached the model's
+        // logits and its seed.
+        if (s.temperature > 0) CHECK(std::set<std::uint32_t>(stepped.begin(), stepped.end()).size() > 1);
     }
 }
