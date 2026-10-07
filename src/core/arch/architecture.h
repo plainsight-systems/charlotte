@@ -34,8 +34,10 @@ namespace bllm::arch {
 // weights as 1 + w and permutes Llama's Q and K — so upload writes what the
 // file holds.
 //
-// An entry is chosen once, at load. The graph is built once from it, so the
-// per-token path makes no call through this table (WASM.4). Function
+// An entry is chosen once, at load. Its graph is built when preflight judges
+// Run and again at load, for the program, and never per token, so the
+// per-token path makes no call through this table (WASM.4). Preflight runs
+// the same graph the load runs, not a check of its own beside it. Function
 // pointers, not a pure abstract class: an architecture holds no state, and
 // the capability table lists its entries as static data — the interface
 // C.121 asks for, without objects to construct.
