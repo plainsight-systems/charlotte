@@ -66,15 +66,17 @@ namespace bllm::kernels {
 //     for Qwen3's 3,072-wide down projection, 8 for Llama 3.2's 8,192 —
 //     each line's rest read by the same invocation's next n − 1 steps, from
 //     the GPU's caches. The bytes from device memory are the weights, once.
-//     A product of fewer than 4,096 rows — under 512 workgroups of 8 —
-//     gives each set 1 row instead of 4, so a workgroup takes 2 and the
-//     product runs 4 times the workgroups: the Write and QKV epilogues,
-//     by an override constant, `set_rows`. Qwen3's output and down
-//     projections, 1,024 rows, run 512 workgroups, not 128; Llama 3.2's
-//     QKV, output and down, and Gemma 3's, likewise. Each row is still
-//     summed by 32 invocations, a range each, in the same order. The gated
-//     product keeps its 4, which its epilogue needs in one set; the listed
-//     ones run 768 workgroups or more.
+//     A product whose workgroups of 8 rows would number under 512 gives
+//     each set fewer rows: the most, of 4, 3, 2 and 1, that still makes 512
+//     workgroups of 2 sets, or 1 when none does — the Write and QKV
+//     epilogues, by an override constant, `set_rows`. Qwen3's output and
+//     down projections, 1,024 rows, take 1, 512 workgroups, not 128; Llama
+//     3.2's QKV, 3,072 rows, takes 3, and its output and down, 2,048, take
+//     2, 512 workgroups each; Gemma 3's QKV, 1,536, and output and down,
+//     1,152, take 1, 768 and 576. Each row is still summed by 32
+//     invocations, a range each, in the same order. The gated product keeps
+//     its 4, which its epilogue needs in one set; the listed ones run 768
+//     workgroups or more.
 //   - Prefill, two to 512 tokens: a tiled matrix product. A workgroup takes
 //     a tile of τ tokens × 64 outputs, τ 8, 16 or 32, and steps along K 32
 //     at a time, a group a step. Its 4τ invocations — 32, 64 or 128, under
@@ -260,14 +262,15 @@ namespace bllm::kernels {
 // Optimization (practice): decode reuses each input value it loads for 4
 // rows, and prefill each decoded weight for its tile's 32 tokens, or 16 or
 // 8, and each input for 64 outputs (GPU.2, GPU.5).
-// Optimization (practice): a decode product of fewer than 4,096 rows takes
-// 1 row a set, 4 times the workgroups, as llama.cpp's WebGPU mat-vec gives
-// a row 64 invocations and ONNX Runtime's 16, where 4 rows a set gives it
-// 8: in the profile (docs/research/2026-10-07-forward-pass-profile.md)
-// Qwen3's products of 128 workgroups read their weights at 107 to 180
-// GB/s, those of 512 and 768 at 260 to 340, and the head's 18,992 at 349
-// to 383 (GPU.3). Its cost is each set reading its input for one row, not
-// four, from the GPU's caches: 15 MiB more a layer.
+// Optimization (practice): a decode product too small to make 512
+// workgroups of 8 rows takes fewer rows a set, the most that reaches 512,
+// as llama.cpp's WebGPU mat-vec gives a row 64 invocations and ONNX
+// Runtime's 16, where 4 rows a set gives it 8: in the profile
+// (docs/research/2026-10-07-forward-pass-profile.md) Qwen3's products of
+// 128 workgroups read their weights at 107 to 180 GB/s, those of 512 and
+// 768 at 260 to 340, and the head's 18,992 at 349 to 383 (GPU.3). Its cost
+// is each set reading its input for fewer rows, from the GPU's caches: for
+// Qwen3, 15 MiB more a layer; no product past 512 is split further.
 // Optimization (practice): a prefill invocation's micro-tile is 4 tokens ×
 // 4 outputs, its accumulators named vec4s and its loops' bounds constants,
 // as llama.cpp's, MLC's and ONNX Runtime's WebGPU kernels keep 16 to 32
@@ -317,8 +320,8 @@ namespace bllm::kernels {
 //
 // Verification the implementation is held to, on the GPU against f64 over
 // the format's CPU-decoded weights: each form, each epilogue, each listed
-// format, at each listed model's widths; decode with 4 rows a set and 1, a
-// product of 4,096 rows and one fewer; prefill steps of 2 and 8 tokens,
+// format, at each listed model's widths; decode with 4, 3, 2 and 1 rows a
+// set, at the row counts where each begins; prefill steps of 2 and 8 tokens,
 // in the 8-token tile of 32 invocations, 9 and 16, in the 16-token of 64,
 // and 17, 33 and 64, in the 32-token of 128 — every token quad and output
 // quad of each; a weight
