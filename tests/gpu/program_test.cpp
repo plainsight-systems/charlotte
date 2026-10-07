@@ -139,8 +139,10 @@ void run_async(kernels::Program& program, const kernels::Step& step, Run& run) {
                 [](kernels::ProgramError e, std::string_view message, std::span<const std::byte> bytes,
                    void* userdata) {
                     const Run& r = *static_cast<Run*>(userdata);
+                    // A failed step's readback is empty, and memcpy from its
+                    // null data is undefined even for no bytes.
                     std::vector<std::uint32_t> words(bytes.size() / 4);
-                    std::memcpy(words.data(), bytes.data(), bytes.size());
+                    if (!bytes.empty()) std::memcpy(words.data(), bytes.data(), bytes.size());
                     r.reports->arrived.push_back({r.step, e, std::string(message), std::move(words)});
                 },
                 &run);
