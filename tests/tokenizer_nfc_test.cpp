@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -9,6 +12,7 @@
 
 #include "core/tokenizer/nfc.h"
 #include "core/tokenizer/unicode.h"
+#include "core/tokenizer/unicode_tables.h"
 #include "support/test_data.h"
 
 using namespace bllm::tokenizer;
@@ -51,6 +55,61 @@ TEST_CASE("NFC composes, reorders and leaves composed text alone") {
     CHECK(nfc("q\xCC\x87\xCC\xA3") == "q\xCC\xA3\xCC\x87");
     // A Hangul leading consonant, vowel and trailing consonant compose.
     CHECK(nfc("\xE1\x84\x92\xE1\x85\xA1\xE1\x86\xAB") == "\xED\x95\x9C");   // 한
+}
+
+TEST_CASE("NFC shrinks a character's canonical equivalents at most 7 bytes to 2") {
+    // The generator's pre-encode bound (runtime/generator.h) rests on this:
+    // each character NFC writes stands for at most its canonical
+    // equivalents' bytes. A character's longest equivalent spells its full
+    // decomposition piece by piece, each piece the longest character whose
+    // full decomposition it is; computed here, over the tables, for every
+    // character NFC leaves alone.
+    const auto pool = unicode_tables::decomposition_pool();
+    std::map<std::u32string, std::size_t> longest_spelling;   // a full decomposition: its longest character's bytes
+    const auto bytes_of = [](char32_t c) {
+        std::string s;
+        append_utf8(c, s);
+        return s.size();
+    };
+    for (const auto& d : unicode_tables::decompositions()) {
+        const std::u32string full(pool.data() + d.start, d.length);
+        auto& best = longest_spelling[full];
+        best = std::max(best, bytes_of(d.code_point));
+    }
+    std::size_t most = 0, least = 1;   // the greatest ratio, most / least
+    char32_t at = 0;
+    for (const auto& d : unicode_tables::decompositions()) {
+        std::string self;
+        append_utf8(d.code_point, self);
+        if (nfc(self) != self) continue;   // NFC never writes it
+        const std::u32string full(pool.data() + d.start, d.length);
+        std::vector<std::size_t> spelled(full.size() + 1, 0);   // longest spelling of full's first i
+        for (std::size_t i = 1; i <= full.size(); ++i) {
+            for (std::size_t j = 0; j < i; ++j) {
+                if (j > 0 && spelled[j] == 0) continue;
+                const std::u32string piece = full.substr(j, i - j);
+                std::size_t piece_bytes = piece.size() == 1 ? bytes_of(piece[0]) : 0;
+                if (const auto it = longest_spelling.find(piece); it != longest_spelling.end()) {
+                    piece_bytes = std::max(piece_bytes, it->second);
+                }
+                if (piece_bytes > 0) spelled[i] = std::max(spelled[i], spelled[j] + piece_bytes);
+            }
+        }
+        if (spelled.back() * least > most * self.size()) {
+            most = spelled.back();
+            least = self.size();
+            at = d.code_point;
+        }
+    }
+    CHECK(most == 7);
+    CHECK(least == 2);
+    CHECK(at == U'ΐ');
+    // The equivalent that reaches it: U+1FBE, whose decomposition is U+03B9,
+    // then U+0308 and U+0301.
+    CHECK(nfc("\xE1\xBE\xBE\xCC\x88\xCC\x81") == "\xCE\x90");
+    // A Hangul syllable, arithmetic and not in the tables, is at most its
+    // three 3-byte jamo: 9 bytes to 3, under 7 to 2.
+    CHECK(nfc("\xE1\x84\x92\xE1\x85\xA1\xE1\x86\xAB").size() == 3);
 }
 
 TEST_CASE("canonical order keeps marks of the same class in the order they came") {

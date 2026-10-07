@@ -244,17 +244,18 @@ TEST_CASE("the generator refuses text it cannot take, and a destroyed one ends i
     // Not UTF-8.
     const auto invalid = g->start(std::string_view{"\xC3(", 2}, greedy(4), on_text, on_end, &s);
     CHECK(invalid.encode == tokenizer::EncodeError::InvalidUtf8);
-    // Longer than 3 × the context × the longest token's bytes: refused
+    // Longer than 7/2 × the context × the longest token's bytes: refused
     // unencoded.
     std::size_t longest = 0;
     for (std::size_t id = 0; id < decoder->vocabulary().size(); ++id) {
         longest = std::max(longest, decoder->vocabulary().text(static_cast<TokenId>(id)).size());
     }
-    const std::string huge(std::size_t{m->upload->plan().context_offered} * longest * 3 + 1, 'a');
+    const std::size_t bound = std::size_t{m->upload->plan().context_offered} * longest * 7 / 2;
+    const std::string huge(bound + 1, 'a');
     const auto too_long = g->start(huge, greedy(4), on_text, on_end, &s);
     CHECK(too_long.start.error == runtime::StartError::PromptTooLong);
     CHECK(too_long.start.subject.find(std::to_string(huge.size()) + " bytes") != std::string::npos);
-    CHECK(too_long.start.prompt_tokens == (huge.size() + 3 * longest - 1) / (3 * longest));
+    CHECK(too_long.start.prompt_tokens == (2 * huge.size() + 7 * longest - 1) / (7 * longest));
     CHECK(too_long.start.context == m->upload->plan().context_offered);
     // Text at the bound is encoded: what refuses it, if anything, is its
     // tokens, counted, not its bytes.
