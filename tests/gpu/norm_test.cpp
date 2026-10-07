@@ -310,7 +310,7 @@ TEST_CASE("a launch setting an override the program owns, or one override twice,
             bool done = false;
         } built;
         kernels::Program::build(
-            *u.upload, {launch},
+            *u.upload, {launch}, std::nullopt,
             [](std::unique_ptr<kernels::Program> p, kernels::ProgramError e, std::string_view m, void* userdata) {
                 auto& b = *static_cast<Built*>(userdata);
                 CHECK(p == nullptr);

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -11,6 +12,7 @@
 #include "bllm/shaders_generated.h"
 #include "core/gpu/callback_mode.h"
 #include "core/gpu/userdata.h"
+#include "core/kernels/order.h"
 #include "core/kernels/schedule.h"
 
 namespace bllm::kernels {
@@ -38,17 +40,35 @@ struct Program::State {
     std::uint32_t max_workgroups = 0;
     bool cancelled = false;
 
-    // The step in flight: at most one (program.h). Its callbacks carry this
-    // State itself as userdata, kept alive by `in_flight` until the last of
-    // them settles, so a step allocates nothing (MEM.9).
+    // What a step reads back, and the two slots steps alternate between,
+    // MAP_READ | COPY_DST, made at build; none where the graph reads nothing.
+    struct Source {
+        WGPUBuffer buffer;   // borrowed: the upload outlives the program
+        std::uint64_t offset;
+        std::uint64_t size;
+    };
+    std::optional<Source> readback;
+    std::array<gpu::Buffer, 2> slots;
+
+    // A step outstanding: at most two (program.h), step n in steps[n % 2].
+    // Its callbacks carry this State and its own record as userdata, and
+    // `in_flight` keeps the State alive until the last outstanding step is
+    // reported, so a step allocates nothing (MEM.9).
+    struct Outstanding {
+        std::uint64_t number = 0;  // its place in the order steps ran
+        std::size_t pending = 0;   // callbacks still to land
+        ProgramError error = ProgramError::Ok;
+        // The first failure's message, reserved at build and truncated to
+        // that capacity, so reporting a failure allocates nothing either.
+        std::string message;
+        bool reads_back = false;
+        std::array<std::byte, kMaxReadback> bytes{};
+        StepCallback done = nullptr;
+        void* userdata = nullptr;
+    };
+    std::array<Outstanding, Order::kOutstanding> steps;
+    Order order;                      // reports steps in the order they ran (order.h)
     std::shared_ptr<State> in_flight;
-    std::size_t step_pending = 0;
-    ProgramError step_error = ProgramError::Ok;
-    // The first failure's message, reserved at build and truncated to that
-    // capacity, so reporting a failure allocates nothing either.
-    std::string step_message;
-    StepCallback step_done = nullptr;
-    void* step_userdata = nullptr;
 };
 
 namespace {
@@ -244,8 +264,8 @@ std::uint64_t slot_bytes(const Launch& launch) {
 
 }  // namespace
 
-void Program::build(const residency::Upload& upload, std::vector<Launch> launches, BuildCallback done,
-                    void* userdata) {
+void Program::build(const residency::Upload& upload, std::vector<Launch> launches,
+                    std::optional<Binding> readback, BuildCallback done, void* userdata) {
     auto build = std::make_shared<Build>();
     build->launches = std::move(launches);
     build->done = done;
@@ -314,7 +334,16 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     WGPULimits limits = WGPU_LIMITS_INIT;
     wgpuDeviceGetLimits(device, &limits);
     state->max_workgroups = limits.maxComputeWorkgroupsPerDimension;
-    state->step_message.reserve(kStepMessageCapacity);
+    for (State::Outstanding& o : state->steps) o.message.reserve(kStepMessageCapacity);
+    if (readback) {
+        WGPUBuffer buffer = upload.buffer(readback->buffer);
+        if (buffer == nullptr || readback->size == 0 || readback->size > kMaxReadback || readback->size % 4 != 0) {
+            done(nullptr, ProgramError::Build, "the readback range is not a buffer upload created, of 4 to 16 bytes",
+                 userdata);
+            return;
+        }
+        state->readback = State::Source{buffer, readback->offset, readback->size};
+    }
     build->state = state;
     build->program = std::unique_ptr<Program>(new Program());
     build->program->state_ = state;
@@ -338,6 +367,12 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     step_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
     step_desc.size = sizeof(Step);
     state->step = gpu::Buffer(wgpuDeviceCreateBuffer(device, &step_desc));
+    if (state->readback) {
+        WGPUBufferDescriptor slot_desc = WGPU_BUFFER_DESCRIPTOR_INIT;
+        slot_desc.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
+        slot_desc.size = state->readback->size;
+        for (gpu::Buffer& slot : state->slots) slot = gpu::Buffer(wgpuDeviceCreateBuffer(device, &slot_desc));
+    }
 
     // Optimization (browser): every launch's constants in one write (WASM.2).
     std::vector<std::byte> packed(constants_desc.size);
@@ -427,28 +462,58 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
 
 namespace {
 
-// One of the step's callbacks has landed: its two scopes and its work done,
-// in any order. The last reports the step.
-void settle_step(Program::State& s, ProgramError e, WGPUStringView message) {
-    if (s.step_error == ProgramError::Ok && e != ProgramError::Ok) {
-        s.step_error = e;
+// Reports every settled step whose turn it is, in the order they were run.
+// `done` may run another step or destroy the Program: the State is held
+// meanwhile, and a step is marked reported before its callback.
+void report(Program::State& s) {
+    const std::shared_ptr<Program::State> keep = s.in_flight;
+    while (const std::optional<std::uint64_t> number = s.order.next()) {
+        Program::State::Outstanding& o = s.steps[*number % Order::kOutstanding];
+        if (s.order.idle()) s.in_flight.reset();
+        const ProgramError error = s.cancelled ? ProgramError::Cancelled : o.error;
+        const std::span<const std::byte> bytes =
+            error == ProgramError::Ok && o.reads_back ? std::span<const std::byte>(o.bytes.data(), s.readback->size)
+                                                      : std::span<const std::byte>{};
+        o.done(error, o.message, bytes, o.userdata);
+    }
+}
+
+// One of a step's callbacks has landed: its two scopes, and its work done or
+// its readback mapped, in any order. The last settles the step.
+void settle(Program::State& s, Program::State::Outstanding& o, ProgramError e, WGPUStringView message) {
+    if (o.error == ProgramError::Ok && e != ProgramError::Ok) {
+        o.error = e;
         const std::size_t length = message.data == nullptr ? 0
                                    : message.length == WGPU_STRLEN ? std::strlen(message.data)
                                                                    : message.length;
-        s.step_message.assign(message.data == nullptr ? "" : message.data,
-                              std::min(length, s.step_message.capacity()));
+        o.message.assign(message.data == nullptr ? "" : message.data, std::min(length, o.message.capacity()));
     }
-    if (--s.step_pending > 0) return;
-    // Held until `done` returns, which may destroy the Program.
-    const std::shared_ptr<Program::State> keep = std::move(s.in_flight);
-    s.step_done(s.cancelled ? ProgramError::Cancelled : s.step_error, s.step_message, s.step_userdata);
+    if (--o.pending > 0) return;
+    s.order.settle(o.number);
+    report(s);
 }
 
 }  // namespace
 
 void Program::run(const Step& step, StepCallback done, void* userdata) {
     State& s = *state_;
+    // Two outstanding: a third would copy into a slot still mapped.
+    if (s.order.full()) {
+        done(ProgramError::Step, "a third step while two are outstanding", {}, userdata);
+        return;
+    }
     WGPUDevice device = s.device.get();
+    const std::uint64_t number = s.order.run();
+    State::Outstanding& o = s.steps[number % Order::kOutstanding];
+    WGPUBuffer slot = s.slots[number % Order::kOutstanding].get();
+    o.number = number;
+    o.pending = kStepScopes.size();
+    o.error = ProgramError::Ok;
+    o.message.clear();
+    o.reads_back = s.readback.has_value() && step.logits != 0;
+    o.done = done;
+    o.userdata = userdata;
+    s.in_flight = state_;
 
     // The scopes cover the step's write too, so a write WebGPU refuses fails
     // the step rather than leaving it to run on the last step's parameters.
@@ -458,16 +523,10 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
     const std::size_t bytes = kStepHead + (step.fed == 1 ? 0 : 16 * ((std::size_t{step.tokens} + 3) / 4));
     wgpuQueueWriteBuffer(s.queue.get(), s.step.get(), 0, &step, bytes);
 
-    s.in_flight = state_;
-    s.step_pending = kStepScopes.size();
-    s.step_error = ProgramError::Ok;
-    s.step_message.clear();
-    s.step_done = done;
-    s.step_userdata = userdata;
     // Past kMaxPositions a position is not exact as an f32 and the chunk
     // arithmetic may wrap (interface.h): refused, before any launch.
     bool fits = std::uint64_t{step.position} + step.tokens <= kMaxPositions;
-    if (!fits) s.step_message.assign("a step past position 2^24");
+    if (!fits) o.message.assign("a step past position 2^24");
     if (fits) {
         const gpu::CommandEncoder encoder(wgpuDeviceCreateCommandEncoder(device, nullptr));
         {
@@ -491,35 +550,66 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
             }
             wgpuComputePassEncoderEnd(pass.get());
         }
+        // The readback copied after the pass, into this step's own slot.
+        if (fits && o.reads_back) {
+            wgpuCommandEncoderCopyBufferToBuffer(encoder.get(), s.readback->buffer, s.readback->offset, slot, 0,
+                                                 s.readback->size);
+        }
         const gpu::CommandBuffer commands(wgpuCommandEncoderFinish(encoder.get(), nullptr));
         if (fits) {
             WGPUCommandBuffer raw = commands.get();
             wgpuQueueSubmit(s.queue.get(), 1, &raw);
         }
     }
-    if (fits) {
-        ++s.step_pending;
-        WGPUQueueWorkDoneCallbackInfo info = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+    if (fits && o.reads_back) {
+        // Its mapping settles the step: it cannot land before the work.
+        ++o.pending;
+        WGPUBufferMapCallbackInfo info = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
         info.mode = gpu::kCallbackMode;
-        info.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView message, void* userdata1, void*) {
-            settle_step(*static_cast<State*>(userdata1), from_work_done(status), message);
+        info.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* userdata1, void* userdata2) {
+            auto& state = *static_cast<State*>(userdata1);
+            auto& step = *static_cast<State::Outstanding*>(userdata2);
+            WGPUBuffer mapped = state.slots[&step - state.steps.data()].get();
+            ProgramError e = ProgramError::Ok;
+            if (status == WGPUMapAsyncStatus_Success) {
+                const void* range = wgpuBufferGetConstMappedRange(mapped, 0, state.readback->size);
+                std::memcpy(step.bytes.data(), range, state.readback->size);
+                wgpuBufferUnmap(mapped);
+            } else {
+                e = status == WGPUMapAsyncStatus_CallbackCancelled ? ProgramError::Cancelled : ProgramError::Step;
+            }
+            settle(state, step, e, message);
         };
         info.userdata1 = &s;
+        info.userdata2 = &o;
+        wgpuBufferMapAsync(slot, WGPUMapMode_Read, 0, s.readback->size, info);
+    } else if (fits) {
+        ++o.pending;
+        WGPUQueueWorkDoneCallbackInfo info = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+        info.mode = gpu::kCallbackMode;
+        info.callback = [](WGPUQueueWorkDoneStatus status, WGPUStringView message, void* userdata1, void* userdata2) {
+            settle(*static_cast<State*>(userdata1), *static_cast<State::Outstanding*>(userdata2),
+                   from_work_done(status), message);
+        };
+        info.userdata1 = &s;
+        info.userdata2 = &o;
         wgpuQueueOnSubmittedWorkDone(s.queue.get(), info);
     } else {
         // A step past kMaxPositions, or too large for one dispatch's
         // workgroups: refused, not truncated.
-        s.step_error = ProgramError::Step;
-        if (s.step_message.empty()) s.step_message.assign("a launch needs more workgroups than one dispatch allows");
+        o.error = ProgramError::Step;
+        if (o.message.empty()) o.message.assign("a launch needs more workgroups than one dispatch allows");
     }
     for (std::size_t i = 0; i < kStepScopes.size(); ++i) {
         WGPUPopErrorScopeCallbackInfo info = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
         info.mode = gpu::kCallbackMode;
         info.callback = [](WGPUPopErrorScopeStatus status, WGPUErrorType type, WGPUStringView message,
-                           void* userdata1, void*) {
-            settle_step(*static_cast<State*>(userdata1), from_scope(status, type, ProgramError::Step), message);
+                           void* userdata1, void* userdata2) {
+            settle(*static_cast<State*>(userdata1), *static_cast<State::Outstanding*>(userdata2),
+                   from_scope(status, type, ProgramError::Step), message);
         };
         info.userdata1 = &s;
+        info.userdata2 = &o;
         wgpuDevicePopErrorScope(device, info);
     }
 }

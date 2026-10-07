@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -28,8 +29,10 @@ namespace bllm::kernels {
 //     launch; every launch's constants are packed into one uniform buffer,
 //     each in whole slots of kLaunchConstantsAlignment, and written with one
 //     write; a launch whose pack format has no pack is refused; the
-//     step's uniform buffer is created. The buffers bound are upload's,
-//     named by plan index, so the program allocates only those two.
+//     step's uniform buffer is created, and, where the graph names a range
+//     to read back — the draw's record (sampler/sampler.h) — two mappable
+//     readback slots of its size. The buffers bound are upload's, named by
+//     plan index, so the program allocates only those.
 //   - Run, once a step: one write of the step's parameters, then one command
 //     encoder holding one compute pass that sets each launch's bind group
 //     and dispatches its workgroups, setting a pipeline only where it
@@ -38,6 +41,19 @@ namespace bllm::kernels {
 //     (kernels/schedule.h). Launches run in the
 //     order given, which is the graph's; WebGPU orders dispatches in a pass
 //     by their buffer use, so a launch sees what the one before it wrote.
+//   - Read back: a step that asks for logits copies the readback range into
+//     one of the two slots, after its pass, in its own command buffer, and
+//     maps the slot once submitted; its callback carries the bytes. Steps
+//     alternate between the slots.
+//   - Two steps may be outstanding — one running and the next queued — so
+//     the runtime submits the next before the last's readback maps (GPU.7).
+//     WebGPU orders a queue's writes after the submits before them, so one
+//     step uniform serves both. It does not order mappings of two buffers, so
+//     each step carries a sequence number, and one that settles before an
+//     earlier step is held until that one has been reported: callbacks come
+//     in the order the steps were run (kernels/order.h). A third run while two are
+//     outstanding is refused at once, without running, so a slot is never
+//     copied into while mapped.
 //   - Failure is visible, as upload's is. Build runs inside out-of-memory,
 //     validation and internal error scopes, and a pipeline that fails to
 //     compile reports WebGPU's message; a step runs inside validation and
@@ -52,13 +68,16 @@ namespace bllm::kernels {
 //     so destroying a program with a step in flight reports Cancelled.
 //
 // What a step costs, counted: calls into WebGPU are 1 writeBuffer of 48
-// bytes for a fed step and 48 + 16 × ceil(tokens / 4) for another, 1 createCommandEncoder, 1 beginComputePass,
-// for each launch that runs 1 setBindGroup, 1 dispatchWorkgroups and 1 setPipeline
-// where the kernel changes, then end, finish, submit, two scopes' pushes and
-// pops, onSubmittedWorkDone, and the release of the three single-use objects
-// WebGPU makes a step — the command encoder, the pass encoder and the command
-// buffer: 14 calls out of the module, and 2 or 3 a launch; and three
-// callbacks back in, the two scopes' and the queue's. Everything else —
+// bytes for a fed step and 48 + 16 × ceil(tokens / 4) for another, 1
+// createCommandEncoder, 1 beginComputePass, for each launch that runs 1
+// setBindGroup, 1 dispatchWorkgroups and 1 setPipeline where the kernel
+// changes, then end, finish, submit, two scopes' pushes and pops, and the
+// release of the three single-use objects WebGPU makes a step — the command
+// encoder, the pass encoder and the command buffer; then onSubmittedWorkDone,
+// or, for a step that reads back, a copyBufferToBuffer, a mapAsync, a
+// getConstMappedRange and an unmap: 14 calls out of the module, 17 reading
+// back, and 2 or 3 a launch; and three callbacks back in, the two scopes'
+// and the queue's or the mapping's. Everything else —
 // buffers, pipelines, bind groups — is made at load. The GPU adds about
 // 1.5 µs a dispatch (interface.h). Build costs a pipeline and a bind group
 // layout per distinct kernel — 28 for Qwen3 (graph/graph.h) — one key a launch
@@ -98,22 +117,31 @@ class Program;
 using BuildCallback = void (*)(std::unique_ptr<Program> program, ProgramError error, std::string_view message,
                                void* userdata);
 // `message` is WebGPU's for a failed step, at most 1 KiB, and empty on
-// success; it is valid only during the call.
-using StepCallback = void (*)(ProgramError error, std::string_view message, void* userdata);
+// success; `readback` the step's copy of the readback range, empty for a
+// step that read none or failed. Both are valid only during the call.
+using StepCallback = void (*)(ProgramError error, std::string_view message, std::span<const std::byte> readback,
+                              void* userdata);
+
+// The most bytes a step reads back: the draw's record.
+inline constexpr std::uint64_t kMaxReadback = 16;
 
 class Program {
 public:
     // Builds the program for `launches`, in the graph's order, over
-    // `upload`'s buffers. `done` is called once, with the program or a
+    // `upload`'s buffers, reading back `readback` from each step that asks
+    // for logits, where given. `done` is called once, with the program or a
     // failure. Preconditions: `upload` has finished and outlives the
-    // program; every launch's bindings name buffers upload created.
-    static void build(const residency::Upload& upload, std::vector<Launch> launches, BuildCallback done,
-                      void* userdata);
+    // program; every launch's bindings name buffers upload created;
+    // `readback` names one of them, a working buffer, and is at most
+    // kMaxReadback bytes.
+    static void build(const residency::Upload& upload, std::vector<Launch> launches,
+                      std::optional<Binding> readback, BuildCallback done, void* userdata);
 
-    // Runs one step. `done` is called once, when the queue has finished it
-    // or it has failed; a step past kMaxPositions fails without running.
-    // Preconditions: 1 <= step.tokens <= kPrefillBlock, every identifier
-    // below the vocabulary, and no other step in flight.
+    // Runs one step. `done` is called once: when the queue has finished it,
+    // or its readback has mapped, or it has failed; a step past
+    // kMaxPositions fails without running, and a third while two are
+    // outstanding is refused at once. Preconditions: 1 <= step.tokens <=
+    // kPrefillBlock, every identifier below the vocabulary.
     void run(const Step& step, StepCallback done, void* userdata);
 
     ~Program();

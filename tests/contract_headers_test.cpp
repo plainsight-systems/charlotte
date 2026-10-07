@@ -16,6 +16,7 @@
 #include "core/kernels/matmul/matmul.h"
 #include "core/kernels/interface.h"
 #include "core/kernels/norm/norm.h"
+#include "core/kernels/order.h"
 #include "core/kernels/rope/rope.h"
 #include "core/kernels/topk/topk.h"
 #include "core/model/model_description.h"

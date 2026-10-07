@@ -36,10 +36,10 @@ struct Built {
 
 // Builds a program for `launches` and returns how the build ended.
 inline Built try_build(WGPUInstance instance, const residency::Upload& upload,
-                       std::vector<kernels::Launch> launches) {
+                       std::vector<kernels::Launch> launches, std::optional<kernels::Binding> readback = {}) {
     Built built;
     kernels::Program::build(
-        upload, std::move(launches),
+        upload, std::move(launches), readback,
         [](std::unique_ptr<kernels::Program> p, kernels::ProgramError e, std::string_view m, void* userdata) {
             auto& b = *static_cast<Built*>(userdata);
             b.program = std::move(p);
@@ -54,8 +54,9 @@ inline Built try_build(WGPUInstance instance, const residency::Upload& upload,
 
 // Builds a program, as try_build; it must succeed.
 inline std::unique_ptr<kernels::Program> build_program(WGPUInstance instance, const residency::Upload& upload,
-                                                       std::vector<kernels::Launch> launches) {
-    Built built = try_build(instance, upload, std::move(launches));
+                                                       std::vector<kernels::Launch> launches,
+                                                       std::optional<kernels::Binding> readback = {}) {
+    Built built = try_build(instance, upload, std::move(launches), readback);
     REQUIRE_MESSAGE(built.error == kernels::ProgramError::Ok, built.message);
     REQUIRE(built.program != nullptr);
     return std::move(built.program);
@@ -65,6 +66,7 @@ inline std::unique_ptr<kernels::Program> build_program(WGPUInstance instance, co
 struct StepOutcome {
     kernels::ProgramError error;
     std::string message;
+    std::vector<std::byte> readback;   // the step's, if it read any back
 };
 
 // Runs `step` and returns how it ended; it must be reported once.
@@ -72,21 +74,24 @@ inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, co
     struct Ran {
         kernels::ProgramError error = kernels::ProgramError::Step;
         std::string message;
+        std::vector<std::byte> readback;
         int calls = 0;
         bool done = false;
     } ran;
     program.run(step,
-                [](kernels::ProgramError e, std::string_view message, void* userdata) {
+                [](kernels::ProgramError e, std::string_view message, std::span<const std::byte> readback,
+                   void* userdata) {
                     auto& r = *static_cast<Ran*>(userdata);
                     r.error = e;
                     r.message = message;
+                    r.readback.assign(readback.begin(), readback.end());
                     ++r.calls;
                     r.done = true;
                 },
                 &ran);
     pump_until(instance, ran.done, "the step");
     REQUIRE(ran.calls == 1);
-    return {ran.error, std::move(ran.message)};
+    return {ran.error, std::move(ran.message), std::move(ran.readback)};
 }
 
 // Runs one step of `tokens` tokens from `position`, identifiers `ids` where
