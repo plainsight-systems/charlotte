@@ -53,12 +53,13 @@ namespace bllm::kernels {
 //     For each group of its range it loads the input's 32 matching floats
 //     into registers once and multiplies them by the 4 rows' unpacked
 //     groups, so the input is read once a set, not once a row, as
-//     llama.cpp's Metal kernel reuses it across rows. The 4 rows' 32 range
-//     sums meet in workgroup memory, and invocations 0 to 3 each add one
-//     row's in order — invocations 0 and 1 one gate row and its up row each,
-//     for the gated activation: one barrier, then 32 adds, or 64, in
-//     parallel rather than one invocation's 128. Qwen3's 1,024-wide rows are 32 groups,
-//     one a range, so a set's invocations read 32 adjacent blocks of each
+//     llama.cpp's Metal kernel reuses it across rows. The workgroup's 8
+//     rows' range sums meet in workgroup memory, and invocations 0 to 7
+//     each add one row's in order — for the gated activation, invocations
+//     0 to 3 one gate row and its up row each: one barrier, then 32 adds,
+//     or 64, in parallel rather than one invocation's 128 a set. Qwen3's
+//     1,024-wide rows are 32 groups, one a range, so a set's invocations
+//     read 32 adjacent blocks of each
 //     of the format's streams: for Q4_0's codes, 512 bytes in 512 (GPU.2).
 //     A wider row's ranges are 2 to 8 groups, so invocation r reads block
 //     r × n + i at its i-th step: 512 bytes spread over n × 512 — 3 times
