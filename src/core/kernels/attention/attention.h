@@ -65,9 +65,9 @@ namespace bllm::kernels {
 //     PagedAttention V2 over 512-token partitions. When it has many, one
 //     workgroup folds every active chunk itself, with the same merge. A
 //     layer's step splits when tokens × count <= P, the partial buffers'
-//     rows: 512, the attention buffer's own size, or the offered context's
+//     rows: 512, the attention buffer's own size, or the trained context's
 //     chunks, ceil(C / 64), where that is more — 640 for Qwen3's 40,960 —
-//     so a decode step splits at every position the context offers
+//     so a decode step splits at every position any offered context reaches
 //     (kernels/interface.h, key_chunks). Folding several chunks a split
 //     instead would associate the merges differently from an unsplit step,
 //     and change its bits. A chunk holding no live key for some of a
@@ -144,8 +144,13 @@ namespace bllm::kernels {
 //     WGSL; the tests hold the two to agreement at every boundary.
 //   - residency/plan.h: two working buffers — partial values, P rows of
 //     H_q × d floats, and partial statistics, P rows of H_q × 2, P =
-//     max(512, ceil(C / 64)) for the context C it offers — each a buffer of
-//     its own: 5 MiB of values for Qwen3 at 40,960, 4 MiB at 512 rows.
+//     max(512, ceil(C / 64)) for the trained context C — each a buffer of
+//     its own: 5 MiB of values for Qwen3 at 40,960, 4 MiB at 512 rows. The
+//     plan places them before it fits the context it offers, so they are
+//     sized for the trained context, the bound on any it offers: for Llama
+//     3.2, 2,048 rows, 12.4 MiB more than 512, about 1% of the context a
+//     2 GiB budget offers, where a context offered under 32,768 would need
+//     512.
 //   - kernels/interface.h: kChunkKeys is 64, and key_chunks takes the
 //     partial rows P, which the kernel receives as an override constant,
 //     `partial_rows`; tokens × count stays below 2^32, at most 512 ×
