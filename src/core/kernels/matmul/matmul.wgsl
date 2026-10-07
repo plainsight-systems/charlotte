@@ -316,12 +316,21 @@ fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<f32, 32> {
                 }
             }
             workgroupBarrier();
+            // Each k: the micro-tile's 4 inputs and 8 weights read from
+            // workgroup memory once, into registers, then its 32 multiply-
+            // adds — 12 reads, not one a product.
             for (var k = 0u; k < 32u; k++) {
+                var xs: array<f32, 4>;
+                var ws: array<f32, 8>;
                 for (var i = 0u; i < 4u; i++) {
-                    let x = x_tile[(4u * tr + i) * 33u + k];
+                    xs[i] = x_tile[(4u * tr + i) * 33u + k];
+                }
+                for (var j = 0u; j < 8u; j++) {
+                    ws[j] = w_tile[micro_row(t, j, gated) * 33u + k];
+                }
+                for (var i = 0u; i < 4u; i++) {
                     for (var j = 0u; j < 8u; j++) {
-                        let o = i * 8u + j;
-                        range_sum[o] = mac(range_sum[o], w_tile[micro_row(t, j, gated) * 33u + k], x);
+                        range_sum[i * 8u + j] = mac(range_sum[i * 8u + j], ws[j], xs[i]);
                     }
                 }
             }
