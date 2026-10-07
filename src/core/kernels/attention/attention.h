@@ -144,12 +144,15 @@ namespace bllm::kernels {
 //     two unpack2x16float.
 //   - model/model_description.h: the model's attention scale.
 //
-// Determinism (GDSA.2): run to run, and batch-invariant — a query's output
-// is the same bits whatever the step's token count or splits, since chunks
-// are fixed by position, each is computed by the same tile loop from an
-// empty state, and they are folded in chunk order by one function, whether
-// within a workgroup or by the combine. Not bit for bit with llama.cpp,
-// whose tiles and order differ.
+// Determinism (GDSA.2): run to run, and batch-invariant on the target — a
+// query's output is the same bits whatever the step's token count or
+// splits, since chunks are fixed by position, each is computed by the same
+// tile loop from an empty state, and they are folded in chunk order by one
+// function, whether within a workgroup or by the combine. main and the
+// combine are separate pipelines, and WGSL lets each fuse or reassociate
+// that function's multiply-adds as it chooses, so equal bits are what the
+// target's compiler gives, which the GPU test checks, not what WGSL
+// promises. Not bit for bit with llama.cpp, whose tiles and order differ.
 //
 // Accuracy, against the same computation in f64 from the same queries and
 // the KV cache's stored keys and values: the scores' rounding dominates. A
@@ -177,9 +180,12 @@ namespace bllm::kernels {
 //     30 × 10⁹ a step, about 2 ms at the M3 Max's roughly 14 f32 TFLOPS
 //     (third-party figure) if the arithmetic ran at peak. A row tile streams
 //     the keys up to its last row, half a layer's 2 MiB of keys and values
-//     on average: about 128 MiB of KV cache reads a layer, nearly all of
-//     them served by the GPU's caches, since a layer's 2 MiB fits them;
-//     from device memory, about the 2 MiB once.
+//     on average: about 128 MiB of KV cache reads a layer. From device
+//     memory that is between the layer's 2 MiB, if the GPU's caches keep it
+//     while its row tiles run, as they can hold it, and the whole 128 MiB,
+//     about 0.3 ms a layer at 400 GB/s, if they do not; WebGPU promises
+//     neither the order workgroups run in nor what the caches keep, so where
+//     in that range a step falls is the target's, to be measured.
 //   - Barriers: four a tile, 64 a chunk for Qwen3, 32 for Llama 3.2, 128
 //     for Gemma 3; the merge at each chunk's end needs none.
 // Optimization (practice): the softmax is online and tiled, so the
@@ -199,9 +205,9 @@ namespace bllm::kernels {
 //     keeps for cross-browser compatibility (gpu/device_requirements.h). A
 //     tile is therefore M = 1,024 / d query vectors — 4 rows for Qwen3 —
 //     where FlashAttention-2 takes 64 to 128 rows; prefill reads each
-//     layer's KV cache 128 times rather than 4 to 8. Nearly all the extra
-//     reads are served by the GPU's caches, so device-memory traffic is
-//     about the same; the GPU's caches carry 16 to 32 times more.
+//     layer's KV cache 128 times rather than 4 to 8: 16 to 32 times the
+//     reads, which the GPU's caches serve as far as they keep the layer's
+//     keys and values (costs, above).
 //   - Subgroup operations are optional, for the same reason: each score is
 //     one invocation's whole dot product, and the softmax's per-tile maxima
 //     and sums are one invocation's loop over B, where llama.cpp's Metal
