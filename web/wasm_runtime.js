@@ -46,7 +46,7 @@ export async function createRuntime({ onDevice, runBench, profileSteps = false }
   globalThis.bllmOnText = (call, text) => streams.get(call)?.(text);
 
   const module = await createModule();
-  startDeviceCheck(module, { onDevice, runBench, profileSteps });
+  startDeviceCheck(module, { runBench, profileSteps });
   // Only a diagnostic module checks a load.
   const canCheck = typeof module._bllm_check_begin === 'function';
 
@@ -164,13 +164,17 @@ export async function createRuntime({ onDevice, runBench, profileSteps = false }
   };
 }
 
-function startDeviceCheck(module, { onDevice, runBench, profileSteps }) {
+// Starts the device check the page asked for. Every outcome is reported as
+// the module reports one, through bllmOnResult, so preflight's wait for the
+// device's limits ends whichever way the check went.
+function startDeviceCheck(module, { runBench, profileSteps }) {
+  const report = globalThis.bllmOnResult;
   if (profileSteps) {
     if (typeof module._bllm_run_profile_check === 'function') {
       // Present only in a diagnostic build.
       module._bllm_run_profile_check();
     } else {
-      onDevice({
+      report({
         ok: false,
         stage: 'request',
         error: 'the step profile is not compiled into this build; serve the diagnostic site (make serve-diag)',
@@ -182,7 +186,7 @@ function startDeviceCheck(module, { onDevice, runBench, profileSteps }) {
     // Present only in a diagnostic build.
     module._bllm_run_readback_bench();
   } else {
-    onDevice({
+    report({
       ok: false,
       stage: 'request',
       error: 'the readback benchmark is not compiled into this build; ' +
