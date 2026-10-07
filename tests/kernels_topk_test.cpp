@@ -43,6 +43,15 @@ TEST_CASE("each listed vocabulary is three passes, alternating buffers, the last
     }
 }
 
+TEST_CASE("the largest vocabulary a u32 holds takes its passes, no tile count wrapping") {
+    const auto launches = kernels::topk_launches(kLogits, UINT32_MAX, kA, kB, kCandidates);
+    // Tiles of 4,194,304, then 262,144, 16,384, 1,024, 64, 4 and 1; a
+    // dispatch that large the program refuses, but the launcher never loops.
+    REQUIRE(launches.size() == 7);
+    CHECK(workgroups(launches[0], true) == 4'194'304);
+    CHECK(workgroups(launches[6], true) == 1);
+}
+
 TEST_CASE("a vocabulary of one tile is one pass, and one of 1,025 two") {
     CHECK(kernels::topk_launches(kLogits, 64, kA, kB, kCandidates).size() == 1);
     CHECK(kernels::topk_launches(kLogits, 1024, kA, kB, kCandidates).size() == 1);

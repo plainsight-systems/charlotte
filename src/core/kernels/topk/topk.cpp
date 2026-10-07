@@ -25,7 +25,9 @@ std::vector<Launch> topk_launches(const residency::BufferRange& logits, std::uin
     residency::BufferRange input = logits;
     std::uint32_t count = vocabulary;
     for (bool first = true;; first = false) {
-        const std::uint32_t tiles = (count + residency::kSelectionTile - 1) / residency::kSelectionTile;
+        // A ceiling without the addition that would wrap near UINT32_MAX.
+        const std::uint32_t tiles =
+            count / residency::kSelectionTile + (count % residency::kSelectionTile != 0 ? 1 : 0);
         // The last pass, one workgroup, writes the candidates; the others
         // alternate, never reading the buffer they write.
         const residency::BufferRange& output =

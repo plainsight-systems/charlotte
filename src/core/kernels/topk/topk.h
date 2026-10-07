@@ -34,7 +34,8 @@ namespace bllm::kernels {
 //     Pirk, Madden, SIGMOD 2018): each run of 64 sorted by a bitonic network,
 //     21 stages; then runs merged in pairs, each pair's elementwise larger
 //     halves forming a bitonic sequence sorted in 6 more stages, 16 runs to
-//     8 to 4 to 2 to 1 — 49 stages, a barrier each, the active invocations
+//     8 to 4 to 2 to 1 — 49 stages and the load's barrier before them, 50
+//     barriers in all, the active invocations
 //     halving with the runs. The workgroup writes its 64, sorted.
 //   - Passes: the first reads logits (f32, a token's id its index); each
 //     later one reads the last's candidates (logit, token), 1,024 a
@@ -57,10 +58,10 @@ namespace bllm::kernels {
 // Those 7.9 µs are the floor. Comparisons: a tile's 21 sorting stages are 16
 // runs × 32 × 21 = 10,752 compare-exchanges, its merges 15 × (64 + 6 × 32) =
 // 3,840: 14,592 a tile, 2.3 million over the 160 tiles of the three passes,
-// run side by side within a pass. What a pass's latency adds is its 49
-// stages one after another, each a barrier: at about 50 cycles a stage on
-// the M3 Max's cores near 1.4 GHz — an estimate, not counted from the
-// design, to be calibrated — 1.75 µs a pass, 5 µs for the three; and the
+// run side by side within a pass. What a pass's latency adds is its 50
+// barriers one after another: at about 50 cycles a stage on the M3 Max's
+// cores near 1.4 GHz — an estimate, not counted from the design, to be
+// calibrated — 1.79 µs a pass, 5.4 µs for the three; and the
 // draw's own work, estimated at 1.5 µs at a top_k of 64 (sampler.h). About
 // 15 µs a sampled step, estimated: the selection and draw are measured
 // together once they run, and that measure gives their share of a step.
