@@ -134,38 +134,6 @@ TEST_CASE("a token's logits are the same bits however its prompt is stepped") {
 
 namespace {
 
-// A step's report, for the decoding below.
-struct Decoded {
-    std::vector<std::uint32_t> tokens;   // in the order reported
-    bool failed = false;
-};
-
-struct Pending {
-    Decoded* decoded;
-};
-
-void on_decoded(kernels::ProgramError e, std::string_view message, std::span<const std::byte> bytes, void* userdata) {
-    Decoded& d = *static_cast<Pending*>(userdata)->decoded;
-    if (e != kernels::ProgramError::Ok || bytes.size() != sizeof(sampler::SampledRecord)) {
-        FAIL_CHECK("a step failed: " << message);
-        d.failed = true;
-        return;
-    }
-    sampler::SampledRecord record;
-    std::memcpy(&record, bytes.data(), sizeof record);
-    CHECK(record.failed == 0);
-    d.tokens.push_back(record.token);
-}
-
-void pump_for(WGPUInstance instance, const Decoded& d, std::size_t count) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
-    while (d.tokens.size() < count && !d.failed) {
-        wgpuInstanceProcessEvents(instance);
-        if (std::chrono::steady_clock::now() > deadline) FAIL("timed out waiting for token " << count);
-        std::this_thread::sleep_for(std::chrono::milliseconds{1});
-    }
-}
-
 kernels::Step prompt_step(std::span<const std::uint32_t> ids, const policy::SamplingSettings& s) {
     kernels::Step step{};
     step.position = 0;
@@ -188,42 +156,80 @@ kernels::Step decode_step(std::uint32_t position, std::optional<std::uint32_t> t
     return step;
 }
 
-// Decodes `count` tokens after `ids`, each step fed its token on the GPU and
-// run before the last step's token is read back: two steps outstanding.
-std::vector<std::uint32_t> decode_pipelined(WGPUInstance instance, const gpu::Device& device,
-                                            std::span<const std::uint32_t> ids, std::size_t count,
-                                            const policy::SamplingSettings& s) {
-    Running r = run_model(instance, device);
-    Decoded d;
-    Pending pending{&d};
-    const auto prompt_length = static_cast<std::uint32_t>(ids.size());
-    r.program->run(prompt_step(ids, s), on_decoded, &pending);
-    // Token i is drawn by the step at position prompt_length + i − 1; each
-    // decode step embeds the last's draw from the GPU.
-    for (std::uint32_t i = 1; i < count; ++i) {
-        r.program->run(decode_step(prompt_length + i - 1, std::nullopt, s), on_decoded, &pending);
-        pump_for(instance, d, i);   // the one before it reported: one left outstanding
-    }
-    pump_for(instance, d, count);
-    return d.tokens;
+// Decodes `count` tokens after a prompt, driven by the steps' reports: each
+// report runs the next step before it returns, so the run never waits on an
+// event pump that may deliver two reports at once. Token i is drawn by step
+// i, at position prompt_length + i − 1.
+//   - Pipelined: step i + 1 is fed step i's draw on the GPU and run when step
+//     i − 1 reports, so step i is still outstanding: two at once, throughout.
+//   - A step at a time: step i + 1 is run when step i reports, given its
+//     token by identifier.
+struct Decoder {
+    kernels::Program* program;
+    policy::SamplingSettings settings;
+    std::uint32_t prompt_length;
+    std::size_t count;
+    bool pipelined;
+    std::vector<std::uint32_t> tokens;   // in the order reported
+    std::size_t run = 0;
+    std::size_t reported = 0;
+    std::size_t alone = 0;   // pipelined reports with no successor outstanding, before the last step ran
+    bool failed = false;
+};
+
+void on_decoded(kernels::ProgramError e, std::string_view message, std::span<const std::byte> bytes, void* userdata);
+
+void run_next(Decoder& d) {
+    const auto position = d.prompt_length + static_cast<std::uint32_t>(d.run) - 1;
+    const std::optional<std::uint32_t> token = d.pipelined ? std::nullopt : std::optional{d.tokens.back()};
+    ++d.run;
+    d.program->run(decode_step(position, token, d.settings), on_decoded, &d);
 }
 
-// The same, a step at a time: each step waits for the last's token and is
-// given it by identifier.
-std::vector<std::uint32_t> decode_step_at_a_time(WGPUInstance instance, const gpu::Device& device,
-                                                 std::span<const std::uint32_t> ids, std::size_t count,
-                                                 const policy::SamplingSettings& s) {
-    Running r = run_model(instance, device);
-    Decoded d;
-    Pending pending{&d};
-    const auto prompt_length = static_cast<std::uint32_t>(ids.size());
-    r.program->run(prompt_step(ids, s), on_decoded, &pending);
-    pump_for(instance, d, 1);
-    for (std::uint32_t i = 1; i < count; ++i) {
-        r.program->run(decode_step(prompt_length + i - 1, d.tokens.back(), s), on_decoded, &pending);
-        pump_for(instance, d, i + 1);
+void on_decoded(kernels::ProgramError e, std::string_view message, std::span<const std::byte> bytes,
+                void* userdata) {
+    Decoder& d = *static_cast<Decoder*>(userdata);
+    ++d.reported;
+    if (e != kernels::ProgramError::Ok || bytes.size() != sizeof(sampler::SampledRecord)) {
+        FAIL_CHECK("a step failed: " << message);
+        d.failed = true;
+        return;
     }
-    return d.tokens;
+    sampler::SampledRecord record;
+    std::memcpy(&record, bytes.data(), sizeof record);
+    CHECK(record.failed == 0);
+    d.tokens.push_back(record.token);
+    if (d.failed || d.run == d.count) return;
+    if (d.pipelined && d.run == d.reported) ++d.alone;
+    run_next(d);
+}
+
+// Runs the prompt, then pumps until every step run has reported, failed or
+// not, so no callback outlives the decoder.
+std::vector<std::uint32_t> decode(WGPUInstance instance, const gpu::Device& device, std::span<const std::uint32_t> ids,
+                                  std::size_t count, const policy::SamplingSettings& s, bool pipelined) {
+    Running r = run_model(instance, device);
+    // On the heap, and kept should the wait time out: the program, destroyed
+    // with steps in flight, still reports them, and a report must find it.
+    auto d = std::make_unique<Decoder>(
+        Decoder{r.program.get(), s, static_cast<std::uint32_t>(ids.size()), count, pipelined});
+    ++d->run;
+    r.program->run(prompt_step(ids, s), on_decoded, d.get());
+    if (pipelined && count > 1) run_next(*d);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+    while (d->reported < d->run) {
+        wgpuInstanceProcessEvents(instance);
+        if (std::chrono::steady_clock::now() > deadline) {
+            FAIL_CHECK("timed out with " << d->run - d->reported << " steps outstanding");
+            (void)d.release();   // a report may still come, after the program is gone, Cancelled
+            return {};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    // Two outstanding throughout: every report but those after the last step
+    // ran found its successor already running.
+    if (pipelined) CHECK(d->alone == 0);
+    return d->tokens;
 }
 
 }  // namespace
@@ -235,8 +241,8 @@ TEST_CASE("decoding fed on the GPU, two steps outstanding, draws the tokens deco
     for (const policy::SamplingSettings& s : {policy::SamplingSettings{0.0f, 40, 0.95f, 0.05f},
                                               policy::SamplingSettings{0.8f, 40, 0.95f, 0.05f}}) {
         CAPTURE(s.temperature);
-        const auto pipelined = decode_pipelined(instance.get(), *device, ids, 30, s);
-        const auto stepped = decode_step_at_a_time(instance.get(), *device, ids, 30, s);
+        const auto pipelined = decode(instance.get(), *device, ids, 30, s, true);
+        const auto stepped = decode(instance.get(), *device, ids, 30, s, false);
         REQUIRE(pipelined.size() == 30);
         CHECK(pipelined == stepped);
         // Sampling, not one token over and over: the draw reached the model's
