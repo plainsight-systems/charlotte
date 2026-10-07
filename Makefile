@@ -76,7 +76,8 @@ check:
 
 ## The forward pass's GPU time, launch by launch, on Qwen3: DIAGNOSTIC, never a
 ## throughput figure (bench/forward_profile.cpp). The model's SHA-256 heads the
-## report; every launch's time goes to build/native-diag/profile.csv.
+## report; each launch timed, with its uncertainty, goes to
+## build/native-diag/profile.csv.
 PROFILE_MODEL := .cache/test-data/models/qwen3-0.6b-q4_0.gguf
 profile: test-data dawn
 	cmake --preset native-diag

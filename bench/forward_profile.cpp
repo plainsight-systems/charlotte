@@ -30,19 +30,26 @@
 //      tile a step's token count selects (kernels/matmul/matmul.h).
 //   3. Pipelined decode: 128 whole steps fed on the GPU, two outstanding, as
 //      the runtime runs them (runtime/runtime.h), each profiled, so the run
-//      is timed as it runs: the GPU idled for the run's span on its own
-//      clock — the last step's end less the first's beginning, less the
-//      steps' times — and, apart, on the CPU's, the interval between
-//      reports. WebGPU offers no calibrated pair of CPU and GPU timestamps,
-//      so the two clocks are never aligned or subtracted (TLM.11). GPU.10's
-//      first question, whether the GPU waits on the CPU, before any kernel's.
+//      is timed as it runs: the time outside the steps' passes on the GPU's
+//      own clock — the last step's end less the first's beginning, less the
+//      passes' times — which holds each step's query resolve and copies, the
+//      next step's write and any idle, so it bounds the GPU's idle time from
+//      above; and, apart, on the CPU's, the interval between reports.
+//      WebGPU offers no calibrated pair of CPU and GPU timestamps, so the two
+//      clocks are never aligned or subtracted (TLM.11). GPU.10's first
+//      question, whether the GPU waits on the CPU, before any kernel's.
 // A launch's time, in workloads 1 and 2, in the one pass a step runs in
 // (kernels/program.h):
 //   - where the device grants timestamps inside a pass, the step's own, a
 //     launch at a time;
 //   - otherwise, as on the target, a prefix's: the step run through its
 //     first k launches takes T(k), and launch k's time is T(k) − T(k − 1),
-//     what adding it costs the step in the shape it runs in. A prefix costs
+//     what adding it costs the step in the shape it runs in — a difference
+//     of two medians of independent runs, so its uncertainty is the two
+//     prefixes' spreads together, reported with it; a launch under it,
+//     negative ones among them, is marked below the noise. A prefix of the
+//     first layer reads only that layer's weights, so it does not reproduce
+//     the whole step's traffic through the GPU's caches. A prefix costs
 //     a step's time up to it, so the prefixes run are those through the
 //     embedding, through the first layer of each kind the graph builds —
 //     Gemma 3's window and global layers are two — and through the output
@@ -62,22 +69,27 @@
 //   - By role and entry point (graph/graph.h): the launches, the median time
 //     a launch, the total, and its share of the step; and, for a launch that
 //     reads its bindings once each — a product's weights, a norm, the gather
-//     — the bytes it binds over its time, against the target's 400 GB/s
-//     (graph.h), so a launch far below the device's bandwidth is named.
+//     — for a decode product alone, which reads each weight it binds once,
+//     its weights' bytes over its time, against the target's 400 GB/s
+//     (graph.h); elsewhere the bytes bound are not the bytes read, and none
+//     is given.
 //   - The floors the headers derive, beside the times measured: a decode
 //     step's weights and cache read once, 0.94 ms + 0.29 µs × p for Qwen3;
 //     a 512-token prefill step's arithmetic, about 32 ms at the M3 Max's
 //     peak (graph.h); each kernel's own (its header).
-//   - Every launch's time, by index, role, layer and entry point, to the CSV
-//     file when one is named, so a change's effect is a diff of two files.
+//   - Each launch timed — the embedding's, each first layer's and the output
+//     block's — by index, role, layer and entry point, with its uncertainty
+//     and whether it is below the noise, to the CSV file when one is named,
+//     so a change's effect is a diff of two files.
 // What it finds is recorded in docs/research/, with the commit and the
 // conditions, as the readback round trip's was.
 //
 // Verification, before any time is reported, each a failure named if it does
 // not hold:
-//   - A profiled step at either grain draws the same record and leaves the
-//     same logits, bit for bit, as run() over the same step: the instrument
-//     changes no result.
+//   - A whole profiled step draws the same record and leaves the same
+//     logits, bit for bit, as run() over the same step: the instrument
+//     changes no result. Each step's draw does a turn's work: the default
+//     settings and a seed applied, as the runtime applies them.
 //   - A step's timestamps in order: its pass's end at or after its
 //     beginning, and any timestamps inside it, one for each launch it
 //     dispatched, in the graph's order, between the two.
@@ -291,8 +303,11 @@ std::unique_ptr<Loaded> load(WGPUInstance instance, const gpu::Device& device, c
 
 // --- Running and timing -----------------------------------------------------
 
+// A step as the runtime makes one: the default settings and a fixed seed
+// applied (sampler::apply), so the draw does the work it does in a turn.
 kernels::Step step_at(std::uint32_t position, std::uint32_t tokens) {
     kernels::Step step{};
+    sampler::apply(policy::SamplingSettings{}, policy::Seed{1}, step);
     step.position = position;
     step.tokens = tokens;
     step.logits = 1;
@@ -300,27 +315,32 @@ kernels::Step step_at(std::uint32_t position, std::uint32_t tokens) {
     return step;
 }
 
-void run(WGPUInstance instance, kernels::Program& program, const kernels::Step& step) {
+// Runs a step with run(); its record.
+std::vector<std::byte> run(WGPUInstance instance, kernels::Program& program, const kernels::Step& step) {
     struct Ran {
         bool ok = false;
         bool done = false;
+        std::vector<std::byte> readback;
     } ran;
     program.run(step,
-                [](kernels::ProgramError e, std::string_view, std::span<const std::byte>, void* ud) {
+                [](kernels::ProgramError e, std::string_view, std::span<const std::byte> readback, void* ud) {
                     auto& r = *static_cast<Ran*>(ud);
                     r.ok = e == kernels::ProgramError::Ok;
+                    r.readback.assign(readback.begin(), readback.end());
                     r.done = true;
                 },
                 &ran);
     pump(instance, ran.done);
     if (!ran.ok) die("a step failed");
+    return ran.readback;
 }
 
 struct Profiled {
     bool ok = false;
     bool done = false;
-    std::uint64_t ns = 0;
+    std::uint64_t begin_ns = 0, end_ns = 0, ns = 0;
     std::vector<std::byte> readback;
+    std::vector<std::pair<std::uint32_t, std::uint64_t>> launches;
 };
 
 Profiled profile_once(WGPUInstance instance, kernels::Program& program, const kernels::Step& step,
@@ -333,8 +353,11 @@ Profiled profile_once(WGPUInstance instance, kernels::Program& program, const ke
                              q.ok = e == kernels::ProgramError::Ok;
                              if (!q.ok) std::fprintf(stderr, "profiled step: %.*s\n", int(message.size()), message.data());
                              if (q.ok && t.end_ns < t.begin_ns) die("a pass ended before it began");
+                             q.begin_ns = t.begin_ns;
+                             q.end_ns = t.end_ns;
                              q.ns = t.end_ns - t.begin_ns;
                              q.readback.assign(readback.begin(), readback.end());
+                             q.launches.assign(t.launches.begin(), t.launches.end());
                              q.done = true;
                          },
                          &p);
@@ -417,13 +440,21 @@ std::vector<float> read_logits(WGPUInstance instance, const gpu::Device& device,
     const gpu::CommandBuffer commands(wgpuCommandEncoderFinish(encoder.get(), nullptr));
     WGPUCommandBuffer raw = commands.get();
     wgpuQueueSubmit(device.queue(), 1, &raw);
-    bool done = false;
+    struct Mapped {
+        bool done = false;
+        WGPUMapAsyncStatus status{};
+    } mapped;
     WGPUBufferMapCallbackInfo info = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
     info.mode = WGPUCallbackMode_AllowProcessEvents;
-    info.callback = [](WGPUMapAsyncStatus, WGPUStringView, void* ud, void*) { *static_cast<bool*>(ud) = true; };
-    info.userdata1 = &done;
+    info.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void* ud, void*) {
+        auto& m = *static_cast<Mapped*>(ud);
+        m.status = status;
+        m.done = true;
+    };
+    info.userdata1 = &mapped;
     wgpuBufferMapAsync(target.get(), WGPUMapMode_Read, 0, bytes, info);
-    pump(instance, done);
+    pump(instance, mapped.done);
+    if (mapped.status != WGPUMapAsyncStatus_Success) die("the logits did not map");
     std::vector<float> out(l.description.vocabulary_size);
     std::memcpy(out.data(), wgpuBufferGetConstMappedRange(target.get(), 0, bytes), bytes);
     wgpuBufferUnmap(target.get());
@@ -439,6 +470,8 @@ struct Row {
     std::uint32_t layer;
     std::string_view entry;
     double ns;
+    double uncertainty_ns;
+    bool below_noise;
 };
 
 // What a run observed, for the report's conditions.
@@ -454,12 +487,27 @@ bool profile_step(WGPUInstance instance, const gpu::Device& device, Loaded& l, c
 
     // The instrument changes no result: run() and a profiled step, the same
     // record and the same logits.
-    run(instance, program, step);
+    const std::vector<std::byte> plain_record = run(instance, program, step);
     const std::vector<float> plain = read_logits(instance, device, l);
     const Profiled once = profile_once(instance, program, step, all);
     const std::vector<float> profiled = read_logits(instance, device, l);
     if (std::memcmp(plain.data(), profiled.data(), plain.size() * 4) != 0) {
         die(workload + ": a profiled step left logits run() did not");
+    }
+    if (once.readback != plain_record) die(workload + ": a profiled step drew a record run() did not");
+    // Timestamps inside the pass, where granted: one a launch dispatched, in
+    // the graph's order, ascending, within the pass.
+    if (device.timestamps_inside_passes()) {
+        std::size_t want = 0;
+        for (const kernels::Launch& x : l.launches) want += dispatched(x, step) ? 1 : 0;
+        if (once.launches.size() != want) die(workload + ": a launch dispatched without its timestamp");
+        for (std::size_t i = 0; i < once.launches.size(); ++i) {
+            const auto [launch, ns] = once.launches[i];
+            if (ns < once.begin_ns || ns > once.end_ns) die(workload + ": a launch's timestamp outside its pass");
+            if (i > 0 && (launch <= once.launches[i - 1].first || ns < once.launches[i - 1].second)) {
+                die(workload + ": the launches' timestamps out of order");
+            }
+        }
     }
 
     const Timed whole = time(instance, program, step, all, false);
@@ -487,16 +535,25 @@ bool profile_step(WGPUInstance instance, const gpu::Device& device, Loaded& l, c
         if (!dispatched(x, step)) continue;
         if (x.layer == kernels::kNoLayer || firsts.contains(x.layer)) chosen.push_back(i);
     }
-    std::map<std::uint32_t, double> prefix;   // limit -> median ns
-    const auto prefix_ns = [&](std::uint32_t limit) {
+    std::map<std::uint32_t, Timed> prefix;   // limit -> its runs
+    const auto prefix_timed = [&](std::uint32_t limit) {
         if (auto it = prefix.find(limit); it != prefix.end()) return it->second;
-        const double ns = limit == 0 ? 0.0 : time(instance, program, step, limit, long_step).median_ns;
-        prefix[limit] = ns;
-        return ns;
+        const Timed t = limit == 0 ? Timed{0, 0, 0} : time(instance, program, step, limit, long_step);
+        prefix[limit] = t;
+        return t;
     };
+    const auto prefix_ns = [&](std::uint32_t limit) { return prefix_timed(limit).median_ns; };
     std::fprintf(stderr, "%s: %zu launches timed by prefix\n", workload.c_str(), chosen.size());
-    std::map<std::uint32_t, double> marginal;   // launch -> ns
-    for (const std::uint32_t i : chosen) marginal[i] = prefix_ns(i + 1) - prefix_ns(i);
+    // A launch's time is a difference of two independent medians: its
+    // uncertainty is the two prefixes' spreads together, and a launch whose
+    // time is under it — negative ones among them — is below the noise.
+    std::map<std::uint32_t, double> marginal;      // launch -> ns
+    std::map<std::uint32_t, double> uncertainty;   // launch -> ns
+    for (const std::uint32_t i : chosen) {
+        const Timed after = prefix_timed(i + 1), before = prefix_timed(i);
+        marginal[i] = after.median_ns - before.median_ns;
+        uncertainty[i] = (after.most_ns - after.least_ns) + (before.most_ns - before.least_ns);
+    }
 
     // Repetition check: the layers' time, against their first layers'.
     const double layers_ns = prefix_ns(output_start) - prefix_ns(embed_end);
@@ -522,6 +579,8 @@ bool profile_step(WGPUInstance instance, const gpu::Device& device, Loaded& l, c
         int launches = 0;
         double ns = 0;
         std::uint64_t bytes = 0;
+        bool reads_weights_once = false;   // a decode product: its weights read once each
+        int below_noise = 0;               // launches whose time is under its uncertainty
     };
     std::map<std::string, Group> groups;
     for (const auto& [i, ns] : marginal) {
@@ -535,16 +594,24 @@ bool profile_step(WGPUInstance instance, const gpu::Device& device, Loaded& l, c
         g.launches += static_cast<int>(copies);
         g.ns += ns * copies;
         g.bytes += weight_bytes_of(x, l.upload->plan()) * copies;
-        csv.push_back({workload, i, x.role, x.layer, x.entry_point, ns});
+        g.reads_weights_once = x.entry_point.starts_with("decode_");
+        const bool noise = ns < uncertainty[i];
+        if (noise) g.below_noise += static_cast<int>(copies);
+        csv.push_back({workload, i, x.role, x.layer, x.entry_point, ns, uncertainty[i], noise});
     }
     std::vector<std::pair<std::string, Group>> sorted(groups.begin(), groups.end());
     std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second.ns > b.second.ns; });
-    std::printf("   %-32s %8s %12s %12s %7s %12s\n", "role / entry", "launches", "ms a launch", "ms total", "share",
-                "weights GB/s");
+    std::printf("   %-32s %8s %12s %12s %7s %12s  %s\n", "role / entry", "launches", "ms a launch", "ms total",
+                "share", "weights GB/s", "below noise");
     for (const auto& [name, g] : sorted) {
-        std::printf("   %-32s %8d %12.4f %12.3f %6.1f%% %12.1f\n", name.c_str(), g.launches,
-                    g.ns / g.launches / 1e6, g.ns / 1e6, 100 * g.ns / whole.median_ns,
-                    g.ns > 0 ? static_cast<double>(g.bytes) / g.ns : 0.0);
+        char bandwidth[32] = "—";
+        // Only a decode product reads each weight it binds once: elsewhere
+        // the bytes bound are not the bytes read.
+        if (g.reads_weights_once && g.ns > 0) {
+            std::snprintf(bandwidth, sizeof bandwidth, "%.1f", static_cast<double>(g.bytes) / g.ns);
+        }
+        std::printf("   %-32s %8d %12.4f %12.3f %6.1f%% %12s  %d\n", name.c_str(), g.launches,
+                    g.ns / g.launches / 1e6, g.ns / 1e6, 100 * g.ns / whole.median_ns, bandwidth, g.below_noise);
     }
 
     // The headers' floors.
@@ -566,8 +633,10 @@ bool profile_step(WGPUInstance instance, const gpu::Device& device, Loaded& l, c
                 (double(weight_bytes) + cache_bytes) / kBandwidthBytesPerNs / 1e6,
                 2 * weight_elements * step.tokens / kPeakFlopsPerNs / 1e6);
     if (once.ns > 0) observed.smallest_ns = std::min(observed.smallest_ns, once.ns);
-    for (const auto& [limit, ns] : prefix) {
-        if (ns > 0) observed.smallest_ns = std::min<std::uint64_t>(observed.smallest_ns, static_cast<std::uint64_t>(ns));
+    for (const auto& [limit, t] : prefix) {
+        if (t.least_ns > 0) {
+            observed.smallest_ns = std::min<std::uint64_t>(observed.smallest_ns, static_cast<std::uint64_t>(t.least_ns));
+        }
     }
     return off <= 0.10;
 }
@@ -625,8 +694,9 @@ void profile_pipeline(WGPUInstance instance, Loaded& l) {
     const double span = double(p.gpu.back().second - p.gpu.front().first);
     std::printf("\n== pipelined decode: %u steps fed on the GPU, two outstanding, from position %u\n", kSteps,
                 kPrompt);
-    std::printf("   GPU: span %.3f ms, busy %.3f ms, idle %.1f%%; %.3f ms a step busy\n", span / 1e6, busy / 1e6,
-                100 * (span - busy) / span, busy / kSteps / 1e6);
+    std::printf("   GPU: span %.3f ms, in passes %.3f ms, outside them %.1f%% — resolves, copies, writes and any "
+                "idle; %.3f ms a step in its pass\n",
+                span / 1e6, busy / 1e6, 100 * (span - busy) / span, busy / kSteps / 1e6);
     std::printf("   CPU: a report every %.3f ms (first to last, %u reports)\n",
                 (p.cpu_ms.back() - p.cpu_ms.front()) / (kSteps - 1), kSteps);
 }
@@ -673,11 +743,11 @@ int main(int argc, char** argv) {
     if (csv_path != nullptr) {
         std::FILE* out = std::fopen(csv_path, "w");
         if (out == nullptr) die(std::string("cannot write ") + csv_path);
-        std::fprintf(out, "workload,launch,role,layer,entry,ns\n");
+        std::fprintf(out, "workload,launch,role,layer,entry,ns,uncertainty_ns,below_noise\n");
         for (const Row& r : csv) {
-            std::fprintf(out, "%s,%u,%.*s,%d,%.*s,%.0f\n", r.workload.c_str(), r.launch, int(r.role.size()),
+            std::fprintf(out, "%s,%u,%.*s,%d,%.*s,%.0f,%.0f,%d\n", r.workload.c_str(), r.launch, int(r.role.size()),
                          r.role.data(), r.layer == kernels::kNoLayer ? -1 : int(r.layer), int(r.entry.size()),
-                         r.entry.data(), r.ns);
+                         r.entry.data(), r.ns, r.uncertainty_ns, r.below_noise ? 1 : 0);
         }
         std::fclose(out);
     }
