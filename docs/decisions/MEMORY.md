@@ -85,7 +85,7 @@ Decided 2026-10-07:
   (`src/core/sampler/sampler.h`). Supersedes the per-step readback decided in
   `research/2026-08-31-gpu-readback-round-trip.md`: that decision assumed a
   token took 20–50 ms. Counted, a Qwen3 decode step is 1.3–2.1 ms, so the
-  0.5 ms map would be 20–30% of every token. The cache risk that research
+  0.5 ms map would add 24–38% to every token. The cache risk that research
   warned of is stated in the sampler's contract, for the runtime's tests to
   hold.
 

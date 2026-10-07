@@ -18,7 +18,7 @@ namespace bllm::sampler {
 // step behind, while that step runs. A token read back each step before the
 // next could start would cost a map's round trip — 0.5 ms median on the
 // target (research/2026-08-31-gpu-readback-round-trip.md) — on every token:
-// 20 to 30% of a Qwen3 decode step of 1.3 to 2.1 ms (graph/graph.h). That
+// 24 to 38% added to a Qwen3 decode step of 1.3 to 2.1 ms (graph/graph.h). That
 // research recorded reading back each step, when a step was thought to take
 // 20 to 50 ms; counted, it does not, and the decision is reversed (GPU.1,
 // GPU.7).
@@ -32,15 +32,17 @@ namespace bllm::sampler {
 //   3. min-p: of those, each whose logit is at least the first's + ln
 //      min_p.
 //   4. temperature: zero draws the first candidate; otherwise each
-//      survivor's weight is exp((logit − first's) / temperature), and the
+//      survivor's weight is exp((logit − first's) / temperature) — a second
+//      pass of exponentials, since top-p's were at temperature 1 — and the
 //      draw is by inverse transform: the first survivor whose running sum of
-//      weights exceeds u × their total, u uniform in (0, 1). With 64
-//      candidates at most the weights are already computed for top-p, so one
-//      uniform draws where a random-key race spends one a candidate
+//      weights exceeds u × their total, or, should rounding leave none, the
+//      last survivor. At most 64 candidates, so at most 128 exponentials,
+//      and one uniform draws where a random-key race spends one a candidate
 //      (GDSA.21's caveat).
 //   - u is Philox4x32-10's first word (Salmon et al., SC '11) keyed by the
-//     turn's 64-bit seed with the token's position as the counter, its top
-//     24 bits plus a half step scaled by 2⁻²⁴: a pure function of seed and
+//     turn's 64-bit seed with the token's position as the counter: its top
+//     23 bits scaled by 2⁻²³, plus 2⁻²⁴, so u lies in [2⁻²⁴, 1 − 2⁻²⁴], every
+//     value exact in f32 and neither 0 nor 1. A pure function of seed and
 //     position, so a run replays from its seed and any step replays alone
 //     (GDSA.3). WGSL has no 64-bit integers; Philox's 32-bit high products
 //     are formed from 16-bit halves. The same draw on the target's GPU and
@@ -87,9 +89,12 @@ namespace bllm::sampler {
 //     sampled record. Two steps may be outstanding — one running and the
 //     next queued — so the next is submitted before the last's record maps;
 //     WebGPU orders the step uniform's write after the submits before it, so
-//     one uniform buffer serves both. Callbacks arrive in the order the steps
-//     were run. A third run waits for the first's callback, so a slot is
-//     unmapped before the copy that reuses it (GPU.7).
+//     one uniform buffer serves both. WebGPU does not order mappings of two
+//     buffers, so each slot carries its step's sequence number, and a record
+//     that maps before an earlier step's is held until that one has been
+//     delivered: callbacks reach the runtime in the order the steps were run.
+//     A third run waits for the first's callback, so a slot is unmapped
+//     before the copy that reuses it (GPU.7).
 //   - runtime/runtime.h: decode steps are submitted back to back, each
 //     `fed`; a step's token is known when its record maps, one step later.
 //     So when a token is a stop, or the turn is cancelled, the step already
@@ -108,7 +113,8 @@ namespace bllm::sampler {
 //     runtime's tests can hold it.
 //
 // What it costs, a sampled step: the draw is one launch, 1.5 µs, over 512
-// bytes, writing 16; with the selection, 4 launches and 0.7 MB, about 8 µs.
+// bytes, writing 16, one Philox and at most 128 exponentials; with the
+// selection, about 13 µs (kernels/topk/topk.h), under 1% of a decode step.
 // The readback copies 16 bytes and maps them while the next step runs, so a
 // decode step's critical path no longer holds the map's round trip, 0.5 ms
 // median and 0.8 ms at p95 on the target. On the CPU, a token costs one

@@ -19,8 +19,10 @@ namespace bllm::kernels {
 //   - Order: by logit, largest first, and between equal logits the lower
 //     token first — a total order, so the 64 kept are exactly the first 64
 //     of the whole row under it, whatever the tiling (GDSA.2). A logit's f32
-//     bits become an order-preserving u32 key — the sign bit flipped for a
-//     positive number, every bit for a negative — compared as integers, so no
+//     bits become an order-preserving u32 key — −0 first made +0, so the two
+//     zeros, equal as logits, tie and fall to the lower token; then the sign
+//     bit flipped for a positive number, every bit for a negative — compared
+//     as integers, so no
 //     float comparison decides it and WGSL's freedom to assume no NaN or
 //     infinity cannot reorder it. A NaN orders by its bits: above +∞ with its
 //     sign clear, below −∞ with it set; the draw refuses a candidate that is
@@ -49,22 +51,29 @@ namespace bllm::kernels {
 //     `first`, over logits, and `merge`, over candidates.
 //
 // What it costs, counted, for Qwen3: reads 608 KB of logits and writes
-// 76 KB, then 76 KB to 5 KB, then 5 KB to 512 bytes: 0.7 MB, under 2 µs at
-// 400 GB/s. Comparisons: a tile's 21 sorting stages are 16 runs × 32 × 21 =
-// 10,752 compare-exchanges, its merges 15 × (64 + 6 × 32) = 3,840: 14,592 a
-// tile, 2.2 million over the first pass's 149 tiles. Launches: 3, about 4.5
-// µs at 1.5 µs (interface.h); with the draw, 4 a sampled step, about 0.5%
-// of a 1.7 ms decode step.
+// 76 KB, then 76 KB to 5 KB, then 5 KB to 512 bytes: 771,072 bytes, 1.93 µs
+// at 400 GB/s. Launches: 3, and the draw's, 6 µs at 1.5 µs (interface.h).
+// Those 7.9 µs are the floor. Comparisons: a tile's 21 sorting stages are 16
+// runs × 32 × 21 = 10,752 compare-exchanges, its merges 15 × (64 + 6 × 32) =
+// 3,840: 14,592 a tile, 2.3 million over the 160 tiles of the three passes,
+// run side by side within a pass. What a pass's latency adds is its 49
+// stages one after another, each a barrier: at about 50 cycles a stage on
+// the M3 Max's cores near 1.4 GHz — an estimate, not counted from the
+// design, to be calibrated — 1.75 µs a pass, 5 µs for the three. About
+// 13 µs a sampled step, under 1% of a 1.7 ms decode step.
 // Optimization (practice): select, not sort — 64 kept from each tile of
 // 1,024, never a sorted vocabulary, as FlashInfer's and Faiss's GPU
 // selection do (GDSA.7).
 //
 // Levers not taken:
 //   - Selection fused into the head's matrix product, so logits are never
-//     written (GDSA.7): a decode workgroup produces 8 logits, so its own top
-//     64 selects nothing, and the fusion would save the logits' write and
-//     read, 1.2 MB, about 3 µs, and one launch, 1.5 µs, a sampled step:
-//     0.3% of it, for a selection inside the matrix product's epilogue.
+//     written (GDSA.7): a decode workgroup produces 8 logits, so its top 64
+//     keeps all 8, and carrying them on as (logit, token) pairs writes 8
+//     bytes a token where the logits write 4 — 16V bytes in and out against
+//     the 8V of writing the logits and selecting from them, 1.2 MB more for
+//     Qwen3, and no launch saved. Fusion pays only with the head retiled so
+//     a workgroup produces hundreds of logits; its decode form is shaped
+//     for reading the weights once (matmul.h), and is not retiled for this.
 //   - Radix select, which has no ceiling on k (GDSA.7): k is fixed at 64,
 //     where bitonic select is the simpler of the two, and radix select's
 //     histogram passes need atomics or a launch per digit.
