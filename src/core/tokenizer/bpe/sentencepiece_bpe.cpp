@@ -41,7 +41,7 @@ bool one_character(std::string_view text) noexcept {
 
 }  // namespace
 
-const Algorithm kSentencePiece{"llama", false};
+const Algorithm kSentencePiece{"llama", false, load_sentencepiece_tokenizer};
 
 EncodeError SentencePieceBpe::encode(std::string_view raw, std::vector<TokenId>& out) const {
     if (raw.size() > std::numeric_limits<std::uint32_t>::max()) return EncodeError::TooLong;
@@ -196,6 +196,22 @@ LoadResult load_sentencepiece_bpe(gguf::ByteSource& source, const gguf::TensorIn
     spm.cuts_ = spm.straddles_.size() <= SentencePieceBpe::kMaxStraddles;
     out = std::move(spm);
     return {};
+}
+
+const Vocabulary& SentencePieceTokenizer::vocabulary() const noexcept { return bpe_.vocabulary(); }
+
+EncodeError SentencePieceTokenizer::encode(std::string_view text, std::vector<TokenId>& out) {
+    return bpe_.encode(text, out);
+}
+
+void SentencePieceTokenizer::decode(TokenId token, std::string& out) const { bpe_.decode(token, out); }
+
+LoadResult load_sentencepiece_tokenizer(gguf::ByteSource& source, const gguf::TensorIndex& index,
+                                        const PreTokenizer* /*pretokenizer*/, std::unique_ptr<Tokenizer>& out) {
+    auto loaded = std::make_unique<SentencePieceTokenizer>();
+    const LoadResult r = load_sentencepiece_bpe(source, index, loaded->bpe_);
+    if (r.ok()) out = std::move(loaded);
+    return r;
 }
 
 }  // namespace bllm::tokenizer::bpe

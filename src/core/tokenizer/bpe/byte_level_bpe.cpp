@@ -25,7 +25,7 @@ bool spells_bytes(std::string_view text) noexcept {
 
 }  // namespace
 
-const Algorithm kByteLevel{"gpt2", true};
+const Algorithm kByteLevel{"gpt2", true, load_byte_level_tokenizer};
 
 EncodeError ByteLevelBpe::encode(std::string_view text, std::vector<TokenId>& out) const {
     return encode_into(text, out, nullptr);
@@ -138,6 +138,22 @@ LoadResult load_byte_level_bpe(gguf::ByteSource& source, const gguf::TensorIndex
     bpe.pretokenizer_ = &pretokenizer;
     out = std::move(bpe);
     return {};
+}
+
+const Vocabulary& ByteLevelTokenizer::vocabulary() const noexcept { return bpe_.vocabulary(); }
+
+EncodeError ByteLevelTokenizer::encode(std::string_view text, std::vector<TokenId>& out) {
+    return bpe_.encode(text, out, cache_);
+}
+
+void ByteLevelTokenizer::decode(TokenId token, std::string& out) const { bpe_.decode(token, out); }
+
+LoadResult load_byte_level_tokenizer(gguf::ByteSource& source, const gguf::TensorIndex& index,
+                                     const PreTokenizer* pretokenizer, std::unique_ptr<Tokenizer>& out) {
+    auto loaded = std::make_unique<ByteLevelTokenizer>();
+    const LoadResult r = load_byte_level_bpe(source, index, *pretokenizer, loaded->bpe_);
+    if (r.ok()) out = std::move(loaded);
+    return r;
 }
 
 }  // namespace bllm::tokenizer::bpe
