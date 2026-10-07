@@ -141,10 +141,10 @@ fn activate(g: f32) -> f32 {
 
 // ---- Decode ----------------------------------------------------------------
 
-// Invocation `lane`'s range of K for four rows, against the step's one
-// input row: the input's floats loaded once a group, used for all four.
-// `rows` holds each slot's member and row, `live` whether it is a row.
-fn decode_ranges(lane: u32, members: vec4<u32>, rows: vec4<u32>, live: vec4<bool>) -> vec4<f32> {
+// Invocation `lane`'s range of K for its set's `slots` rows, 1 to 4, against
+// the step's one input row: the input's floats loaded once a group, used for
+// each. `rows` holds each slot's member and row, `live` whether it is a row.
+fn decode_ranges(lane: u32, slots: u32, members: vec4<u32>, rows: vec4<u32>, live: vec4<bool>) -> vec4<f32> {
     let token = token_of_decode();
     var acc = vec4<f32>(0.0);
     for (var g = range_lo(lane); g < range_lo(lane + 1u); g++) {
@@ -152,7 +152,7 @@ fn decode_ranges(lane: u32, members: vec4<u32>, rows: vec4<u32>, live: vec4<bool
         for (var v = 0u; v < 8u; v++) {
             x[v] = input[token * (columns / 4u) + g * 8u + v];
         }
-        for (var j = 0u; j < 4u; j++) {
+        for (var j = 0u; j < slots; j++) {
             if (live[j]) {
                 let w = weights_of(members[j], rows[j], g);
                 var a = acc[j];
@@ -192,8 +192,8 @@ fn decode_rows(wg: u32, t: u32) {
         rows[j] = at.y;
         live[j] = at.z == 1u;
     }
-    let sums = decode_ranges(lane, members, rows, live);
-    for (var j = 0u; j < 4u; j++) {
+    let sums = decode_ranges(lane, set_rows, members, rows, live);
+    for (var j = 0u; j < set_rows; j++) {
         partials[(team * 4u + j) * kRanges + lane] = sums[j];
     }
     workgroupBarrier();
@@ -242,7 +242,7 @@ fn decode_gated(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_
     let p = wg.x * 4u + team * 2u;
     let width = matmul.members[0].w;
     let live = vec4<bool>(p < width, p + 1u < width, p < width, p + 1u < width);
-    let sums = decode_ranges(lane, vec4<u32>(0u, 0u, 1u, 1u), vec4<u32>(p, p + 1u, p, p + 1u), live);
+    let sums = decode_ranges(lane, 4u, vec4<u32>(0u, 0u, 1u, 1u), vec4<u32>(p, p + 1u, p, p + 1u), live);
     for (var j = 0u; j < 4u; j++) {
         partials[(team * 4u + j) * kRanges + lane] = sums[j];
     }
