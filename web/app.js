@@ -76,7 +76,17 @@ if (!('gpu' in navigator)) {
     client,
     cache,
     onCacheChanged: refreshCache,
-    onLoaded: (model, verdict) => chat.open(model, verdict.chat),
+    onLoaded: (model, verdict) => {
+      chat.open(model, verdict.chat);
+      // ?benchmark, on the development site: the page's throughput measured
+      // once the model is loaded (web/dev/benchmark.js). Elsewhere the
+      // module is absent, and the failure says so.
+      if (new URLSearchParams(location.search).has('benchmark')) {
+        import('./dev/benchmark_run.js')
+          .then(({ runBenchmark }) => runBenchmark({ client, model, verdict }))
+          .catch((error) => console.error('benchmark:', error));
+      }
+    },
   });
 
   await refreshCache();
