@@ -7,15 +7,15 @@ states its contract and its design.
 
 [`architecture/`](architecture/README.md), read in order:
 
-1. [`logical-overview.md`](architecture/logical-overview.md) — what the
+1. [`logical-overview.md`](architecture/logical-overview.md): what the
    harness does, and the principles that decide how it handles the ways
    models differ.
-2. [`change-axes.md`](architecture/change-axes.md) — the reasons a file
+2. [`change-axes.md`](architecture/change-axes.md): the reasons a file
    changes, and the rule that decides where code goes: one translation unit,
    one reason to change.
-3. [`file-mapping.md`](architecture/file-mapping.md) — which files implement
+3. [`file-mapping.md`](architecture/file-mapping.md): which files implement
    each part, and the contracts between them.
-4. [`kernel-fusions.md`](architecture/kernel-fusions.md) — which steps of a
+4. [`kernel-fusions.md`](architecture/kernel-fusions.md): which steps of a
    pass share a GPU dispatch, and why a dispatch's cost in the browser makes
    that a design decision.
 

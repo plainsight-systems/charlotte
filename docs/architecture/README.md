@@ -2,14 +2,14 @@
 
 The design, read in order:
 
-1. [`logical-overview.md`](logical-overview.md) — phases, responsibilities and
+1. [`logical-overview.md`](logical-overview.md): phases, responsibilities and
    principles: what the harness does, and how it handles the ways models
    differ.
-2. [`change-axes.md`](change-axes.md) — the reasons a file changes, and the
+2. [`change-axes.md`](change-axes.md): the reasons a file changes, and the
    one-reason rule that places code.
-3. [`file-mapping.md`](file-mapping.md) — the modules, the axis each changes
+3. [`file-mapping.md`](file-mapping.md): the modules, the axis each changes
    on, and the contracts between them.
-4. [`kernel-fusions.md`](kernel-fusions.md) — which steps share a launch, and
+4. [`kernel-fusions.md`](kernel-fusions.md): which steps share a launch, and
    why.
 
 Figures: [`file-layout.svg`](file-layout.svg) and
