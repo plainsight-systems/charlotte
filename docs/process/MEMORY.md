@@ -117,7 +117,7 @@ Decided 2026-08-28 during repo bootstrap:
   directly.
 - **Version control is local-only for now.** `git init -b main`, no remote.
 - **Inherited governance is a pinned submodule at
-  `docs/decisions/governance/`.** `plainsight-systems-governance` was published
+  `docs/process/governance/`.** `plainsight-systems-governance` was published
   (CC BY 4.0) with its internal content moved to the operations repo, so it can
   be checked out in-tree over HTTPS by anyone. Pinning is deliberate: it records
   which version of the review gates a packet was written and reviewed against,

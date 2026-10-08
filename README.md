@@ -122,7 +122,7 @@ Everything else:
 | `tools/` | site assembly, fixture generators, and the structural checks |
 | `docs/architecture/` | the design |
 | `docs/research/` | measurements and investigations, each dated, with its method and conditions |
-| `docs/decisions/` | decisions and the work queue |
+| `docs/process/` | decisions and the work queue |
 
 ### Reading the design
 

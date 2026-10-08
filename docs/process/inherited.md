@@ -4,7 +4,7 @@ This repo inherits its engineering philosophies, C++ architecture and
 performance gates, and workflow from `plainsight-systems-governance`, checked
 out in-tree as a submodule at:
 
-**[`docs/decisions/governance/`](./governance/)**
+**[`docs/process/governance/`](./governance/)**
 
 Canonical source: <https://github.com/plainsight-systems/plainsight-systems-governance>
 (public, CC BY 4.0). Its README is the index.
@@ -32,7 +32,7 @@ git submodule update --init
 The pin advances deliberately, not automatically:
 
 ```sh
-git submodule update --remote docs/decisions/governance
+git submodule update --remote docs/process/governance
 git commit -am "Advance governance pin"
 ```
 
