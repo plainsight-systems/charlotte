@@ -28,15 +28,24 @@ decisions keep turning up things I hadn't seen, like the same token's
 projections coming out as different bits in decode and prefill because each
 WGSL pipeline was free to fuse a multiply-add its own way.
 
-The name is a nod to *Charlotte's Web*: a spider who lives in a web and writes
-words into it.
-
 Charlotte is R&D under Plainsight Systems LLC. The site is a static build
 hosted on GitHub Pages, deployed from `main` on every push.
 
 **Browsers:** Chrome and Edge on desktop. Safari's WebGPU is WebKit's own
 implementation rather than Dawn, so it is a separate verification problem and
 is not assumed to work.
+
+### Why Charlotte
+
+Once there was a spider named Charlotte who lived in the corner of a barn and
+could write. Every night she spun a word into her web, one strand at a time,
+never quite sure what the next letter would be until she'd spun it. By
+morning it hung in the doorway, beaded with dew, and the whole farm stopped
+to read it. Nobody ever worked out how a spider learned to spell, and
+Charlotte never said.
+
+So when I needed a name for a little program that lives in a web and writes
+words into it, one at a time, I thought: what better name than Charlotte?
 
 ## Run it locally
 
