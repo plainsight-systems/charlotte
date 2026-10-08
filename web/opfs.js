@@ -57,7 +57,10 @@ export class ModelCache {
       write: (bytes) => stream.write(bytes),
       commit: async (description) => {
         await stream.close();
-        await partial.move(`${key}.gguf`);
+        // Into the same directory, named: WebKit has only move()'s
+        // two-argument form, and refuses a name alone as "Not enough
+        // arguments"; Chrome has both.
+        await partial.move(this.#directory, cachedFileName(key));
         await this.#writeText(`${key}.json`, JSON.stringify(description));
       },
       discard: async () => {
