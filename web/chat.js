@@ -27,6 +27,11 @@
 // drawing a reply costs Θ(its length), and the reasoning's open or closed
 // state and any selection in it are the reader's while it streams. The
 // reasoning is collapsed once, when it finishes.
+//
+// The log scrolls within the panel. Sending a message brings the log to its
+// end, and a streaming reply keeps it there only while the reader is at the
+// end, so scrolling up to read an earlier turn is not undone by the next
+// frame.
 
 import { shortened, withAssistant, withUser } from './conversation.js';
 import { createThinkingStream } from './thinking_stream.js';
@@ -63,6 +68,10 @@ export function createChat(root, { generate, cancel }) {
   return { open, close };
 }
 
+// Whether a scrolled element shows its end, within a line's slack for
+// fractional pixels.
+const atEnd = (element) => element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+
 function conversationPanel(model, chat, render, session, { generate, cancel }) {
   let messages = [];
 
@@ -89,6 +98,7 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
     const replyText = h('div');
     const replyBubble = h('div', { className: 'message assistant' }, replyText);
     log.append(userBubble, replyBubble);
+    log.scrollTop = log.scrollHeight;
     input.value = '';
 
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
@@ -100,9 +110,10 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
     const view = replyView(replyText);
     const draw = () => {
       frame = null;
+      const following = atEnd(log);
       view.append(undrawn);
       undrawn = '';
-      log.scrollTop = log.scrollHeight;
+      if (following) log.scrollTop = log.scrollHeight;
     };
     const onText = (piece) => {
       reply += piece;
@@ -140,9 +151,11 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
       const { stopReason, tokens, promptTokens, reusedTokens } = result;
       const seconds = (performance.now() - started) / 1000;
       const ended = { cancelled: ' · stopped', context: ' · context full', limit: ' · limit reached' }[stopReason] ?? '';
+      const following = atEnd(log);
       replyBubble.append(h('p', { className: 'message-facts',
         text: `${tokens} tokens · ${(tokens / seconds).toFixed(1)} tok/s · ` +
               `${reusedTokens} of ${promptTokens} prompt tokens cached · seed ${seed}${ended}` }));
+      if (following) log.scrollTop = log.scrollHeight;
     } catch (failure) {
       // The turn did not happen: take it back out, and return the text.
       userBubble.remove();
