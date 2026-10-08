@@ -1,7 +1,26 @@
-// The forward pass against its reference (graph/graph.h): Qwen3 0.6B at
-// Q4_0, uploaded and run as the harness runs it, a pinned prompt decoded a
-// token at a time, each position's log-probabilities against llama.cpp's
-// (tools/make_reference_logits.sh).
+// The forward pass against its reference (graph/graph.h): each listed model
+// at Q4_0 — Qwen3 0.6B, Llama 3.2 1B and Gemma 3 1B — uploaded and run as
+// the harness runs it, a pinned prompt decoded a token at a time, each
+// position's log-probabilities against llama.cpp's on its CPU and Metal
+// backends (tools/make_reference_logits.sh), one fixture a model, each in a
+// namespace of its own.
+//
+//   - Accepted, at every position: each of Metal's 20 most likely tokens'
+//     log-probability within the spread llama.cpp's own CPU and Metal show
+//     there; the top token the same wherever Metal's leads its next by more
+//     than that spread; every logit finite. Our sums are not llama.cpp's,
+//     in order or in kernels, so bits are not compared (GDSA.2); its own two
+//     backends' disagreement is the tolerance, and a model outside it is a
+//     fault to find, never a tolerance to widen.
+//   - The prompts: 64 tokens for Qwen3 and Llama 3.2; 600 for Gemma 3, so
+//     its 512-key window layers (model/model_description.h) mask keys from
+//     position 512 on, as a window layer must.
+//   - The check discriminates, for each model: its RoPE pairing swapped
+//     falls outside from the second position; and for Gemma 3, every layer
+//     given the full context as its window falls outside past position 512.
+//   - Each model is planned within a budget its weights and the prompt fit,
+//     and its file is fetched by tools/fetch_test_data.py, pinned by SHA-256
+//     (tests/fixtures/external.json): 382, 773 and 722 MB.
 
 #include <doctest/doctest.h>
 

@@ -1,9 +1,11 @@
 #!/bin/sh
-# Writes tests/fixtures/reference/qwen3-0.6b-q4_0.inc: llama.cpp's logits for
-# a pinned prompt on the pinned Qwen3 0.6B file, on its CPU backend and on
-# Metal, for the reference test (tests/gpu/reference_test.cpp, graph/graph.h).
-# Run on a Mac with Metal; the fixture is committed, so the test needs none of
-# this. llama.cpp is fetched at the commit below into .cache/llama.cpp.
+# Writes tests/fixtures/reference/<model>.inc for each listed model: llama.cpp's
+# logits for a pinned prompt on the pinned file, on its CPU backend and on
+# Metal, for the reference test (tests/gpu/reference_test.cpp, graph/graph.h):
+# Qwen3 0.6B and Llama 3.2 1B over 64 tokens, Gemma 3 1B over 600, past its
+# 512-key window, each model's context sized to its prompt. Run on a Mac with
+# Metal; the fixtures are committed, so the test needs none of this. llama.cpp
+# is fetched at the commit below into .cache/llama.cpp.
 set -eu
 cd "$(dirname "$0")/.."
 
