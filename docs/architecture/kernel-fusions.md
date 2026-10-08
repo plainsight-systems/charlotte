@@ -83,8 +83,8 @@ last token only (`core/kernels/topk/topk.h`, `core/sampler/sampler.h`).
 | Gemma 3 1B | 26 | 3 | 208 | 6 | 217 | 0.33 ms |
 
 A layer split across the context — a step whose rows times the layer's
-256-token chunks of keys fit the partial buffers, as a decode step's do once
-its keys span two chunks — adds attention's combine in that layer: up to 28
+64-key chunks fit the partial buffers, as a decode step's always do, once its
+keys span two chunks, from position 64 — adds attention's combine in that layer: up to 28
 more for Qwen3, 16 for Llama 3.2, 26 for Gemma 3
 (`core/kernels/attention/attention.h`).
 
