@@ -283,7 +283,7 @@ namespace bllm::kernels {
 // as llama.cpp's, MLC's and ONNX Runtime's WebGPU kernels keep 16 to 32
 // accumulators an invocation, unrolled or constant-indexed: the 32-token
 // tile's 4 × 8 micro-tile, 64 accumulators in arrays indexed by loop
-// counters, took each launch of a 32-token step 13.7 to 16 times as long
+// counters, took each launch of a 32-token step 13.7 to 17.2 times as long
 // as the 16-token tile's 2 × 8 took a 16-token step's, for twice the
 // tokens (docs/research/2026-10-07-forward-pass-profile.md) (GPU.3).
 // Optimization (practice): the staged tiles are read as whole vec4s along

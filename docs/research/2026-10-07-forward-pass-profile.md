@@ -60,14 +60,16 @@ above it.
 
 Between this run and two earlier ones the same day, decode and prefill of up
 to 32 tokens agreed within 2%; prefill of 64 to 512 tokens took up to 2.1
-times as long in the earlier runs (882, 1,194 and 3,128 ms), each run's own
-spread under 1%. What differed between runs is not yet known; a finding
-below rests only on what held across all three.
+times as long in the earlier runs (882, 1,194 and 3,128 ms). Those runs
+also varied within themselves: the 512-token step spanned 2,430 to 3,267
+ms, 26.8% of its median, and the 64- and 128-token steps 2.3% and 2.5%. What
+differed between and within runs is not yet known; a finding below rests
+only on what held across all three.
 
 ### Prefill: the 32-token tile
 
 From 16 to 32 tokens a prefill step goes from 24 ms to 353 ms, in all three
-runs. Each prefill product launch slows 13.7 to 16.0 times: `attention.qkv`
+runs. Each prefill product launch slows 13.7 to 17.2 times: `attention.qkv`
 0.124 → 1.703 ms, `attention.output` 0.222 → 3.358, `ffn.gate_up` 0.133 →
 2.288, `ffn.down` 0.321 → 5.107. 32 tokens is where
 `kernels/matmul/matmul.h` switches from its 16-token tile to its 32-token
