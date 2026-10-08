@@ -3,6 +3,14 @@
 **Date:** 2026-08-29, **revised twice** — 2026-08-30.
 **Context:** BLLM-001 self-check, Chrome on Apple silicon (`apple` / `metal-3`).
 
+> **Superseded 2026-08-31.** The harness no longer requests the adapter's
+> advertised maxima: WASM.10 names that as the standard error, since it makes
+> the contract implicit and dependent on the development machine. It requires
+> the WebGPU defaults explicitly and is granted 8 bindings and 128 MiB bindings
+> on every device. The values measured while it requested the maxima remain
+> valid as adapter diagnostics; they are no longer what the harness plans
+> against.
+
 ## What is actually true
 
 WebGPU limits work in three layers, and conflating any two of them produces a
@@ -47,14 +55,6 @@ constrain the residency plan, and both are small enough to shape kernel design:
 |---|---|---|
 | `maxStorageBuffersPerShaderStage` | 8 | **10** |
 | `minStorageBufferOffsetAlignment` | 256 | **256** |
-
-**Superseded 2026-08-31:** the values below were measured while the harness
-requested the adapter's advertised maxima. It no longer does — WASM.10 names
-that as the standard error, since it makes the contract implicit and dependent
-on the development machine. The harness now requires the WebGPU defaults
-explicitly and is granted 8 bindings and 128 MiB bindings on every device. The
-observations remain valid as *adapter diagnostics*; they are no longer what the
-harness plans against.
 
 **Ten bindings is a hard, small budget.** Weights are uploaded de-interleaved —
 a nibble stream and a scale stream — so **each weight tensor costs two

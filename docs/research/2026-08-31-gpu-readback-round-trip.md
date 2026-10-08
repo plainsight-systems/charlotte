@@ -4,6 +4,11 @@
 **Device:** Chrome on Apple silicon (`apple` / `metal-3`), WebGPU via emdawnwebgpu.
 **Code:** `src/core/gpu/readback_bench.{h,cpp}`, run from the page with `?bench`.
 
+> **Superseded 2026-10-07.** The sampled token now stays on the GPU and is
+> read back a step behind (`src/core/sampler/sampler.h`): a Qwen3 decode step
+> counts 1.3 to 2.1 ms, so the 0.5 ms map would add 24 to 38% to every
+> token. The measurement stands; the decision it settled here does not.
+
 ## Why this was measured before designing the decode loop
 
 Experience from prior in-house inference work says the throughput gap in a
