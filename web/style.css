@@ -142,6 +142,13 @@ button, input, textarea { font: inherit; color: inherit; }
 .cached li { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
 .cache-summary { color: var(--dim); font-size: .78rem; margin: 0; }
 
+.platform-notice {
+  margin: 1rem 1.25rem 0; padding: .7rem .9rem; font-size: .9rem;
+  border: 1px solid var(--amber); border-radius: var(--radius); background: var(--amber-wash);
+}
+.platform-notice p { margin: 0; }
+.platform-notice .platform-heading { font: 600 1rem/1.3 var(--serif); margin-bottom: .25rem; }
+
 .fake-banner {
   margin: 0; padding: .5rem 1.25rem; font-size: .85rem; font-weight: 500;
   background: var(--bad); color: #fff8ef;

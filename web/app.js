@@ -9,17 +9,22 @@ import { cacheKey } from './download.js';
 import { createModelController } from './model_controller.js';
 import { ModelCache, storageStatus } from './opfs.js';
 import { createPicker } from './picker.js';
+import { unsupportedPlatform } from './platform.js';
+import { showPlatformNotice } from './platform_notice.js';
 import { Request } from './protocol.js';
 import { WorkerClient } from './worker_client.js';
 
 const page = {
   deviceStatus: document.querySelector('#device-status'),
   fakeBanner: document.querySelector('#fake-banner'),
+  platformNotice: document.querySelector('#platform-notice'),
   models: document.querySelector('#models'),
   model: document.querySelector('#model'),
   cache: document.querySelector('#cache'),
   chat: document.querySelector('#chat'),
 };
+
+showPlatformNotice(page.platformNotice, unsupportedPlatform(navigator));
 
 if (!('gpu' in navigator)) {
   showUnavailable(page.deviceStatus,
