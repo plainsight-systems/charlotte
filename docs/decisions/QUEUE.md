@@ -4,13 +4,11 @@ This file tracks active and accepted work.
 
 ## Active
 
-- **Per-commit review is paused.** `workflow.md` reviews every commit; the
-  commits from `538e95d` onward have none, except `ab669eb`. The delivered
-  work below is accepted once that review is done or forgone.
+- None.
 
-## Delivered, awaiting acceptance
+## Accepted
 
-- **Generation in the browser** — delivered 2026-10-07, designed in its file
+- **Generation in the browser** — accepted 2026-10-07, designed in its file
   headers (`workflow.md`), so it has no packet.
 
   A model chosen in the page is downloaded, cached and checked against this
@@ -29,14 +27,15 @@ This file tracks active and accepted work.
   each downloaded, loaded and held a two-turn chat there, and Gemma 3 a
   905-token reply, well past its local layers' 512-key window.
 
-- **BLLM-002: GGUF reading and Q4_0 layout** — delivered 2026-10-02.
+  Accepted without the per-commit review `workflow.md` calls for: the
+  commits from `538e95d` onward, except `ab669eb`, were not reviewed.
+
+- **BLLM-002: GGUF reading and Q4_0 layout** — accepted 2026-10-07.
   `packets/2026-08-31-model-selection-and-weight-loading.md`. The container
   reader over bounded windows, its named failures, and the Q4_0 layout with
   its bit-exact oracle. Criterion 4b, left open in the packet, is met where
   the packet said it would be: `residency::Upload::begin` takes tensors by
   their index entries, so no weight reaches the GPU apart from its type.
-
-## Accepted
 
 - **BLLM-003: Rename the project to Charlotte** — accepted 2026-09-30.
   `packets/2026-09-30-rename-to-charlotte.md`. Identity only; deployed at
