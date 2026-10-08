@@ -59,7 +59,32 @@ struct ReferencePosition {
     float cpu[20];
 };
 
+namespace qwen3 {
 #include "fixtures/reference/qwen3-0.6b-q4_0.inc"
+}
+namespace llama32 {
+#include "fixtures/reference/llama-3.2-1b-instruct-q4_0.inc"
+}
+namespace gemma3 {
+#include "fixtures/reference/gemma-3-1b-it-q4_0.inc"
+}
+
+// A model's reference: its file, its fixture, and a budget its weights and
+// the prompt fit.
+struct Reference {
+    std::string_view file;
+    std::uint32_t vocabulary;
+    std::span<const std::uint32_t> tokens;
+    std::span<const ReferencePosition> positions;
+    std::uint64_t budget;
+};
+
+const Reference kQwen3{"models/qwen3-0.6b-q4_0.gguf", qwen3::kReferenceVocabulary, qwen3::kReferenceTokens,
+                       qwen3::kReferencePositions, 512ull << 20};
+const Reference kLlama32{"models/llama-3.2-1b-instruct-q4_0.gguf", llama32::kReferenceVocabulary,
+                         llama32::kReferenceTokens, llama32::kReferencePositions, 1ull << 30};
+const Reference kGemma3{"models/gemma-3-1b-it-q4_0.gguf", gemma3::kReferenceVocabulary, gemma3::kReferenceTokens,
+                        gemma3::kReferencePositions, 1ull << 30};
 
 constexpr std::size_t kUploadChunk = 16u << 20;   // the file is written 16 MiB at a time
 
@@ -73,23 +98,24 @@ struct Running {
     residency::BufferRange logits{};
 };
 
-// The model, read, described, planned within 512 MiB — a context of about a
-// thousand tokens, room enough for the prompt — and uploaded.
-Running upload_model(WGPUInstance instance, const gpu::Device& device) {
+// The model, read, described, planned within its reference's budget — a
+// context room enough for the prompt — and uploaded.
+Running upload_model(WGPUInstance instance, const gpu::Device& device, const Reference& ref) {
     Running r;
-    r.bytes = load_test_data("models/qwen3-0.6b-q4_0.gguf");
+    r.bytes = load_test_data(std::string(ref.file));
     gguf::MemoryByteSource source{std::as_bytes(std::span{r.bytes}), r.bytes.size()};
     REQUIRE(gguf::read_index(source, r.index).error == gguf::ReadError::Ok);
     std::string_view name;
     REQUIRE(r.index.read_string("general.architecture", name) == gguf::MetadataError::Ok);
     r.architecture = capability::find_architecture(name);
     REQUIRE(r.architecture->describe(r.index, r.description).ok());
-    REQUIRE(r.description.vocabulary_size == kReferenceVocabulary);
+    REQUIRE(r.description.vocabulary_size == ref.vocabulary);
     policy::LoadPolicy policy;
-    policy.memory_budget = 512ull << 20;
+    policy.memory_budget = ref.budget;
     REQUIRE(residency::plan_residency(r.index, r.description, residency::DeviceLimits{256ull << 20, 128ull << 20, 256},
                                       policy, r.plan)
                 .ok());
+    REQUIRE(r.plan.context_offered >= ref.tokens.size());
 
     Ready ready;
     residency::Upload::begin(device, r.index, r.plan, r.bytes.size(), capability::find_format, {}, kUploadChunk, on_ready,
@@ -114,7 +140,8 @@ Running upload_model(WGPUInstance instance, const gpu::Device& device) {
 // The prompt's first `positions` tokens decoded a token at a time through
 // the graph of `description`, and each position's logits.
 std::vector<std::vector<float>> decode(WGPUInstance instance, const gpu::Device& device, const Running& r,
-                                       const model::ModelDescription& description, std::size_t positions) {
+                                       const Reference& ref, const model::ModelDescription& description,
+                                       std::size_t positions) {
     const residency::ResidencyPlan& plan = r.upload->plan();
     std::vector<kernels::Launch> launches;
     const graph::GraphResult built =
@@ -123,9 +150,9 @@ std::vector<std::vector<float>> decode(WGPUInstance instance, const gpu::Device&
     const auto program = build_program(instance, *r.upload, std::move(launches));
     std::vector<std::vector<float>> logits;
     for (std::uint32_t p = 0; p < positions; ++p) {
-        run_step(instance, *program, 1, std::span(kReferenceTokens).subspan(p, 1), p, true);
+        run_step(instance, *program, 1, ref.tokens.subspan(p, 1), p, true);
         logits.push_back(read_floats(instance, device, r.upload->buffer(r.logits.buffer), r.logits.offset,
-                                     kReferenceVocabulary));
+                                     ref.vocabulary));
     }
     return logits;
 }
@@ -145,10 +172,10 @@ struct Agreement {
 // The larger of the two, and NaN when either is: std::max drops a NaN.
 double worse(double so_far, double d) { return d > so_far || std::isnan(d) ? d : so_far; }
 
-Agreement compare(const std::vector<std::vector<float>>& ours) {
+Agreement compare(const Reference& reference, const std::vector<std::vector<float>>& ours) {
     Agreement a;
     for (std::size_t p = 0; p < ours.size(); ++p) {
-        const ReferencePosition& ref = kReferencePositions[p];
+        const ReferencePosition& ref = reference.positions[p];
         const std::vector<float>& l = ours[p];
         a.non_finite += static_cast<int>(std::count_if(l.begin(), l.end(), [](float x) { return !std::isfinite(x); }));
         const double top = *std::max_element(l.begin(), l.end());
@@ -170,14 +197,14 @@ Agreement compare(const std::vector<std::vector<float>>& ours) {
     return a;
 }
 
-}  // namespace
-
-TEST_CASE("Qwen3 0.6B's log-probabilities are within llama.cpp's own spread, and a wrong pairing is not") {
+// The model against its reference, then with its RoPE pairing swapped, which
+// must fall outside.
+void check_model(const Reference& ref) {
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
-    const Running r = upload_model(instance.get(), *device);
+    const Running r = upload_model(instance.get(), *device, ref);
 
-    const Agreement ours = compare(decode(instance.get(), *device, r, r.description, std::size(kReferenceTokens)));
+    const Agreement ours = compare(ref, decode(instance.get(), *device, r, ref, r.description, ref.tokens.size()));
     MESSAGE("worst deviation from llama.cpp's Metal logits: " << ours.worst_nats << " nats, " << ours.worst
                                                                << " of its own CPU-to-Metal spread");
     CHECK(ours.non_finite == 0);
@@ -187,8 +214,39 @@ TEST_CASE("Qwen3 0.6B's log-probabilities are within llama.cpp's own spread, and
     // The check discriminates: RoPE pairing the wrong dimensions, from the
     // second position on, falls outside it.
     model::ModelDescription swapped = r.description;
-    swapped.rotary_pairing = model::RotaryPairing::Adjacent;
-    const Agreement wrong = compare(decode(instance.get(), *device, r, swapped, 16));
-    MESSAGE("with adjacent pairing: " << wrong.worst_nats << " nats, " << wrong.worst << " of the spread");
+    swapped.rotary_pairing = swapped.rotary_pairing == model::RotaryPairing::Halves ? model::RotaryPairing::Adjacent
+                                                                                    : model::RotaryPairing::Halves;
+    const Agreement wrong = compare(ref, decode(instance.get(), *device, r, ref, swapped, 16));
+    MESSAGE("with the other pairing: " << wrong.worst_nats << " nats, " << wrong.worst << " of the spread");
+    CHECK((wrong.worst > 1.0 || wrong.top_disagreements > 0));
+}
+
+}  // namespace
+
+TEST_CASE("Qwen3 0.6B's log-probabilities are within llama.cpp's own spread, and a wrong pairing is not") {
+    check_model(kQwen3);
+}
+
+TEST_CASE("Llama 3.2 1B's log-probabilities are within llama.cpp's own spread, and a wrong pairing is not") {
+    check_model(kLlama32);
+}
+
+TEST_CASE("Gemma 3 1B's log-probabilities are within llama.cpp's own spread past its window, and a wrong pairing is not") {
+    check_model(kGemma3);
+    // The window is exercised: every layer given the whole context, from
+    // position 512 on, falls outside.
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Running r = upload_model(instance.get(), *device, kGemma3);
+    model::ModelDescription global = r.description;
+    bool windowed = false;
+    for (model::LayerDescription& l : global.layers) {
+        windowed = windowed || l.attention_window < kGemma3.tokens.size();
+        l.attention_window = global.trained_context;
+    }
+    REQUIRE(windowed);
+    const Agreement wrong =
+        compare(kGemma3, decode(instance.get(), *device, r, kGemma3, global, kGemma3.tokens.size()));
+    MESSAGE("with every layer global: " << wrong.worst_nats << " nats, " << wrong.worst << " of the spread");
     CHECK((wrong.worst > 1.0 || wrong.top_disagreements > 0));
 }

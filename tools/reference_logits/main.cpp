@@ -31,7 +31,9 @@ struct Backend {
     llama_context* context;
 };
 
-Backend open(const char* path, bool cpu) {
+// A backend whose context holds `positions` tokens: at least 256, the size the
+// first fixtures were made with, so they are made the same way still.
+Backend open(const char* path, bool cpu, int positions) {
     llama_model_params mp = llama_model_default_params();
     static ggml_backend_dev_t no_devices[] = {nullptr};
     if (cpu) {
@@ -43,7 +45,7 @@ Backend open(const char* path, bool cpu) {
     llama_model* model = llama_model_load_from_file(path, mp);
     if (model == nullptr) std::exit(1);
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 256;
+    cp.n_ctx = static_cast<std::uint32_t>(std::max(256, positions));
     cp.n_batch = 64;
     if (cpu) {
         cp.offload_kqv = false;
@@ -77,7 +79,7 @@ int main(int argc, char** argv) {
     }
     const int count = std::atoi(argv[4]);
     llama_backend_init();
-    const Backend cpu = open(argv[1], true), metal = open(argv[1], false);
+    const Backend cpu = open(argv[1], true, count), metal = open(argv[1], false, count);
     const llama_vocab* vocab = llama_model_get_vocab(metal.model);
     const int vocabulary = llama_vocab_n_tokens(vocab);
 
