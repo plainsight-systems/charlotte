@@ -16,12 +16,6 @@ A self-built inference harness that runs an open-weight model entirely in the
 browser: C++ compiled to WebAssembly, with compute executed on WebGPU. No
 server-side inference, no remote model execution.
 
-Status as of 2026-08-31: the toolchain reaches the GPU. The dual-target build,
-platform-neutral core, WebGPU device path, wasm bindings and a static page all
-exist, and CI deploys the page. No model is loaded and nothing is inferred.
-BLLM-001 is **accepted**. BLLM-002 — model, quantization and the limits floor —
-is next.
-
 ## Inherited Governance
 
 Canonical list, public URLs, and internal/published status:
@@ -115,7 +109,6 @@ Decided 2026-08-28 during repo bootstrap:
   performance-sensitive by default.
 - **No operating brand.** Internal R&D attributed to Plainsight Systems LLC
   directly.
-- **Version control is local-only for now.** `git init -b main`, no remote.
 - **Inherited governance is a pinned submodule at
   `docs/process/governance/`.** `plainsight-systems-governance` was published
   (CC BY 4.0) with its internal content moved to the operations repo, so it can
@@ -126,40 +119,9 @@ Decided 2026-08-28 during repo bootstrap:
   `repo_creation_runbook.md`, which prescribes symlinks into a private sibling
   and should grow a public-repo branch.
 
-## Open Questions
+## Research
 
-Not yet decided. These block the first implementation packet:
-
-- Target model and parameter count.
-- Quantization format and weight layout.
-- Browser and GPU targets treated as blessed.
-- Model delivery and caching strategy in the browser.
-- Tokenizer ownership: built in-repo or vendored.
-- WebGPU compute access path from WASM, and the boundary between C++ core and
-  the JavaScript/TypeScript host.
-- Performance budget and how baseline is measured.
-
-## Research Index
-
-- `research/2026-10-03-load-performance-audit.md` — the load path against its
-  measured floor: per-stage ceilings, what the fixed-width rearrangement and
-  worker-side reads bought, and why writeBuffer call count, not bytes, binds
-  the load now. Also why every cause was countable on paper, and the rule.
-- `research/2026-08-31-measurement-build-configurations.md` — three build
-  configurations for performance work. The diagnostic build is Release, not
-  Debug: the axis is instrumentation, not optimisation. Compile-time gate with
-  inline no-op fallbacks so call sites stay type-checked when disabled.
-- `research/2026-08-31-model-port-methodology.md` — method notes from prior
-  in-house inference work: build a fixture ladder smallest-primitive-first,
-  record provenance, and expect "reusable" ops to silently diverge from a
-  model's reference. Our correctness gate cannot be byte-equal.
-- `research/2026-08-31-gpu-readback-round-trip.md` — a serialized GPU round
-  trip costs ~0.5 ms median. Read the sampled token back per step; do not build
-  a speculative pipeline. Also carries the related lessons this measurement
-  does not settle.
-- `research/2026-08-29-webgpu-limits-observed.md` — observed WebGPU buffer
-  limits are far above the spec's guaranteed minimums on capable hardware.
-  Weight residency is a portability decision, not a fixed constraint.
+`../research/README.md` is the index.
 
 ## Active Workflow Pointers
 
