@@ -31,6 +31,7 @@ SpecialTokens::SpecialTokens(std::vector<Entry> entries) : size_(entries.size())
     std::vector<std::vector<std::pair<unsigned char, std::uint32_t>>> children(1);   // node 0: the root
     std::vector<std::uint32_t> token(1, kNone);
     for (const Entry& entry : entries) {
+        longest_ = std::max(longest_, entry.text.size());
         std::uint32_t node = 0;
         for (const char c : entry.text) {
             const auto byte = static_cast<unsigned char>(c);
@@ -57,8 +58,9 @@ SpecialTokens::SpecialTokens(std::vector<Entry> entries) : size_(entries.size())
     token_ = std::move(token);
 }
 
-void SpecialTokens::segment(std::string_view text, std::vector<Segment>& out) const {
+bool SpecialTokens::segment(std::string_view text, std::vector<Segment>& out, std::uint64_t max_specials) const {
     std::size_t plain = 0;   // where the current run of ordinary text began
+    std::uint64_t found = 0;
     for (std::size_t i = 0; i < text.size();) {
         // Walk the trie from i; the last token passed is the longest match.
         std::uint32_t node = first_[static_cast<unsigned char>(text[i])];
@@ -87,6 +89,7 @@ void SpecialTokens::segment(std::string_view text, std::vector<Segment>& out) co
         if (i > plain) {
             out.push_back({static_cast<std::uint32_t>(plain), static_cast<std::uint32_t>(i - plain), std::nullopt});
         }
+        if (++found > max_specials) return false;
         out.push_back({static_cast<std::uint32_t>(i), static_cast<std::uint32_t>(length), static_cast<TokenId>(match)});
         i += length;
         plain = i;
@@ -95,6 +98,7 @@ void SpecialTokens::segment(std::string_view text, std::vector<Segment>& out) co
         out.push_back({static_cast<std::uint32_t>(plain), static_cast<std::uint32_t>(text.size() - plain),
                        std::nullopt});
     }
+    return true;
 }
 
 }  // namespace bllm::tokenizer

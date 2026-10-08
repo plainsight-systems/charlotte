@@ -53,10 +53,18 @@ public:
 
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
 
+    // The longest text a special token matches, 0 with none: what one
+    // special token can take of a text's bytes (tokenizer.h).
+    [[nodiscard]] std::size_t longest() const noexcept { return longest_; }
+
     // Splits `text` into ordinary text and special tokens, in order, covering
-    // it exactly. Ordinary runs are never empty. Precondition: `text` is no
-    // longer than a Segment can address (4 GiB).
-    void segment(std::string_view text, std::vector<Segment>& out) const;
+    // it exactly. Ordinary runs are never empty. Stops, false, once it has
+    // found more than `max_specials` special tokens, `out` holding what it
+    // found up to them, so a text of special tokens grows `out` by at most
+    // two segments a token allowed (tokenizer.h, encoding is bounded).
+    // Precondition: `text` is no longer than a Segment can address (4 GiB).
+    bool segment(std::string_view text, std::vector<Segment>& out,
+                 std::uint64_t max_specials = UINT64_MAX) const;
 
 private:
     // Optimization (practice): a byte trie of the tokens' texts, laid out
@@ -77,6 +85,7 @@ private:
     std::vector<std::uint32_t> edge_child_;
     std::vector<std::uint32_t> token_;   // the token node n spells in full, or kNone
     std::size_t size_ = 0;
+    std::size_t longest_ = 0;
 };
 
 }  // namespace bllm::tokenizer

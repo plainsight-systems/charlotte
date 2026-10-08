@@ -35,6 +35,7 @@ add_library(charlotte_core STATIC
     src/core/gguf/index.cpp
     src/core/gguf/reader.cpp
     src/core/preflight/preflight.cpp
+    src/core/tokenizer/admission.cpp
     src/core/tokenizer/bpe/byte_level_bpe.cpp
     src/core/tokenizer/bpe/merge.cpp
     src/core/tokenizer/bpe/merge_table.cpp

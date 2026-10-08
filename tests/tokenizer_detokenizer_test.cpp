@@ -70,7 +70,7 @@ TEST_CASE("byte-level tokens decode through the same stream") {
     const auto qwen = load("qwen3-0.6b-q4_0");
     Detokenizer d{*qwen};
     std::vector<TokenId> tokens;
-    REQUIRE(qwen->encode(" 😊", tokens) == EncodeError::Ok);
+    REQUIRE(qwen->encode(" 😊", kNoTokenLimit, tokens).error == EncodeError::Ok);
     std::string text;
     for (const TokenId t : tokens) text += d.push(t);
     CHECK(text == " 😊");

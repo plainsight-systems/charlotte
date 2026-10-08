@@ -19,7 +19,8 @@ export const Request = Object.freeze({
   // maxTokens }, sampling and maxTokens optional — streaming its text as
   // TOKEN replies. DONE carries { stopReason, tokens, promptTokens,
   // reusedTokens }; FAILED's error carries code "prompt-too-long" when the
-  // prompt does not fit the context.
+  // prompt does not fit the context, and "prompt-too-large", shown by name,
+  // when it is past the bytes one encode takes.
   GENERATE: 'generate',
   // Stop a load or a generation early; `target` is its request id.
   CANCEL: 'cancel',

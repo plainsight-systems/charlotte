@@ -19,6 +19,7 @@ add_executable(charlotte_tests
     gguf_arrays_test.cpp
     test_data_test.cpp
     tokenizer_bpe_test.cpp
+    tokenizer_admission_test.cpp
     tokenizer_interface_test.cpp
     tokenizer_detokenizer_test.cpp
     tokenizer_merge_table_test.cpp

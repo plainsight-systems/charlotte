@@ -41,9 +41,10 @@
 // begin a load, load a chunk of the file, and finish the load (web/load.js);
 // generate from a rendered prompt and the turn's policy; and cancel. A
 // prompt the tokenizer refuses as too long to encode is answered with code
-// "prompt-too-large", its normalized bytes and kMaxEncodeBytes
-// (tokenizer/tokenizer.h), which the page shows by name: dropping old
-// messages does not shorten a message that is itself too large. Text goes
+// "prompt-too-large", its bytes — normalized, or raw where it was refused
+// before normalizing — and kMaxEncodeBytes (tokenizer/tokenizer.h), which the
+// page shows by name: dropping old messages does not shorten a message that
+// is itself too large. Text goes
 // back one crossing per piece the reply completes (WASM.2).
 //
 // The model's load policy (policy/policy.h) crosses with preflight and with
@@ -977,11 +978,25 @@ EMSCRIPTEN_KEEPALIVE void bllm_generate(std::uint32_t request, const char* text,
     policy.max_tokens = max_tokens;
     const bllm::runtime::GenerateResult started = s.generator->start(
         {text, text_length}, policy, on_turn_text, on_turn_end, to_userdata(request));
-    if (started.encode != bllm::tokenizer::EncodeError::Ok) {
-        bllm_reply(request, failure_json(started.encode == bllm::tokenizer::EncodeError::InvalidUtf8
-                                             ? "the prompt is not valid UTF-8"
-                                             : "the prompt is too long to encode")
+    using bllm::tokenizer::EncodeError;
+    if (started.encode.error == EncodeError::TooLong) {
+        // Its normalized bytes where it was normalized; else its raw bytes,
+        // refused before.
+        const bool normalized = started.encode.normalized_bytes != 0;
+        const std::string subject =
+            "it is " + std::to_string(normalized ? started.encode.normalized_bytes : started.encode.raw_bytes) +
+            (normalized ? " bytes once normalized" : " bytes") + ", and a prompt may be " +
+            std::to_string(bllm::tokenizer::kMaxEncodeBytes) + " normalized";
+        bllm_reply(request, ("{\"ok\":false,\"error\":\"the prompt is too large to encode\""
+                             ",\"subject\":" + json_string(subject) +
+                             ",\"code\":\"prompt-too-large\",\"promptBytes\":" +
+                             std::to_string(normalized ? started.encode.normalized_bytes : started.encode.raw_bytes) +
+                             ",\"limitBytes\":" + std::to_string(bllm::tokenizer::kMaxEncodeBytes) + "}")
                                 .c_str());
+        return;
+    }
+    if (started.encode.error != EncodeError::Ok) {
+        bllm_reply(request, failure_json("the prompt is not valid UTF-8").c_str());
         return;
     }
     using bllm::runtime::StartError;

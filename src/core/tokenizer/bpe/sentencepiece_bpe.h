@@ -61,9 +61,18 @@ public:
 
     [[nodiscard]] const Vocabulary& vocabulary() const noexcept { return vocabulary_; }
 
-    // Appends the tokens `raw` encodes to. `out` is left untouched if it
-    // cannot: text that is not UTF-8, or longer than 4 GiB once spaces are ▁.
-    [[nodiscard]] EncodeError encode(std::string_view raw, std::vector<TokenId>& out) const;
+    // Appends the tokens `raw` encodes to, bounded as tokenizer.h's encoding
+    // is: refused, `out` untouched, for text making more than `max_tokens` at
+    // least or past kMaxEncodeBytes once spaces are ▁, as for text that is
+    // not UTF-8. Its special tokens are split out and counted before any run
+    // is merged (admission.h).
+    [[nodiscard]] EncodeResult encode(std::string_view raw, std::uint32_t max_tokens,
+                                      std::vector<TokenId>& out) const;
+
+    // The most normalized bytes one token covers: its spelling, ▁ for a
+    // space as the normalized text spells it, the longest over the
+    // vocabulary, found at load (tokenizer.h).
+    [[nodiscard]] std::size_t longest_cover() const noexcept { return cover_; }
 
     // Appends the bytes `token` stands for. They can end partway through a
     // character; Utf8Stream makes text of them. Precondition: loaded, and the
@@ -102,6 +111,7 @@ private:
     std::array<TokenId, 256> byte_tokens_{};   // <0x00> to <0xFF>
     std::vector<Straddle> straddles_;
     bool cuts_ = false;   // false when there are more than kMaxStraddles
+    std::size_t cover_ = 1;
 };
 
 // The algorithm, as the capability table lists it. It splits no text first,
@@ -128,7 +138,9 @@ extern const Algorithm kSentencePiece;
 class SentencePieceTokenizer final : public Tokenizer {
 public:
     [[nodiscard]] const Vocabulary& vocabulary() const noexcept override;
-    [[nodiscard]] EncodeError encode(std::string_view text, std::vector<TokenId>& out) override;
+    [[nodiscard]] EncodeResult encode(std::string_view text, std::uint32_t max_tokens,
+                                      std::vector<TokenId>& out) override;
+    [[nodiscard]] std::size_t longest_cover() const noexcept override;
     void decode(TokenId token, std::string& out) const override;
 
 private:

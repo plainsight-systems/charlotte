@@ -1,10 +1,12 @@
 #include "core/tokenizer/bpe/byte_level_bpe.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 #include <string>
 #include <utility>
 
+#include "core/tokenizer/admission.h"
 #include "core/tokenizer/bpe/byte_map.h"
 #include "core/tokenizer/bpe/merge.h"
 #include "core/tokenizer/nfc.h"
@@ -27,50 +29,80 @@ bool spells_bytes(std::string_view text) noexcept {
 
 const Algorithm kByteLevel{"gpt2", true, load_byte_level_tokenizer};
 
-EncodeError ByteLevelBpe::encode(std::string_view text, std::vector<TokenId>& out) const {
-    return encode_into(text, out, nullptr);
+EncodeResult ByteLevelBpe::encode(std::string_view text, std::uint32_t max_tokens, std::vector<TokenId>& out) const {
+    return encode_into(text, max_tokens, out, nullptr);
 }
 
-EncodeError ByteLevelBpe::encode(std::string_view text, std::vector<TokenId>& out, PieceCache& cache) const {
+EncodeResult ByteLevelBpe::encode(std::string_view text, std::uint32_t max_tokens, std::vector<TokenId>& out,
+                                  PieceCache& cache) const {
     if (cache.owner_ != this) {
         cache.clear();
         cache.owner_ = this;
     }
-    return encode_into(text, out, &cache);
+    return encode_into(text, max_tokens, out, &cache);
 }
 
-EncodeError ByteLevelBpe::encode_into(std::string_view text, std::vector<TokenId>& out, PieceCache* cache) const {
-    if (text.size() > std::numeric_limits<std::uint32_t>::max()) return EncodeError::TooLong;
-
+EncodeResult ByteLevelBpe::encode_into(std::string_view text, std::uint32_t max_tokens, std::vector<TokenId>& out,
+                                       PieceCache* cache) const {
+    if (const EncodeResult raw = admit_raw(text.size(), max_tokens, special_.longest()); raw.error != EncodeError::Ok) {
+        return raw;
+    }
+    // The special tokens first, the raw text's, then NFC on each ordinary
+    // segment; segmenting stops past the limit's worth of specials.
     std::vector<Segment> segments;
-    special_.segment(text, segments);
+    if (!special_.segment(text, segments, max_tokens)) {
+        return {EncodeError::TooManyTokens, std::uint64_t{max_tokens} + 1, 0, text.size()};
+    }
+
+    // Every ordinary segment normalized first, one after another in
+    // `normalized`, so admission counts the whole text before any piece is
+    // merged (tokenizer.h, encoding is bounded).
+    std::string normalized;
+    std::string scratch;
+    std::vector<std::uint64_t> lengths;
+    std::uint64_t specials = 0;
+    for (const Segment& segment : segments) {
+        if (segment.special) {
+            ++specials;
+            continue;
+        }
+        std::string_view ordinary = text.substr(segment.offset, segment.length);
+        if (pretokenizer_->normalization == Normalization::Nfc) {
+            if (!to_nfc(ordinary, scratch)) return {EncodeError::InvalidUtf8, 0, 0, text.size()};
+            ordinary = scratch;
+        }
+        normalized.append(ordinary);
+        lengths.push_back(ordinary.size());
+    }
+    EncodeResult admitted = admit(specials, lengths, cover_, max_tokens);
+    admitted.raw_bytes = text.size();
+    if (admitted.error != EncodeError::Ok) return admitted;
 
     std::vector<TokenId> tokens;
-    std::string normalized;
     std::vector<Piece> pieces;
     std::string spelled;              // scratch for each piece, kept across pieces
     std::vector<TokenId> symbols;
+    std::size_t at = 0;
+    std::size_t next = 0;             // the next ordinary segment's length
     for (const Segment& segment : segments) {
         if (segment.special) {
             tokens.push_back(*segment.special);
             continue;
         }
-        std::string_view ordinary = text.substr(segment.offset, segment.length);
-        if (pretokenizer_->normalization == Normalization::Nfc) {
-            if (!to_nfc(ordinary, normalized)) return EncodeError::InvalidUtf8;
-            ordinary = normalized;
-        }
+        const std::string_view ordinary = std::string_view{normalized}.substr(at, lengths[next]);
+        at += lengths[next++];
         switch (split(*pretokenizer_, ordinary, pieces)) {
             case SplitError::Ok: break;
-            case SplitError::InvalidUtf8: return EncodeError::InvalidUtf8;
-            case SplitError::TooLong: return EncodeError::TooLong;
+            case SplitError::InvalidUtf8: return {EncodeError::InvalidUtf8, 0, 0, text.size()};
+            case SplitError::TooLong: return {EncodeError::TooLong, admitted.least_tokens, admitted.normalized_bytes,
+                                              text.size()};
         }
         for (const Piece& piece : pieces) {
             encode_piece(ordinary.substr(piece.offset, piece.length), tokens, cache, spelled, symbols);
         }
     }
     out.insert(out.end(), tokens.begin(), tokens.end());
-    return EncodeError::Ok;
+    return admitted;
 }
 
 void ByteLevelBpe::encode_piece(std::string_view piece, std::vector<TokenId>& out, PieceCache* cache,
@@ -136,15 +168,25 @@ LoadResult load_byte_level_bpe(gguf::ByteSource& source, const gguf::TensorIndex
     }
     bpe.special_ = SpecialTokens{bpe.vocabulary_};
     bpe.pretokenizer_ = &pretokenizer;
+    // The most normalized bytes one token covers: its decoded bytes, over the
+    // whole vocabulary (tokenizer.h).
+    std::string decoded;
+    for (std::size_t id = 0; id < bpe.vocabulary_.size(); ++id) {
+        decoded.clear();
+        bpe.decode(static_cast<TokenId>(id), decoded);
+        bpe.cover_ = std::max(bpe.cover_, decoded.size());
+    }
     out = std::move(bpe);
     return {};
 }
 
 const Vocabulary& ByteLevelTokenizer::vocabulary() const noexcept { return bpe_.vocabulary(); }
 
-EncodeError ByteLevelTokenizer::encode(std::string_view text, std::vector<TokenId>& out) {
-    return bpe_.encode(text, out, cache_);
+EncodeResult ByteLevelTokenizer::encode(std::string_view text, std::uint32_t max_tokens, std::vector<TokenId>& out) {
+    return bpe_.encode(text, max_tokens, out, cache_);
 }
+
+std::size_t ByteLevelTokenizer::longest_cover() const noexcept { return bpe_.longest_cover(); }
 
 void ByteLevelTokenizer::decode(TokenId token, std::string& out) const { bpe_.decode(token, out); }
 

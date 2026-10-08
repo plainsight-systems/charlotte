@@ -183,17 +183,17 @@ bool bench_model(const Model& m, std::string_view corpus) {
     std::vector<TokenId> plain, cold, warm;
     const Timing t_plain = measure([&] {
         plain.clear();
-        (void)bpe.encode(corpus, plain);
+        (void)bpe.encode(corpus, kNoTokenLimit, plain);
     });
     const Timing t_cold = measure([&] {
         bpe::PieceCache cache;
         cold.clear();
-        (void)bpe.encode(corpus, cold, cache);
+        (void)bpe.encode(corpus, kNoTokenLimit, cold, cache);
     });
     bpe::PieceCache kept;
     const Timing t_warm = measure([&] {
         warm.clear();
-        (void)bpe.encode(corpus, warm, kept);
+        (void)bpe.encode(corpus, kNoTokenLimit, warm, kept);
     });
 
     const bool agree = ids(plain) == ids(cold) && ids(plain) == ids(warm);
@@ -217,7 +217,7 @@ bool bench_sentencepiece(const Model& m, std::string_view corpus) {
     std::vector<TokenId> tokens;
     const Timing encode = measure([&] {
         tokens.clear();
-        (void)spm.encode(corpus, tokens);
+        (void)spm.encode(corpus, kNoTokenLimit, tokens);
     });
     // A token at a time, as generation streams it.
     std::string text;

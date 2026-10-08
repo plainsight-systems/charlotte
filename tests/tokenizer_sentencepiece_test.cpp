@@ -94,7 +94,7 @@ bpe::SentencePieceBpe small() {
 
 std::vector<std::uint32_t> encode(const bpe::SentencePieceBpe& spm, std::string_view text) {
     std::vector<TokenId> tokens;
-    REQUIRE(spm.encode(text, tokens) == EncodeError::Ok);
+    REQUIRE(spm.encode(text, kNoTokenLimit, tokens).error == EncodeError::Ok);
     return ids(tokens);
 }
 
@@ -250,7 +250,7 @@ TEST_CASE("a special token's text is its token, and nothing merges across it") {
 TEST_CASE("text that is not UTF-8 leaves the output untouched") {
     const auto spm = small();
     std::vector<TokenId> out{static_cast<TokenId>(7)};
-    CHECK(spm.encode("ab \xC0\x80", out) == EncodeError::InvalidUtf8);
+    CHECK(spm.encode("ab \xC0\x80", kNoTokenLimit, out).error == EncodeError::InvalidUtf8);
     CHECK(ids(out) == std::vector<std::uint32_t>{7});
 }
 

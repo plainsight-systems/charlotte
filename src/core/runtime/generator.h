@@ -103,11 +103,14 @@ using TextCallback = void (*)(std::string_view text, void* userdata);
 using EndCallback = void (*)(const TurnResult& result, void* userdata);
 
 // Why a turn did not start: the text, or the runtime.
+// A turn's start: the encode's refusal, if the tokenizer refused the text —
+// never TooManyTokens, which is the runtime's PromptTooLong, in `start` — or
+// the runtime's start.
 struct GenerateResult {
-    tokenizer::EncodeError encode = tokenizer::EncodeError::Ok;
+    tokenizer::EncodeResult encode;
     StartResult start;
     [[nodiscard]] bool ok() const noexcept {
-        return encode == tokenizer::EncodeError::Ok && start.error == StartError::Ok;
+        return encode.error == tokenizer::EncodeError::Ok && start.error == StartError::Ok;
     }
 };
 

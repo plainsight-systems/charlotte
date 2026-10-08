@@ -48,7 +48,7 @@ bpe::ByteLevelBpe load(std::string_view model, const PreTokenizer& pretokenizer)
 
 std::vector<std::uint32_t> encode(const bpe::ByteLevelBpe& bpe, std::string_view text) {
     std::vector<TokenId> tokens;
-    REQUIRE(bpe.encode(text, tokens) == EncodeError::Ok);
+    REQUIRE(bpe.encode(text, kNoTokenLimit, tokens).error == EncodeError::Ok);
     std::vector<std::uint32_t> ids;
     for (const TokenId t : tokens) ids.push_back(static_cast<std::uint32_t>(t));
     return ids;
@@ -56,7 +56,7 @@ std::vector<std::uint32_t> encode(const bpe::ByteLevelBpe& bpe, std::string_view
 
 std::vector<std::uint32_t> encode(const bpe::ByteLevelBpe& bpe, std::string_view text, bpe::PieceCache& cache) {
     std::vector<TokenId> tokens;
-    REQUIRE(bpe.encode(text, tokens, cache) == EncodeError::Ok);
+    REQUIRE(bpe.encode(text, kNoTokenLimit, tokens, cache).error == EncodeError::Ok);
     std::vector<std::uint32_t> ids;
     for (const TokenId t : tokens) ids.push_back(static_cast<std::uint32_t>(t));
     return ids;
@@ -200,10 +200,10 @@ TEST_CASE("a normal token holding a character no byte stands for is refused at l
 TEST_CASE("encoding appends, and text that is not UTF-8 leaves the output untouched") {
     const auto bpe = load("qwen3-0.6b-q4_0", kQwen2);
     std::vector<TokenId> out{static_cast<TokenId>(7)};
-    REQUIRE(bpe.encode("Hello", out) == EncodeError::Ok);
+    REQUIRE(bpe.encode("Hello", kNoTokenLimit, out).error == EncodeError::Ok);
     CHECK(out.size() == 2);
     CHECK(out[0] == static_cast<TokenId>(7));
-    CHECK(bpe.encode("ok \xC0\x80", out) == EncodeError::InvalidUtf8);
+    CHECK(bpe.encode("ok \xC0\x80", kNoTokenLimit, out).error == EncodeError::InvalidUtf8);
     CHECK(out.size() == 2);
 }
 

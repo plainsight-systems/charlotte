@@ -42,15 +42,25 @@ public:
 
     [[nodiscard]] const Vocabulary& vocabulary() const noexcept { return vocabulary_; }
 
-    // Appends the tokens `text` encodes to. `out` is left untouched if it
-    // cannot: text that is not UTF-8, or longer than 4 GiB. Precondition:
-    // loaded by load_byte_level_bpe; an empty one has no pre-tokenizer.
-    [[nodiscard]] EncodeError encode(std::string_view text, std::vector<TokenId>& out) const;
+    // Appends the tokens `text` encodes to, bounded as tokenizer.h's
+    // encoding is: refused, `out` untouched, for text making more than
+    // `max_tokens` at least or past kMaxEncodeBytes normalized, as for text
+    // that is not UTF-8. Every special token is split out and every ordinary
+    // segment normalized before admission (admission.h); only admitted text
+    // is split into pieces and merged. Precondition: loaded by
+    // load_byte_level_bpe; an empty one has no pre-tokenizer.
+    [[nodiscard]] EncodeResult encode(std::string_view text, std::uint32_t max_tokens,
+                                      std::vector<TokenId>& out) const;
 
     // The same, consulting `cache` for short pieces and recording what it
     // finds. The result is identical; a cache last used by another tokenizer
     // is emptied first.
-    [[nodiscard]] EncodeError encode(std::string_view text, std::vector<TokenId>& out, PieceCache& cache) const;
+    [[nodiscard]] EncodeResult encode(std::string_view text, std::uint32_t max_tokens, std::vector<TokenId>& out,
+                                      PieceCache& cache) const;
+
+    // The most normalized bytes one token covers: its decoded bytes, the
+    // longest over the vocabulary, found at load (tokenizer.h).
+    [[nodiscard]] std::size_t longest_cover() const noexcept { return cover_; }
 
     // Appends the bytes `token` stands for. They can end partway through a
     // character; Utf8Stream makes text of them. Precondition: loaded, and the
@@ -61,8 +71,8 @@ private:
     friend LoadResult load_byte_level_bpe(gguf::ByteSource& source, const gguf::TensorIndex& index,
                                           const PreTokenizer& pretokenizer, ByteLevelBpe& out);
 
-    [[nodiscard]] EncodeError encode_into(std::string_view text, std::vector<TokenId>& out,
-                                          PieceCache* cache) const;
+    [[nodiscard]] EncodeResult encode_into(std::string_view text, std::uint32_t max_tokens,
+                                           std::vector<TokenId>& out, PieceCache* cache) const;
     void encode_piece(std::string_view piece, std::vector<TokenId>& out, PieceCache* cache, std::string& spelled,
                       std::vector<TokenId>& symbols) const;
 
@@ -71,6 +81,7 @@ private:
     MergeTable merges_;
     std::array<TokenId, 256> byte_tokens_{};   // the token for each byte's character
     const PreTokenizer* pretokenizer_ = nullptr;
+    std::size_t cover_ = 1;
 };
 
 // The algorithm, as the capability table lists it: it splits text first, so a
@@ -94,7 +105,9 @@ extern const Algorithm kByteLevel;
 class ByteLevelTokenizer final : public Tokenizer {
 public:
     [[nodiscard]] const Vocabulary& vocabulary() const noexcept override;
-    [[nodiscard]] EncodeError encode(std::string_view text, std::vector<TokenId>& out) override;
+    [[nodiscard]] EncodeResult encode(std::string_view text, std::uint32_t max_tokens,
+                                      std::vector<TokenId>& out) override;
+    [[nodiscard]] std::size_t longest_cover() const noexcept override;
     void decode(TokenId token, std::string& out) const override;
 
 private:

@@ -77,10 +77,11 @@ GenerateResult Generator::start(std::string_view text, const policy::TurnPolicy&
                                 EndCallback on_end, void* userdata) {
     State& s = *state_;
     if (s.runtime == nullptr || s.in_flight != nullptr) return {{}, {StartError::Busy, "a turn is running"}};
-    // A token covers at most `longest` bytes of normalized text, and NFC
-    // shrinks text at most 7/2-fold, so text longer than 7/2 × the context ×
-    // that makes more tokens than the context holds: refused unencoded.
-    const std::uint64_t longest = s.text->longest();
+    // A token covers at most `longest` bytes of normalized text, and
+    // normalizing shrinks text at most 7/2-fold, so text longer than 7/2 ×
+    // the context × that makes more tokens than the context holds: refused
+    // unencoded.
+    const std::uint64_t longest = s.tokenizer->longest_cover();
     const std::uint64_t covered2 = kNfcShrinkFrom * longest;   // twice the bytes a token covers, unnormalized
     const std::uint64_t bytes2 = kNfcShrinkTo * text.size();
     if (bytes2 > std::uint64_t{s.capacity} * covered2) {
@@ -92,9 +93,17 @@ GenerateResult Generator::start(std::string_view text, const policy::TurnPolicy&
                  least, s.capacity}};
     }
     s.tokens.clear();
-    if (const tokenizer::EncodeError e = s.tokenizer->encode(text, s.tokens); e != tokenizer::EncodeError::Ok) {
-        return {e, {}};
+    // Encoded with the context as its limit: text that makes more tokens at
+    // least is refused before it is merged, as the runtime refuses one.
+    const tokenizer::EncodeResult encoded = s.tokenizer->encode(text, s.capacity, s.tokens);
+    if (encoded.error == tokenizer::EncodeError::TooManyTokens) {
+        return {{},
+                {StartError::PromptTooLong,
+                 "the prompt is at least " + std::to_string(encoded.least_tokens) +
+                     " tokens, and the context offered " + std::to_string(s.capacity),
+                 encoded.least_tokens, s.capacity}};
     }
+    if (encoded.error != tokenizer::EncodeError::Ok) return {encoded, {}};
     s.on_text = on_text;
     s.on_end = on_end;
     s.userdata = userdata;

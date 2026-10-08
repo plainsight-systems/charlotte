@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "core/tokenizer/admission.h"
 #include "core/tokenizer/bpe/merge.h"
 #include "core/tokenizer/bpe/sentencepiece_merges.h"
 #include "core/tokenizer/load.h"
@@ -43,14 +44,36 @@ bool one_character(std::string_view text) noexcept {
 
 const Algorithm kSentencePiece{"llama", false, load_sentencepiece_tokenizer};
 
-EncodeError SentencePieceBpe::encode(std::string_view raw, std::vector<TokenId>& out) const {
-    if (raw.size() > std::numeric_limits<std::uint32_t>::max()) return EncodeError::TooLong;
+EncodeResult SentencePieceBpe::encode(std::string_view raw, std::uint32_t max_tokens, std::vector<TokenId>& out) const {
+    if (const EncodeResult r = admit_raw(raw.size(), max_tokens, special_.longest()); r.error != EncodeError::Ok) {
+        return r;
+    }
+    // Escaped whole first, then segmented: the special tokens are matched as
+    // spaces become ▁, Gemma 3's runs of spaces among them, so they are
+    // spelled that way (load_sentencepiece_bpe); segmenting stops past the
+    // limit's worth of specials.
     const std::string spelled = escaped(raw);
-    if (spelled.size() > std::numeric_limits<std::uint32_t>::max()) return EncodeError::TooLong;
     const std::string_view text = spelled;
 
     std::vector<Segment> segments;
-    special_.segment(text, segments);
+    if (!special_.segment(text, segments, max_tokens)) {
+        return {EncodeError::TooManyTokens, std::uint64_t{max_tokens} + 1, 0, raw.size()};
+    }
+
+    // Escaping is this algorithm's normalizing: every segment is counted
+    // before any run is merged (tokenizer.h, encoding is bounded).
+    std::vector<std::uint64_t> lengths;
+    std::uint64_t specials = 0;
+    for (const Segment& segment : segments) {
+        if (segment.special) {
+            ++specials;
+        } else {
+            lengths.push_back(segment.length);
+        }
+    }
+    EncodeResult admitted = admit(specials, lengths, cover_, max_tokens);
+    admitted.raw_bytes = raw.size();
+    if (admitted.error != EncodeError::Ok) return admitted;
 
     std::vector<TokenId> tokens;
     std::vector<TokenId> symbols;
@@ -63,7 +86,7 @@ EncodeError SentencePieceBpe::encode(std::string_view raw, std::vector<TokenId>&
         symbols.clear();
         for (std::size_t at = 0; at < ordinary.size();) {
             Utf8Char c{};
-            if (!decode_utf8(ordinary, at, c)) return EncodeError::InvalidUtf8;
+            if (!decode_utf8(ordinary, at, c)) return {EncodeError::InvalidUtf8, 0, 0, raw.size()};
             if (!symbols.empty() && cut_before(ordinary, at)) {
                 merge(symbols, merges_, tokens);
                 symbols.clear();
@@ -80,7 +103,7 @@ EncodeError SentencePieceBpe::encode(std::string_view raw, std::vector<TokenId>&
         merge(symbols, merges_, tokens);
     }
     out.insert(out.end(), tokens.begin(), tokens.end());
-    return EncodeError::Ok;
+    return admitted;
 }
 
 void SentencePieceBpe::decode(TokenId token, std::string& out) const {
@@ -182,6 +205,11 @@ LoadResult load_sentencepiece_bpe(gguf::ByteSource& source, const gguf::TensorIn
         return {LoadError::Unsupported, "two special tokens spelled " + std::string(*repeat) + " once spaces are ▁"};
     }
     spm.special_ = SpecialTokens{std::move(special)};
+    // The most normalized bytes one token covers: its spelling, over the
+    // whole vocabulary (tokenizer.h).
+    for (std::size_t id = 0; id < spm.vocabulary_.size(); ++id) {
+        spm.cover_ = std::max(spm.cover_, spm.vocabulary_.text(static_cast<TokenId>(id)).size());
+    }
 
     for (std::size_t id = 0; id < spm.vocabulary_.size(); ++id) {
         const auto token = static_cast<TokenId>(id);
@@ -200,9 +228,12 @@ LoadResult load_sentencepiece_bpe(gguf::ByteSource& source, const gguf::TensorIn
 
 const Vocabulary& SentencePieceTokenizer::vocabulary() const noexcept { return bpe_.vocabulary(); }
 
-EncodeError SentencePieceTokenizer::encode(std::string_view text, std::vector<TokenId>& out) {
-    return bpe_.encode(text, out);
+EncodeResult SentencePieceTokenizer::encode(std::string_view text, std::uint32_t max_tokens,
+                                            std::vector<TokenId>& out) {
+    return bpe_.encode(text, max_tokens, out);
 }
+
+std::size_t SentencePieceTokenizer::longest_cover() const noexcept { return bpe_.longest_cover(); }
 
 void SentencePieceTokenizer::decode(TokenId token, std::string& out) const { bpe_.decode(token, out); }
 
