@@ -58,31 +58,57 @@ TEST_CASE("NFC composes, reorders and leaves composed text alone") {
 }
 
 TEST_CASE("NFC shrinks a character's canonical equivalents at most 7 bytes to 2") {
-    // The generator's pre-encode bound (runtime/generator.h) rests on this:
+    // Tokenizer admission's raw bound (tokenizer/admission.h) rests on this:
     // each character NFC writes stands for at most its canonical
     // equivalents' bytes. A character's longest equivalent spells its full
     // decomposition piece by piece, each piece the longest character whose
-    // full decomposition it is; computed here, over the tables, for every
-    // character NFC leaves alone.
+    // full decomposition it is. Computed here over every scalar value NFC
+    // writes unchanged: one with a row in the tables decomposes by it; a
+    // Hangul syllable arithmetically; any other is its own decomposition,
+    // so a singleton equivalent of it — U+1FEF of U+0060, U+212A of K — is
+    // counted too.
     const auto pool = unicode_tables::decomposition_pool();
-    std::map<std::u32string, std::size_t> longest_spelling;   // a full decomposition: its longest character's bytes
     const auto bytes_of = [](char32_t c) {
         std::string s;
         append_utf8(c, s);
         return s.size();
     };
-    for (const auto& d : unicode_tables::decompositions()) {
-        const std::u32string full(pool.data() + d.start, d.length);
+    constexpr char32_t kSBase = 0xAC00, kLBase = 0x1100, kVBase = 0x1161, kTBase = 0x11A7;
+    constexpr char32_t kSCount = 11172, kNCount = 588, kTCount = 28;
+    const auto hangul = [&](char32_t c) {
+        const char32_t index = c - kSBase;
+        std::u32string full{kLBase + index / kNCount, kVBase + index % kNCount / kTCount};
+        if (index % kTCount != 0) full.push_back(kTBase + index % kTCount);
+        return full;
+    };
+    std::map<char32_t, std::u32string> rows;
+    for (const auto& d : unicode_tables::decompositions()) rows[d.code_point] = std::u32string(pool.data() + d.start, d.length);
+    // A full decomposition: the most bytes of a character whose full
+    // decomposition it is — a row's, an LV syllable's two jamo.
+    std::map<std::u32string, std::size_t> longest_spelling;
+    for (const auto& [c, full] : rows) {
         auto& best = longest_spelling[full];
-        best = std::max(best, bytes_of(d.code_point));
+        best = std::max(best, bytes_of(c));
+    }
+    for (char32_t c = kSBase; c < kSBase + kSCount; c += kTCount) {
+        auto& best = longest_spelling[hangul(c)];
+        best = std::max(best, bytes_of(c));
     }
     std::size_t most = 0, least = 1;   // the greatest ratio, most / least
     char32_t at = 0;
-    for (const auto& d : unicode_tables::decompositions()) {
+    for (char32_t c = 0; c <= 0x10FFFF; ++c) {
+        if (c >= 0xD800 && c <= 0xDFFF) continue;   // surrogates are no scalar values
         std::string self;
-        append_utf8(d.code_point, self);
+        append_utf8(c, self);
         if (nfc(self) != self) continue;   // NFC never writes it
-        const std::u32string full(pool.data() + d.start, d.length);
+        std::u32string full;
+        if (const auto row = rows.find(c); row != rows.end()) {
+            full = row->second;
+        } else if (c >= kSBase && c < kSBase + kSCount) {
+            full = hangul(c);
+        } else {
+            full = std::u32string(1, c);
+        }
         std::vector<std::size_t> spelled(full.size() + 1, 0);   // longest spelling of full's first i
         for (std::size_t i = 1; i <= full.size(); ++i) {
             for (std::size_t j = 0; j < i; ++j) {
@@ -98,18 +124,18 @@ TEST_CASE("NFC shrinks a character's canonical equivalents at most 7 bytes to 2"
         if (spelled.back() * least > most * self.size()) {
             most = spelled.back();
             least = self.size();
-            at = d.code_point;
+            at = c;
         }
     }
     CHECK(most == 7);
     CHECK(least == 2);
-    CHECK(at == U'ΐ');
+    CHECK(at == U'\u0390');
     // The equivalent that reaches it: U+1FBE, whose decomposition is U+03B9,
     // then U+0308 and U+0301.
     CHECK(nfc("\xE1\xBE\xBE\xCC\x88\xCC\x81") == "\xCE\x90");
-    // A Hangul syllable, arithmetic and not in the tables, is at most its
-    // three 3-byte jamo: 9 bytes to 3, under 7 to 2.
-    CHECK(nfc("\xE1\x84\x92\xE1\x85\xA1\xE1\x86\xAB").size() == 3);
+    // A singleton equivalent of a character with no row of its own: U+1FEF,
+    // 3 bytes, is U+0060, 1 — 3 to 1, under 7 to 2.
+    CHECK(nfc("\xE1\xBF\xAF") == "`");
 }
 
 TEST_CASE("canonical order keeps marks of the same class in the order they came") {
