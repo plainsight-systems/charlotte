@@ -123,6 +123,7 @@ Everything else:
 | `docs/architecture/` | the design |
 | `docs/research/` | measurements and investigations, each dated, with its method and conditions |
 | `docs/process/` | decisions and the work queue |
+| `docs/debrief.md` | what we learned building it, and what a demo left on the table |
 
 ### Reading the design
 

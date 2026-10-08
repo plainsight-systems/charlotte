@@ -26,6 +26,11 @@ Each note is dated and names the machine, browser, build and commit it ran
 on. A note marked DIAGNOSTIC says where time goes, never how fast the page
 runs.
 
+## What was learned
+
+[`debrief.md`](debrief.md): the lessons, the surprises, and what a
+demonstration left on the table.
+
 ## How the project is run
 
 [`process/`](process/README.md) holds the workflow, the work queue and the
