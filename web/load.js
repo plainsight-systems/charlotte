@@ -34,7 +34,7 @@
 // FileSystemSyncAccessHandle, which only a worker may open, into the module's
 // own memory: the page's main thread reads nothing, and a copy into the heap
 // and two messages a chunk between page and worker are gone. On an Apple M3
-// Max in Chrome 152, warm, Qwen3 0.6B's 382 MB read in about 24 ms this way,
+// Max in the desktop app's Chromium 152, warm, Qwen3 0.6B's 382 MB read in about 24 ms this way,
 // against 125 ms by blob reads on the page one at a time. The load itself
 // gained less, 257 to 241 ms median of five: the page's reads had overlapped
 // the GPU process working through the previous chunk's writes, and those

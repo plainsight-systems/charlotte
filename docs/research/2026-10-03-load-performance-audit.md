@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-03.
 **Context:** Qwen3 0.6B (382 MB, Q4_0 / Q4_1 / Q6_K / F32), loaded from the
-browser's cache onto the GPU. Apple M3 Max, Chrome 152, release module, warm
+browser's cache onto the GPU. Apple M3 Max, the Claude desktop app's built-in Chromium 152 browser pane,
+not Chrome, release module, warm
 (the file in the operating system's cache), not cross-origin isolated (a
 100 µs clock, ample at these durations). Best or median of three to twelve
 runs, as marked. Cold loads were not measured: the browser cannot flush the
@@ -45,7 +46,7 @@ What bound the load next was the number of `writeBuffer` calls. The module
 issued 567 a load, one per stream of every piece; joined where they touch or
 are separated only by the plan's alignment padding they are 78, and the
 worker's side of the load went from 174 to 119 ms (medians of six runs
-before and twelve after). A `writeBuffer` call costs about half a millisecond in Chrome at
+before and twelve after). A `writeBuffer` call costs about half a millisecond in that Chromium at
 these sizes, whatever its length. The diagnostic check reads every byte back
 after the joined writes and finds the model's bytes where the plan put them.
 
@@ -72,7 +73,7 @@ counts, a guess that the load "isn't where the performance story is" went
 unchallenged, and single smoke timings (0.33 s, 1.2 s) passed for evidence.
 
 Measurement told us two things a walk could not: what a `writeBuffer` call
-costs in Chrome (about half a millisecond, whatever its size), and that the
+costs in that Chromium (about half a millisecond, whatever its size), and that the
 page's reads already overlapped the GPU's work on the previous chunk, so
 moving them saved 16 ms rather than the 100 the read stage alone promised.
 Those are magnitudes and overlap. Measurement calibrates them; it did not
@@ -97,4 +98,4 @@ or named as the remaining gap.
 - Rearranging on the GPU instead: one raw write a chunk and a compute pass,
   which would remove the writes a cut piece still takes per stream; the
   joined writes leave about three a chunk.
-- Wasm SIMD: no measurable effect on rearrangement, in Node or Chrome.
+- Wasm SIMD: no measurable effect on rearrangement, in Node or that Chromium.

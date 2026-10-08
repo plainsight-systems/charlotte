@@ -70,8 +70,8 @@ namespace bllm::kernels {
 //     checks them before it writes a step, since a kernel cannot tell an
 //     identifier past the table from one in another piece of it.
 //
-// What a launch costs, measured on the target (Chrome 152, Apple M3 Max,
-// Metal). Holding a pass's work constant at 300 workgroups and splitting it
+// What a launch costs, measured on the target (the desktop app's
+// Chromium 152, Apple M3 Max, Metal). Holding a pass's work constant at 300 workgroups and splitting it
 // into 1, 3, 10, 30, 100 and 300 dispatches, each extra dispatch adds about
 // 1.5 µs of GPU time (20 µs a pass for one dispatch, 478 µs for 300; medians
 // of 16 runs of 40 passes). Encoding from JavaScript is about 0.03 µs a

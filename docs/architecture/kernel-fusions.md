@@ -7,7 +7,8 @@ launches is part of the design, not a detail of each kernel.
 
 ## Why fusion is the lever
 
-On the target (Chrome 152, Apple M3 Max, Metal), holding a pass's work
+On the target (Apple M3 Max, Metal, measured in the desktop app's
+Chromium 152), holding a pass's work
 constant and splitting it into more dispatches adds about 1.5 µs of GPU time
 for each extra dispatch (`core/kernels/interface.h`). Reading Qwen3 0.6B's
 380 MB of weights once, which every decode step does, takes at least 0.95 ms

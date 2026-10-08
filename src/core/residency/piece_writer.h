@@ -44,10 +44,10 @@ namespace bllm::residency {
 //     reaches, and one more for each stream of a piece it cuts, rather than
 //     one for each stream of every piece: Qwen3 0.6B's 567 writes become 78.
 //     Optimization (browser): every write crosses into the browser and is
-//     validated there (WASM.2), about half a millisecond a call in Chrome on
-//     the target whatever its length, so the writes scale with buffers and
+//     validated there (WASM.2), about half a millisecond a call in the desktop
+//     app's Chromium on the target whatever its length, so the writes scale with buffers and
 //     cut pieces, not with streams or tensors. Qwen3 0.6B from the browser's
-//     cache, warm, release module, Chrome 152, Apple M3 Max, medians of six
+//     cache, warm, release module, the desktop app's Chromium 152, Apple M3 Max, medians of six
 //     runs before and twelve after: the worker's load 174 -> 119 ms, the
 //     page's 198 -> 140 ms.
 //   - Every run is copied into staging, even one already in device order
