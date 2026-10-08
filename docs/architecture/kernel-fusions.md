@@ -22,8 +22,6 @@ of them.
 
 ## What the established engines fuse
 
-Read from source on 2026-10-06.
-
 - **vLLM** (`docs/design/fusions.md`, `csrc/`): RMSNorm is a kernel of its
   own, with the residual add before it fused in (`fused_add_rms_norm`), and
   optionally the quantization after it. QK-norm and RoPE are one kernel

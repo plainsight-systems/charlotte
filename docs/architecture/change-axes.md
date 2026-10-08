@@ -85,7 +85,8 @@ one axis.
 
 The kernels are equal in structure and unequal in value. In decode the
 projections are most of the dispatches and nearly all of the weight bandwidth —
-for Qwen3-0.6B, 197 of about 295 dispatches per token — and in prefill the
+for Qwen3 0.6B, four of each layer's eight launches and the output head,
+113 of a pass's 231 ([`kernel-fusions.md`](kernel-fusions.md)) — and in prefill the
 same holds for their block form. Most kernel files are correctness surface; the
 two matmul regimes are the performance surface.
 
