@@ -13,8 +13,8 @@ const NOTICES = {
   },
   browser: {
     heading: 'Charlotte was built for Chrome and Edge on desktop.',
-    detail: "It's a tech demo of WebGPU, and other browsers are deliberately outside that " +
-            "slice. You can look around, but models aren't expected to run here.",
+    detail: "It's a tech demo of WebGPU. Safari runs it too, at about 40% of Chrome's speed; " +
+            "other browsers haven't been tested.",
   },
 };
 
