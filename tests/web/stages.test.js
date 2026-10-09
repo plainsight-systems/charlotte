@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { STAGES, nextStage, reaches } from '../../web/stages.js';
+import { STAGES, nextStage, offersDownload, reaches } from '../../web/stages.js';
 
 const verdict = {
   reached: 'download',
@@ -32,4 +32,10 @@ test('the blockers of the next stage are separated from the rest', () => {
 
 test('a model that runs has no next stage', () => {
   assert.deepEqual(nextStage({ reached: 'run', blockers: [] }), { next: undefined, blocking: [], later: [] });
+});
+
+test('a download is offered only for a model nothing blocks from running here', () => {
+  assert.equal(offersDownload({ reached: 'run', blockers: [] }), true);
+  assert.equal(offersDownload(verdict), false);
+  assert.equal(offersDownload({ reached: 'describe', blockers: [{ stage: 'fit', detail: 'needs 801 MiB' }] }), false);
 });

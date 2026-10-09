@@ -5,14 +5,15 @@
 // Renders one state object; it holds no state of its own.
 //   checking      preflight is running
 //   failed        a step failed; `action` names which
-//   downloadable  the file reads and is not cached
+//   downloadable  the file reads and is not cached; offered for download
+//                 only where it can run (stages.js's offersDownload)
 //   downloading   `received` of `total` bytes so far
 //   cached        in the cache, and read from that copy
 //   loading       `done` of `total` bytes handed to the runtime
 //   loaded        ready to chat
 
 import { h } from './dom.js';
-import { nextStage, reaches } from './stages.js';
+import { nextStage, offersDownload, reaches } from './stages.js';
 import { formatBytes, formatMemory } from './units.js';
 
 export function renderModel(element, state, actions) {
@@ -34,11 +35,13 @@ const CONTENT = {
     buttons(['Try again', retry, 'primary']),
   ],
 
-  downloadable: ({ model, verdict }, { download }) => [
-    heading(`${model.name} reads, and can be downloaded`),
-    ...stages(verdict),
-    buttons([`Download ${formatBytes(verdict.totalSize)}`, download, 'primary']),
-  ],
+  downloadable: ({ model, verdict }, { download }) => offersDownload(verdict)
+    ? [
+      heading(`${model.name} reads, and can be downloaded`),
+      ...stages(verdict),
+      buttons([`Download ${formatBytes(verdict.totalSize)}`, download, 'primary']),
+    ]
+    : [heading(`${model.name} reads, but cannot run here, so it is not offered for download`), ...stages(verdict)],
 
   downloading: ({ model, received, total }, { cancel }) => [
     heading(`Downloading ${model.name}`),
