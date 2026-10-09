@@ -31,13 +31,14 @@ WGSL pipeline was free to fuse a multiply-add its own way.
 Charlotte is R&D under Plainsight Systems LLC. The site is a static build
 hosted on GitHub Pages, deployed from `main` on every push.
 
-**Browsers:** Chrome and Edge on desktop. Phones work experimentally: on an
-iPhone, Qwen3 0.6B runs with a short context, and the larger models don't fit
-a phone's memory. Safari's WebGPU is WebKit's own implementation rather than
-Dawn, so desktop Safari is its own verification problem and isn't assumed to
-work. Getting the iPhone running meant working around three WebKit shader
-compiler bugs; [the research note](docs/research/2026-10-09-webkit-shader-compiler.md)
-has the story.
+**Browsers:** Chrome and Edge on desktop are what I built it for. Safari runs it
+too: its WebGPU is WebKit's own, not Dawn, and it gives the same answers as
+Chrome token for token, at about 40% of Chrome's speed. Phones work
+experimentally: on an iPhone, Qwen3 0.6B runs with a short context, and the
+larger models don't fit a phone's memory. Getting WebKit there meant working
+around three of its shader compiler bugs;
+[the research note](docs/research/2026-10-09-webkit-shader-compiler.md) has the
+story.
 
 ### Why Charlotte
 

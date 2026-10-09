@@ -132,3 +132,28 @@ expected. With a phone's budget capped at 512 MiB, Qwen3 0.6B loads and
 answers there, two steps in flight, so WebKit's queue did not hang on that
 turn. Untried on the phone: a larger budget, long turns, and its decode
 rate.
+
+## Desktop Safari, end to end
+
+With the fix, Safari 26.6.2 on the Mac runs the page end to end: Qwen3 0.6B
+downloads, its copy is verified, it loads under the desktop's 2 GiB budget
+with 15,172 tokens of context, and it chats. The page benchmark
+(`web/dev/benchmark.js`), the page visible throughout, no run left out,
+load average 2 to 4:
+
+| Qwen3 0.6B | Safari 26.6.2 | Chrome, the same day (above) |
+|---|---|---|
+| First token, short prompt | 29 ms (29–30) | 19.3–19.8 ms |
+| First token, 951-token prompt | 352 ms (350–353) | 285–295 ms |
+| Decode, short | 109.8 tok/s (109.6–110.1) | 251–258.5 tok/s |
+| Decode, about 1,000 positions | 105.8 tok/s (105.1–106.5) | 234–241 tok/s |
+
+Safari decodes at about 43% of Chrome's rate. Why is not measured here:
+WebKit's queue with two steps in flight, and the Metal its compiler
+generates, are where to look.
+
+What Safari computes matches. The benchmark draws greedily from a fixed
+seed; its ten measured replies in Safari, five of 256 tokens and five of
+32, are identical, by SHA-256, to the same ten in the desktop app's
+Chromium 152 — 1,440 tokens in which WebKit's kernels never pick a token
+Dawn's do not.
