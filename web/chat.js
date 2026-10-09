@@ -44,13 +44,18 @@ const PLACEHOLDER = 'Choose a model to start.';
 // { id, reply }; `cancel(id)` stops it early. `onTurn(step, message)`, if
 // given, follows each turn for the diagnostics (diagnostics_recorder.js):
 // 'start', 'text' as the reply streams, then 'done' or 'failed'.
-export function createChat(root, { generate, cancel, onTurn }) {
+// `onChooseModel`, if given, backs the empty chat's "Choose a model" button,
+// shown on a narrow screen, where the models are a drawer (drawer.js).
+export function createChat(root, { generate, cancel, onTurn, onChooseModel }) {
   let active = null;
 
   const close = () => {
     if (active !== null && active.generating !== null) cancel(active.generating);
     active = null;
-    root.replaceChildren(h('p', { className: 'empty', text: PLACEHOLDER }));
+    root.replaceChildren(h('p', { className: 'empty', text: PLACEHOLDER }),
+      onChooseModel === undefined ? null
+        : h('button', { type: 'button', className: 'action primary choose-model', text: 'Choose a model',
+          onclick: onChooseModel }));
   };
 
   const open = (model, chat) => {

@@ -18,11 +18,18 @@ const NOTICES = {
   },
 };
 
-export function showPlatformNotice(element, platform) {
+// `onDismiss`, if given, backs a "Got it" button that hides the notice; the
+// caller remembers it, so a reader who has read it gets the screen back.
+export function showPlatformNotice(element, platform, { onDismiss } = {}) {
   const notice = NOTICES[platform];
   if (notice === undefined) return;
   element.replaceChildren(
     h('p', { className: 'platform-heading', text: notice.heading }),
-    h('p', { text: notice.detail }));
+    h('p', { text: notice.detail }),
+    onDismiss === undefined ? null : h('div', { className: 'actions' },
+      h('button', { type: 'button', className: 'action', text: 'Got it', onclick: () => {
+        element.hidden = true;
+        onDismiss();
+      } })));
   element.hidden = false;
 }

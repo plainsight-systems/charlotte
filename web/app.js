@@ -8,6 +8,7 @@ import { createRecorder } from './diagnostics_recorder.js';
 import { createDiagnosticsView } from './diagnostics_view.js';
 import { showDevice, showStarting, showUnavailable } from './device_status.js';
 import { cacheKey } from './download.js';
+import { createDrawer } from './drawer.js';
 import { createModelController } from './model_controller.js';
 import { ModelCache, storageStatus } from './opfs.js';
 import { createPicker } from './picker.js';
@@ -29,7 +30,18 @@ const page = {
 };
 
 const platform = unsupportedPlatform(navigator);
-showPlatformNotice(page.platformNotice, platform);
+// The notice, until its reader dismisses it in this browser.
+const kNoticeRead = 'charlotte.platform-notice.read';
+if (readStored(kNoticeRead) !== platform) {
+  showPlatformNotice(page.platformNotice, platform, { onDismiss: () => writeStored(kNoticeRead, platform) });
+}
+
+// On a narrow screen the models are a drawer, and the chat the screen.
+const drawer = createDrawer({
+  drawer: document.querySelector('#side'), toggle: document.querySelector('#menu'),
+  scrim: document.querySelector('#scrim'), close: document.querySelector('#drawer-close'),
+  root: document.documentElement,
+});
 
 // What this visit does, kept so a page the browser kills leaves a record,
 // and the last visit's shown where it stopped or failed (diagnostics.js).
@@ -72,6 +84,7 @@ if (!('gpu' in navigator)) {
     },
     cancel: (id) => client.request(Request.CANCEL, { target: id }),
     onTurn: (step, message) => recorder.turn(step, message),
+    onChooseModel: () => drawer.open(),
   });
 
   const picker = createPicker(page.models, {
@@ -103,6 +116,7 @@ if (!('gpu' in navigator)) {
     loadPolicyOf: (model) => loadPolicyFor(model.policy?.load, platform),
     onLoaded: (model, verdict) => {
       chat.open(model, verdict.chat);
+      drawer.close();   // the chat, once there is one to have
       // ?benchmark, on the development site: the page's throughput measured
       // once the model is loaded (web/dev/benchmark.js). Elsewhere the
       // module is absent, and the failure says so.
@@ -142,5 +156,23 @@ function storageOrNull() {
     return globalThis.localStorage ?? null;
   } catch {
     return null;
+  }
+}
+
+// A per-browser convenience in localStorage, read and written where the
+// browser allows it; refused, the page simply forgets.
+function readStored(key) {
+  try {
+    return storageOrNull()?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(key, value) {
+  try {
+    storageOrNull()?.setItem(key, value);
+  } catch {
+    // Not remembered.
   }
 }

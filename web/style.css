@@ -77,10 +77,41 @@ a { color: var(--amber-text); }
   flex: 1; display: grid; grid-template-columns: 17rem 1fr; grid-template-rows: minmax(0, 1fr);
   gap: 1rem; padding: 1rem 1.25rem; min-height: 0;
 }
+/* A narrow screen gives the chat the screen: the models panel becomes a
+   drawer from the left, behind the menu button (drawer.js). */
+.menu-button, .drawer-close, .scrim, .choose-model { display: none; }
+.side-head { display: flex; align-items: center; justify-content: space-between; }
+.side-head h2 { margin: 0; }
+.side:focus { outline: none; }
 @media (max-width: 720px) {
-  body { height: auto; min-height: 100dvh; }
-  .layout { grid-template-columns: 1fr; grid-template-rows: none; }
-  .chat { height: 85dvh; }
+  .bar { padding: env(safe-area-inset-top) .75rem .5rem; gap: .5rem; }
+  .bar .brand { margin-right: auto; }
+  .menu-button, .drawer-close {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 44px; min-height: 44px; padding: 0; cursor: pointer;
+    background: none; border: 0; border-radius: 8px;
+  }
+  .menu-button { margin-left: -.5rem; align-self: flex-end; margin-bottom: -.4rem; }
+  .menu-button svg { stroke: var(--fg); stroke-width: 2; stroke-linecap: round; fill: none; }
+  .drawer-close { font-size: 1.6rem; line-height: 1; color: var(--dim); margin-right: -.5rem; }
+  .layout { grid-template-columns: 1fr; padding: .5rem; }
+  .chat { padding: .75rem; }
+  .side {
+    position: fixed; inset: 0 auto 0 0; z-index: 30; width: min(20rem, 86vw);
+    border-radius: 0 var(--radius) var(--radius) 0; border-left: 0;
+    padding: calc(env(safe-area-inset-top) + 1rem) 1rem calc(env(safe-area-inset-bottom) + 1rem);
+    transform: translateX(-105%);   /* closed, it is inert too (drawer.js) */
+    box-shadow: 0 0 2rem rgba(0, 0, 0, .35);
+  }
+  .drawer-open .side { transform: none; }
+  .scrim { display: block; position: fixed; inset: 0; z-index: 25; background: rgba(0, 0, 0, .45); }
+  .scrim[hidden] { display: none; }
+  .choose-model { display: inline-flex; margin-top: .75rem; }
+  .platform-notice, .diagnostics { margin: .5rem .5rem 0; font-size: .85rem; }
+  .foot { padding: 0 .75rem calc(env(safe-area-inset-bottom) + .5rem); font-size: .72rem; }
+}
+@media (max-width: 720px) and (prefers-reduced-motion: no-preference) {
+  .side { transition: transform .22s ease; }
 }
 .panel {
   background: var(--panel); border: 1px solid var(--line);
@@ -148,6 +179,7 @@ button, input, textarea { font: inherit; color: inherit; }
 }
 .platform-notice p { margin: 0; }
 .platform-notice .platform-heading { font: 600 1rem/1.3 var(--serif); margin-bottom: .25rem; }
+.platform-notice .actions { margin-top: .5rem; }
 
 .diagnostics {
   margin: 1rem 1.25rem 0; padding: .7rem .9rem; font-size: .9rem; display: grid; gap: .75rem;

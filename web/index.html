@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Charlotte</title>
 <link rel="stylesheet" href="./style.css">
 </head>
@@ -11,6 +11,9 @@
   Fake runtime: no model runs on this page. It exists to exercise the interface during development.
 </p>
 <header class="bar">
+  <button id="menu" class="menu-button" type="button" aria-label="Models" aria-controls="side" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
   <div class="brand">
     <svg class="spider" viewBox="0 0 24 40" width="24" height="40" aria-hidden="true">
       <line class="thread" x1="12" y1="0" x2="12" y2="18"/>
@@ -30,14 +33,18 @@
 <section id="platform-notice" class="platform-notice" role="note" hidden></section>
 <section id="diagnostics" class="diagnostics" aria-live="polite" hidden></section>
 <div class="layout">
-  <aside class="panel side" aria-label="Models">
-    <h2>Models</h2>
+  <aside id="side" class="panel side" aria-label="Models" tabindex="-1">
+    <div class="side-head">
+      <h2>Models</h2>
+      <button id="drawer-close" class="drawer-close" type="button" aria-label="Close models">×</button>
+    </div>
     <div id="models"></div>
     <div id="model" class="model-panel" aria-live="polite"></div>
     <section id="cache" class="cache" aria-label="Downloaded models"></section>
   </aside>
   <main id="chat" class="panel chat" aria-label="Chat"></main>
 </div>
+<div id="scrim" class="scrim" hidden></div>
 <footer class="foot">
   Runs entirely in your browser. Model files are downloaded from Hugging Face
   and cached on this device.
