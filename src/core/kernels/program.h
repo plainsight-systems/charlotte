@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -168,6 +169,21 @@ using StepCallback = void (*)(ProgramError error, std::string_view message, std:
 
 // The most bytes a step reads back: the draw's record.
 inline constexpr std::uint64_t kMaxReadback = 16;
+
+// A kernel as build() compiles it, for a launch: the step's declaration
+// (step.wgsl), then the kernel, then the unpack of the format it reads and
+// the pack of the format it writes, with its entry point and its override
+// constants in name order — workgroup_size always, last_token for a launch
+// of the last token, then the launch's own. Two launches with the same
+// composition share a pipeline. Exposed so a tool can hand a browser
+// exactly what the program compiles, to find which kernel its shader
+// compiler refuses (bench/kernel_dump.cpp).
+struct Composed {
+    std::string source;
+    std::string_view entry_point;
+    std::vector<std::pair<std::string_view, double>> constants;
+};
+[[nodiscard]] Composed compose(const Launch& launch);
 
 class Program {
 public:

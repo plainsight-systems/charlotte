@@ -20,3 +20,8 @@ if(BLLM_ENABLE_DIAGNOSTICS AND NOT EMSCRIPTEN)
     string(JSON BLLM_DAWN_COMMIT_VALUE GET "${BLLM_DAWN_PINS}" commit)
     target_compile_definitions(charlotte_profile_forward PRIVATE BLLM_DAWN_COMMIT="${BLLM_DAWN_COMMIT_VALUE}")
 endif()
+
+# Every kernel a model's program compiles, as the browser receives it, to
+# find which one a browser's shader compiler refuses. Runs no GPU.
+add_executable(charlotte_dump_kernels EXCLUDE_FROM_ALL kernel_dump.cpp)
+target_link_libraries(charlotte_dump_kernels PRIVATE charlotte_gpu)

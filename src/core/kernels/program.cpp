@@ -275,6 +275,25 @@ Constants constants_of(const Launch& launch) {
     return c;
 }
 
+}  // namespace
+
+Composed compose(const Launch& launch) {
+    std::string source(shaders::step);
+    source += '\n';
+    source += launch.kernel;
+    if (launch.format != nullptr) {
+        source += '\n';
+        source += launch.format->unpack_wgsl();
+    }
+    if (launch.pack_format != nullptr) {
+        source += '\n';
+        source += launch.pack_format->pack_wgsl();
+    }
+    return {std::move(source), launch.entry_point, constants_of(launch)};
+}
+
+namespace {
+
 // A distinct pipeline: the kernel's text, the format it unpacks, the format
 // it packs, its constants. The text is compared, not its address: an
 // embedded string may lie at a different address in each translation unit
@@ -441,26 +460,17 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
         // compiled once, whatever its launches, and every pipeline is asked
         // for at once, so the browser compiles them together (WASM.7).
         // The step's declaration first, binding 0 of every kernel
-        // (step.wgsl), then the kernel, then the formats it composes with.
-        std::string source(shaders::step);
-        source += '\n';
-        source += launch.kernel;
-        if (launch.format != nullptr) {
-            source += '\n';
-            source += launch.format->unpack_wgsl();
-        }
-        if (launch.pack_format != nullptr) {
-            source += '\n';
-            source += launch.pack_format->pack_wgsl();
-        }
+        // (step.wgsl), then the kernel, then the formats it composes with
+        // (compose, program.h).
+        const Composed composed = compose(launch);
         WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
-        wgsl.code = view_of(source);
+        wgsl.code = view_of(composed.source);
         WGPUShaderModuleDescriptor module_desc = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
         module_desc.nextInChain = &wgsl.chain;
         const gpu::ShaderModule module(wgpuDeviceCreateShaderModule(device, &module_desc));
 
         std::vector<WGPUConstantEntry> entries;
-        for (const auto& [name, value] : std::get<4>(key)) {
+        for (const auto& [name, value] : composed.constants) {
             WGPUConstantEntry e = WGPU_CONSTANT_ENTRY_INIT;
             e.key = view_of(name);
             e.value = value;
