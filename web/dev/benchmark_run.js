@@ -35,7 +35,10 @@ async function conditionsOf(model, verdict, sampling) {
   };
 }
 
-// One run: the request to the first TOKEN reply, then to the reply's end.
+// One run: the request to the first TOKEN reply, then to the reply's end,
+// and the reply's text: drawn greedily from a fixed seed, the same in every
+// browser whose kernels compute the same, so two browsers' texts can be
+// compared token for token.
 async function timedRun(client, scenario, n, sampling, warmup) {
   let hidden = document.visibilityState !== 'visible';
   const onVisibility = () => {
@@ -43,15 +46,16 @@ async function timedRun(client, scenario, n, sampling, warmup) {
   };
   document.addEventListener('visibilitychange', onVisibility);
   let first = null;
+  let text = '';
   const t0 = performance.now();
   try {
     const { reply } = client.send(Request.GENERATE,
       { prompt: promptFor(scenario, n), sampling, seed: SEED, maxTokens: scenario.maxTokens },
-      { onToken: () => { first ??= performance.now(); } });
+      { onToken: (piece) => { first ??= performance.now(); text += piece; } });
     const result = await reply;
     const end = performance.now();
     return { scenario: scenario.name, warmup, hidden, ttftMs: (first ?? end) - t0, decodeMs: end - (first ?? end),
-      tokens: result.tokens, promptTokens: result.promptTokens, reusedTokens: result.reusedTokens };
+      tokens: result.tokens, promptTokens: result.promptTokens, reusedTokens: result.reusedTokens, text };
   } finally {
     document.removeEventListener('visibilitychange', onVisibility);
   }
