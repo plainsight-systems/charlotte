@@ -6,7 +6,8 @@
 // A model already in the cache is checked from its copy, not the network,
 // and a fresh download is read back from the cache before it is offered.
 // Preflight and load carry the model's load policy, the same at both
-// (web/protocol.js).
+// (web/protocol.js), as `loadPolicyOf(model)` gives it — on a phone, its
+// budget capped (platform_policy.js).
 
 import { cacheKey, downloadModel } from './download.js';
 import { confirmDuplicates } from './duplicates.js';
@@ -17,7 +18,9 @@ import { cachedFileName, requestPersistence } from './opfs.js';
 import { preflight, rangesOfFile } from './preflight.js';
 import { Request } from './protocol.js';
 
-export function createModelController({ element, client, cache, onLoaded, onCacheChanged, onState }) {
+export function createModelController({
+  element, client, cache, onLoaded, onCacheChanged, onState, loadPolicyOf = (model) => model.policy?.load,
+}) {
   let state = null;
   let step = null;
 
@@ -42,7 +45,7 @@ export function createModelController({ element, client, cache, onLoaded, onCach
     fetchRange: fetchRangeOf,
     readIndex: (bytes, totalSize) => {
       const copy = bytes.slice().buffer;
-      return client.request(Request.PREFLIGHT, { bytes: copy, totalSize, policy: model.policy?.load },
+      return client.request(Request.PREFLIGHT, { bytes: copy, totalSize, policy: loadPolicyOf(model) },
         { transfer: [copy] });
     },
   });
@@ -96,7 +99,7 @@ export function createModelController({ element, client, cache, onLoaded, onCach
       const confirmed = await confirmDuplicates({ file, candidates: verdict.fit?.duplicates ?? [], signal });
       const { id, reply } = client.send(Request.LOAD,
         { name: cachedFileName(cacheKey(model)), indexBytes: verdict.indexBytes, confirmed, maxChunk: LOAD_CHUNK_BYTES,
-          policy: model.policy?.load },
+          policy: loadPolicyOf(model) },
         {
           // A diagnostic build reads every byte back after loading them.
           onProgress: ({ phase, done, total }) => {

@@ -50,7 +50,8 @@ export function createRecorder({ storage, now, userAgent, platform, onChange }) 
     modelState: (state) => {
       const model = state.model === undefined ? session.model
         : { id: state.model.id, name: state.model.name, sizeBytes: state.model.sizeBytes,
-            contextOffered: state.verdict?.fit?.contextOffered ?? null };
+            contextOffered: state.verdict?.fit?.contextOffered ?? null,
+            memoryBudget: state.verdict?.fit?.memoryBudget ?? null };
       const entered = phaseOfModelState(state);
       if (entered === null) return;
       const next = withModel(session, model);

@@ -12,6 +12,7 @@ import { createModelController } from './model_controller.js';
 import { ModelCache, storageStatus } from './opfs.js';
 import { createPicker } from './picker.js';
 import { unsupportedPlatform } from './platform.js';
+import { loadPolicyFor } from './platform_policy.js';
 import { showPlatformNotice } from './platform_notice.js';
 import { Request } from './protocol.js';
 import { WorkerClient } from './worker_client.js';
@@ -99,6 +100,7 @@ if (!('gpu' in navigator)) {
     cache,
     onCacheChanged: refreshCache,
     onState: (state) => recorder.modelState(state),
+    loadPolicyOf: (model) => loadPolicyFor(model.policy?.load, platform),
     onLoaded: (model, verdict) => {
       chat.open(model, verdict.chat);
       // ?benchmark, on the development site: the page's throughput measured
