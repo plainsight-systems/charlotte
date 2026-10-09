@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "core/diagnostics.h"
 #include "core/gpu/wgpu_handles.h"
@@ -55,6 +56,37 @@ struct DeviceStatus {
     bool lost = false;
     WGPUDeviceLostReason reason = WGPUDeviceLostReason_Unknown;
     std::string message;
+};
+
+// What a device reports unprompted, as it happens, to whoever asked for it
+// (Device::request): an error no error scope caught, and the device's loss.
+// It is how a failure no call returns — a device lost while idle, an error
+// outside every scope — reaches the page, not the worker's console alone. It
+// is failure reporting, not instrumentation: it costs nothing until a device
+// errs or is lost, so every build carries it (TLM.1 is about cost paid on
+// every cycle; this pays none).
+//
+//   - Uncaptured: `code` is the WGPUErrorType; it may come many times.
+//   - Lost: `code` is the WGPUDeviceLostReason, once, as DeviceStatus records
+//     it — on a loss, on the device's destruction, or on a failed creation.
+//   - `message` is WebGPU's, valid only during the call: the sink copies what
+//     it keeps (CP.31).
+//   - The sink may run on another thread natively (callback_mode.h), so it
+//     touches no state shared with other threads (CP.1, CP.3); in the browser
+//     the event loop runs it.
+//   - The sink and its userdata must outlive every callback (Discussion:
+//     never let a pointer outlive what it points to) — the lost callback runs
+//     once, perhaps after the Device is gone.
+struct DeviceEvent {
+    enum class Kind { Uncaptured, Lost };
+    Kind kind;
+    int code;
+    std::string_view message;
+};
+
+struct DeviceEvents {
+    void (*sink)(const DeviceEvent& event, void* userdata) = nullptr;
+    void* userdata = nullptr;
 };
 
 // Owns a WebGPU instance, adapter and device. Every handle is an RAII alias,
@@ -115,13 +147,17 @@ public:
     // Dawn can hand one out. A harness that ran on it would report results it
     // never computed — the self-check reads back zeros and fails, but a test
     // that checked less would pass. Tested natively by asking for it.
+    //
+    // `events`, if it names a sink, hears the device's uncaptured errors and
+    // its loss (DeviceEvents).
     static void request(WGPUInstance instance, RequestCallback callback, void* userdata,
-                        const WGPURequestAdapterOptions* options = nullptr);
+                        const WGPURequestAdapterOptions* options = nullptr, DeviceEvents events = {});
 
 #if BLLM_DIAGNOSTICS_ENABLED
     // The same, asking for what `diagnostic` names as well.
     static void request(WGPUInstance instance, RequestCallback callback, void* userdata,
-                        const WGPURequestAdapterOptions* options, const DiagnosticRequest& diagnostic);
+                        const WGPURequestAdapterOptions* options, const DiagnosticRequest& diagnostic,
+                        DeviceEvents events = {});
 
     // Whether the device granted timestamp queries, and timestamps inside a
     // pass.
@@ -131,7 +167,7 @@ public:
 
     // The same, from an instance of its own: the browser's path, where the
     // event loop runs every callback and nothing else needs the instance.
-    static void request(RequestCallback callback, void* userdata);
+    static void request(RequestCallback callback, void* userdata, DeviceEvents events = {});
 
     ~Device() = default;
     Device(const Device&) = delete;
@@ -167,12 +203,17 @@ private:
     friend struct PendingDeviceRequest;
 #if BLLM_DIAGNOSTICS_ENABLED
     static void request_with(WGPUInstance instance, RequestCallback callback, void* userdata,
-                             const WGPURequestAdapterOptions* options, const DiagnosticRequest* diagnostic);
+                             const WGPURequestAdapterOptions* options, const DiagnosticRequest* diagnostic,
+                             DeviceEvents events);
 #endif
 
     // Declaration order is release order reversed by the compiler: members are
     // destroyed bottom-up, so queue releases before device, device before
     // adapter, adapter before instance.
+    // The sink, if any, shared with the device-lost callback, which may run
+    // after the Device is gone; declared before the device, so it is released
+    // after it and outlives every uncaptured error.
+    std::shared_ptr<const DeviceEvents> events_;
     Instance instance_;
     Adapter adapter_;
     DeviceHandle device_;

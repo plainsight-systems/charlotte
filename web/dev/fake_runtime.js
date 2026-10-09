@@ -18,9 +18,10 @@ const REPLY = 'This reply comes from the fake runtime, not from a model. ' +
   'It streams a word at a time so the chat can be exercised. ';
 const WORD_DELAY_MS = 40;
 
-export async function createRuntime({ onDevice, runBench }) {
+export async function createRuntime({ onDevice, onDeviceEvent, runBench }) {
   const real = await createWasmRuntime({
     onDevice: (device) => onDevice({ ...device, fake: true }),
+    onDeviceEvent,
     runBench,
   });
   const cancelled = new Set();

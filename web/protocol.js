@@ -37,4 +37,8 @@ export const Reply = Object.freeze({
 export const Notice = Object.freeze({
   // The GPU device was acquired and checked, or could not be.
   DEVICE: 'device',
+  // The device reported, unprompted, an error no scope caught or its loss:
+  // { kind: 'uncaptured', type, message } or { kind: 'lost', reason, message }
+  // (src/wasm/bindings.cpp). What no reply carries — a loss between turns.
+  DEVICE_EVENT: 'device-event',
 });

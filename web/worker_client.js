@@ -22,12 +22,14 @@ export class WorkerError extends Error {
 export class WorkerClient {
   #port;
   #onDevice;
+  #onDeviceEvent;
   #nextId = 1;
   #pending = new Map();
 
-  constructor(port, { onDevice }) {
+  constructor(port, { onDevice, onDeviceEvent }) {
     this.#port = port;
     this.#onDevice = onDevice;
+    this.#onDeviceEvent = onDeviceEvent;
     port.addEventListener('message', (event) => this.#receive(event.data));
     port.start?.();
   }
@@ -59,6 +61,10 @@ export class WorkerClient {
   #receive(message) {
     if (message.kind === Notice.DEVICE) {
       this.#onDevice(message.device);
+      return;
+    }
+    if (message.kind === Notice.DEVICE_EVENT) {
+      this.#onDeviceEvent?.(message.event);
       return;
     }
     const pending = this.#pending.get(message.id);

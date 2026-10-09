@@ -20,6 +20,16 @@
 // Every decision about that state is core's; this file only holds it and
 // translates.
 //
+// The device the self-check requests reports its uncaptured errors and its
+// loss as they happen (gpu/device.h's DeviceEvents), each crossing once to
+// globalThis.bllmOnDeviceEvent as JSON: {"kind":"uncaptured","type",
+// "message"} with the type validation, out-of-memory or internal, or
+// {"kind":"lost","reason","message"} with the reason unknown, destroyed,
+// callback-cancelled or failed-creation. They are what no call returns — a
+// device lost between turns, an error outside every scope — so the page can
+// show and keep them (web/diagnostics.js). The browser's event loop runs the
+// sink; it holds no state.
+//
 // Diagnostic builds only, for a page served with ?profile from the
 // diagnostic site (web/dev/step_profile.js), never the deployed one's:
 //   bllm_run_profile_check()
@@ -218,6 +228,47 @@ std::string json_escape(const std::string& in) {
     }
     return out;
 }
+
+// A device event, as JSON, to the worker (the header above).
+EM_JS(void, bllm_device_event, (const char* json), {
+    const text = UTF8ToString(json);
+    if (typeof globalThis.bllmOnDeviceEvent === 'function') {
+        globalThis.bllmOnDeviceEvent(JSON.parse(text));
+    } else {
+        console.error('bllm: no device event handler registered', text);
+    }
+});
+
+const char* error_type_name(int type) {
+    switch (type) {
+        case WGPUErrorType_Validation: return "validation";
+        case WGPUErrorType_OutOfMemory: return "out-of-memory";
+        case WGPUErrorType_Internal: return "internal";
+        default: return "unknown";
+    }
+}
+
+const char* lost_reason_name(int reason) {
+    switch (reason) {
+        case WGPUDeviceLostReason_Destroyed: return "destroyed";
+        case WGPUDeviceLostReason_CallbackCancelled: return "callback-cancelled";
+        case WGPUDeviceLostReason_FailedCreation: return "failed-creation";
+        default: return "unknown";
+    }
+}
+
+void on_device_event(const bllm::gpu::DeviceEvent& event, void*) {
+    using Kind = bllm::gpu::DeviceEvent::Kind;
+    const std::string message = json_escape(std::string(event.message));
+    const std::string json = event.kind == Kind::Uncaptured
+        ? std::string("{\"kind\":\"uncaptured\",\"type\":\"") + error_type_name(event.code) +
+              "\",\"message\":\"" + message + "\"}"
+        : std::string("{\"kind\":\"lost\",\"reason\":\"") + lost_reason_name(event.code) +
+              "\",\"message\":\"" + message + "\"}";
+    bllm_device_event(json.c_str());
+}
+
+constexpr bllm::gpu::DeviceEvents kDeviceEvents{.sink = on_device_event, .userdata = nullptr};
 
 // Delivers a JSON result to the page. Defined in JS because the page owns
 // presentation; C++ owns only what happened.
@@ -806,7 +857,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_run_self_check() {
     pending_generation() = generation;
     timeout_id() = emscripten_set_timeout(on_timeout, kRunTimeoutMs,
                                           to_userdata(generation));
-    bllm::gpu::Device::request(on_device, to_userdata(generation));
+    bllm::gpu::Device::request(on_device, to_userdata(generation), kDeviceEvents);
 }
 
 // Reads the index from the front of a model file and answers with the
@@ -1116,7 +1167,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_run_profile_check() {
     timeout_id() = emscripten_set_timeout(on_timeout, kRunTimeoutMs, to_userdata(generation));
     const bllm::gpu::Instance instance{wgpuCreateInstance(nullptr)};
     bllm::gpu::Device::request(instance.get(), on_device, to_userdata(generation), nullptr,
-                               bllm::gpu::DiagnosticRequest{.timestamps = true});
+                               bllm::gpu::DiagnosticRequest{.timestamps = true}, kDeviceEvents);
 }
 
 // Sets the loaded model's step observer, or clears it: 1 done, 0 refused —

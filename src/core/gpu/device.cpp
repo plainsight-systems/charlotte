@@ -40,23 +40,35 @@ const char* backend_name(WGPUBackendType type) {
 // a failed pipeline would surface only as wrong output much later.
 //
 // It runs spontaneously, natively perhaps on another thread
-// (callback_mode.h), so it touches no harness state: it only writes to
-// stderr. What the harness must act on is caught by an error scope.
+// (callback_mode.h), so it touches no harness state: it writes to stderr and
+// tells the requester's sink, if any (device.h's DeviceEvents), which the
+// Device keeps alive while it is. What the harness must act on is caught by
+// an error scope.
 void on_uncaptured_error(WGPUDevice const*, WGPUErrorType type,
-                         WGPUStringView message, void*, void*) {
-    std::fprintf(stderr, "[webgpu] uncaptured error (type %d): %s\n",
-                 static_cast<int>(type), to_string(message).c_str());
+                         WGPUStringView message, void* events, void*) {
+    const std::string text = to_string(message);
+    std::fprintf(stderr, "[webgpu] uncaptured error (type %d): %s\n", static_cast<int>(type), text.c_str());
+    const auto* sink = static_cast<const DeviceEvents*>(events);
+    if (sink != nullptr) {
+        sink->sink(DeviceEvent{DeviceEvent::Kind::Uncaptured, static_cast<int>(type), text}, sink->userdata);
+    }
 }
 
-// Records the loss in the status the callback was given, then releases the
-// callback's reference to it. WebGPU runs this exactly once per device.
+// Records the loss in the status the callback was given and tells the sink,
+// if any, then releases the callback's references to both. WebGPU runs this
+// exactly once per device.
 void on_device_lost(WGPUDevice const*, WGPUDeviceLostReason reason, WGPUStringView message, void* status,
-                    void*) {
+                    void* events) {
     const std::unique_ptr<std::shared_ptr<DeviceStatus>> held{static_cast<std::shared_ptr<DeviceStatus>*>(status)};
+    const std::unique_ptr<std::shared_ptr<const DeviceEvents>> told{
+        static_cast<std::shared_ptr<const DeviceEvents>*>(events)};
     DeviceStatus& s = **held;
     s.lost = true;
     s.reason = reason;
     s.message = to_string(message);
+    if (told != nullptr && *told != nullptr) {
+        (*told)->sink(DeviceEvent{DeviceEvent::Kind::Lost, static_cast<int>(reason), s.message}, (*told)->userdata);
+    }
 }
 
 // True when every limit the harness requires was actually granted.
@@ -115,13 +127,13 @@ struct PendingDeviceRequest {
     }
 };
 
-void Device::request(RequestCallback callback, void* userdata) {
+void Device::request(RequestCallback callback, void* userdata, DeviceEvents events) {
     const Instance instance{wgpuCreateInstance(nullptr)};
     if (!instance) {
         callback(nullptr, "could not create a WebGPU instance; this browser may not support WebGPU", userdata);
         return;
     }
-    request(instance.get(), callback, userdata);
+    request(instance.get(), callback, userdata, nullptr, events);
 }
 
 #if BLLM_DIAGNOSTICS_ENABLED
@@ -140,19 +152,21 @@ constexpr const char* kUnrounded[] = {"timestamp_quantization"};
 }  // namespace
 
 void Device::request(WGPUInstance instance, RequestCallback callback, void* userdata,
-                     const WGPURequestAdapterOptions* options, const DiagnosticRequest& diagnostic) {
-    request_with(instance, callback, userdata, options, &diagnostic);
+                     const WGPURequestAdapterOptions* options, const DiagnosticRequest& diagnostic,
+                     DeviceEvents events) {
+    request_with(instance, callback, userdata, options, &diagnostic, events);
 }
 #endif
 
 void Device::request(WGPUInstance instance, RequestCallback callback, void* userdata,
-                     const WGPURequestAdapterOptions* options) {
+                     const WGPURequestAdapterOptions* options, DeviceEvents events) {
 #if BLLM_DIAGNOSTICS_ENABLED
-    request_with(instance, callback, userdata, options, nullptr);
+    request_with(instance, callback, userdata, options, nullptr, events);
 }
 
 void Device::request_with(WGPUInstance instance, RequestCallback callback, void* userdata,
-                          const WGPURequestAdapterOptions* options, const DiagnosticRequest* diagnostic) {
+                          const WGPURequestAdapterOptions* options, const DiagnosticRequest* diagnostic,
+                          DeviceEvents events) {
 #endif
     if (instance == nullptr) {
         callback(nullptr, "no WebGPU instance was given", userdata);
@@ -169,6 +183,7 @@ void Device::request_with(WGPUInstance instance, RequestCallback callback, void*
         .userdata = userdata};
 
     pending->device->instance_ = retain(instance);   // the Device's own reference
+    if (events.sink != nullptr) pending->device->events_ = std::make_shared<const DeviceEvents>(events);
 #if BLLM_DIAGNOSTICS_ENABLED
     if (diagnostic != nullptr && diagnostic->timestamps) {
         pending->diagnostic = *diagnostic;
@@ -252,6 +267,7 @@ void Device::request_with(WGPUInstance instance, RequestCallback callback, void*
 
         WGPUDeviceDescriptor device_desc = {};
         device_desc.uncapturedErrorCallbackInfo.callback = on_uncaptured_error;
+        device_desc.uncapturedErrorCallbackInfo.userdata1 = const_cast<DeviceEvents*>(p->device->events_.get());
         device_desc.requiredLimits = &required;
 #if BLLM_DIAGNOSTICS_ENABLED
         if (p->diagnostic.timestamps) {
@@ -281,6 +297,8 @@ void Device::request_with(WGPUInstance instance, RequestCallback callback, void*
         device_desc.deviceLostCallbackInfo.mode = kCallbackMode;
         device_desc.deviceLostCallbackInfo.callback = on_device_lost;
         device_desc.deviceLostCallbackInfo.userdata1 = new std::shared_ptr<DeviceStatus>(p->device->status_);
+        device_desc.deviceLostCallbackInfo.userdata2 =
+            p->device->events_ != nullptr ? new std::shared_ptr<const DeviceEvents>(p->device->events_) : nullptr;
 
         WGPURequestDeviceCallbackInfo device_cb = {};
         device_cb.mode = kCallbackMode;

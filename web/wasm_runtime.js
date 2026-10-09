@@ -31,7 +31,7 @@ import { streamFile } from './load.js';
 // With `profileSteps` (?profile, a diagnostic build's alone), the device is
 // asked for timestamp queries, each load sets the runtime's step observer,
 // and a turn's result carries its steps (web/dev/step_profile.js).
-export async function createRuntime({ onDevice, runBench, profileSteps = false }) {
+export async function createRuntime({ onDevice, onDeviceEvent, runBench, profileSteps = false }) {
   // The device's granted limits, once the device check reports: what preflight
   // judges fit against. Null when no device was acquired.
   let reportLimits;
@@ -42,6 +42,8 @@ export async function createRuntime({ onDevice, runBench, profileSteps = false }
     reportLimits(device.ok && device.limits !== undefined ? device.limits : null);
     onDevice(device);
   };
+  // The device's uncaptured errors and its loss, as the module reports them.
+  globalThis.bllmOnDeviceEvent = (event) => onDeviceEvent?.(event);
   globalThis.bllmOnReply = answer;
   globalThis.bllmOnText = (call, text) => streams.get(call)?.(text);
 

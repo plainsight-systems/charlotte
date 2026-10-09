@@ -72,6 +72,19 @@ test('a DEVICE notice reaches the device callback', async () => {
   port1.close(); port2.close();
 });
 
+test('a DEVICE_EVENT notice reaches the device-event callback, not a request', async () => {
+  let received;
+  const { port1, port2 } = new MessageChannel();
+  const done = new Promise((resolve) => {
+    new WorkerClient(port1, { onDevice: () => {}, onDeviceEvent: (event) => { received = event; resolve(); } });
+  });
+  const lost = { kind: 'lost', reason: 'unknown', message: 'the GPU process went away' };
+  port2.postMessage({ kind: Notice.DEVICE_EVENT, event: lost });
+  await done;
+  assert.deepEqual(received, lost);
+  port1.close(); port2.close();
+});
+
 test('failAll rejects every waiting request', async () => {
   const { client, close } = connect(() => {});
   const waiting = [client.request('a'), client.request('b')];

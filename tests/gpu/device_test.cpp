@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "core/gpu/callback_mode.h"
 #include "core/gpu/device.h"
@@ -89,6 +90,63 @@ TEST_CASE("a lost device says so, and why, even to holders that outlive it") {
 
     // The status outlives the Device for whoever holds it.
     device.reset();
+    CHECK(status->lost);
+}
+
+TEST_CASE("a device's uncaptured errors and its loss reach the requester's sink, the loss once") {
+    // What reaches the page when no call returns the failure (device.h's
+    // DeviceEvents). Outlives the device, as the sink must.
+    struct Heard {
+        std::vector<std::pair<gpu::DeviceEvent::Kind, int>> events;
+        std::string uncaptured;
+        bool erred = false;
+        bool lost = false;
+    } heard;
+    const gpu::DeviceEvents events{
+        .sink =
+            [](const gpu::DeviceEvent& event, void* userdata) {
+                auto& h = *static_cast<Heard*>(userdata);
+                h.events.emplace_back(event.kind, event.code);
+                if (event.kind == gpu::DeviceEvent::Kind::Uncaptured) {
+                    h.uncaptured = std::string(event.message);
+                    h.erred = true;
+                }
+                if (event.kind == gpu::DeviceEvent::Kind::Lost) h.lost = true;
+            },
+        .userdata = &heard};
+
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    REQUIRE(instance);
+    Acquired acquired;
+    gpu::Device::request(
+        instance.get(),
+        [](std::unique_ptr<gpu::Device> device, const char* error, void* userdata) {
+            auto& a = *static_cast<Acquired*>(userdata);
+            a.device = std::move(device);
+            if (error != nullptr) a.error = error;
+            a.done = true;
+        },
+        &acquired, nullptr, events);
+    pump_until(instance.get(), acquired.done, "a device");
+    REQUIRE_MESSAGE(acquired.device != nullptr, acquired.error);
+    CHECK(heard.events.empty());
+
+    // Outside every error scope: map-read storage is invalid usage.
+    WGPUBufferDescriptor desc = WGPU_BUFFER_DESCRIPTOR_INIT;
+    desc.size = 4;
+    desc.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_Storage;
+    const gpu::Buffer invalid{wgpuDeviceCreateBuffer(acquired.device->handle(), &desc)};
+    pump_until(instance.get(), heard.erred, "the uncaptured error");
+    REQUIRE(heard.events.size() == 1);
+    CHECK(heard.events[0] == std::pair{gpu::DeviceEvent::Kind::Uncaptured, static_cast<int>(WGPUErrorType_Validation)});
+    CHECK_FALSE(heard.uncaptured.empty());
+
+    // The loss, once, with its reason — and after the Device is gone.
+    const auto status = acquired.device->status();
+    acquired.device.reset();
+    pump_until(instance.get(), heard.lost, "the device-lost callback");
+    REQUIRE(heard.events.size() == 2);
+    CHECK(heard.events[1] == std::pair{gpu::DeviceEvent::Kind::Lost, static_cast<int>(WGPUDeviceLostReason_Destroyed)});
     CHECK(status->lost);
 }
 
