@@ -398,3 +398,32 @@ TEST_CASE("a step past position 2^24 is refused, saying so") {
     CHECK(past.error == kernels::ProgramError::Step);
     CHECK_MESSAGE(past.message.find("2^24") != std::string::npos, past.message);
 }
+
+TEST_CASE("compose uses every constant a pipeline is given in its entry point, which WebKit requires") {
+    // Workaround (browser), program.h's compose: WebKit fails a pipeline
+    // given a constant for an override its entry point does not use.
+    constexpr std::string_view kTwoEntries =
+        "override columns: u32 = 1u;\n"
+        "@compute @workgroup_size(workgroup_size)\n"
+        "fn other(@builtin(local_invocation_index) t: u32) {\n}\n"
+        "@compute @workgroup_size(workgroup_size)\n"
+        "fn second(@builtin(local_invocation_index) t: u32,\n"
+        "          @builtin(workgroup_id) wg: vec3<u32>) {\n"
+        "    _ = t;\n}\n";
+    kernels::Launch launch{kTwoEntries, nullptr, std::vector<std::byte>(4), {}, 1, 64, kernels::Rows::LastToken,
+                           {{"columns", 7.0}}};
+    launch.entry_point = "second";
+    const kernels::Composed composed = kernels::compose(launch);
+    // In name order, the program's own among them.
+    CHECK(composed.constants.size() == 3);
+    CHECK(composed.source.find("          @builtin(workgroup_id) wg: vec3<u32>) {\n"
+                               "    _ = columns;\n"
+                               "    _ = last_token;\n"
+                               "    _ = workgroup_size;\n"
+                               "    _ = t;\n}") != std::string::npos);
+    // The other entry point is left as it was.
+    CHECK(composed.source.find("fn other(@builtin(local_invocation_index) t: u32) {\n}") != std::string::npos);
+
+    launch.entry_point = "absent";
+    CHECK(kernels::compose(launch).source.find("_ = columns;") == std::string::npos);
+}

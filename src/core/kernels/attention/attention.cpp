@@ -34,10 +34,22 @@ std::array<Launch, 2> attention_launches(const AttentionLaunch& a) {
     const Constants constants{a.cache.slots, layer.attention_window,
                               static_cast<float>(a.scale * std::numbers::log2e), 0};
     const auto bytes = std::as_bytes(std::span(&constants, 1));
+    // The tile's shape, derived here rather than in the kernel: WebKit
+    // fails overrides initialized from overrides, and workgroup arrays
+    // sized by expressions of them (attention.wgsl).
+    const std::uint32_t queries_per_tile = 1024 / d;   // M
+    const std::uint32_t keys_per_tile = 2048 / d;      // B
     const std::vector<Override> shape{{"head_dimension", static_cast<double>(d)},
                                       {"query_heads", static_cast<double>(layer.query_heads)},
                                       {"key_value_heads", static_cast<double>(layer.key_value_heads)},
-                                      {"partial_rows", static_cast<double>(a.partial_rows)}};
+                                      {"partial_rows", static_cast<double>(a.partial_rows)},
+                                      {"queries_per_tile", static_cast<double>(queries_per_tile)},
+                                      {"keys_per_tile", static_cast<double>(keys_per_tile)},
+                                      {"group", static_cast<double>(group)},
+                                      {"rows_per_tile", static_cast<double>(rows_per_tile)},
+                                      {"lanes_per_query", static_cast<double>(kWorkgroupSize / queries_per_tile)},
+                                      {"k_tile_words", static_cast<double>(keys_per_tile * (d / 2 + 1))},
+                                      {"p_tile_floats", static_cast<double>(queries_per_tile * keys_per_tile)}};
 
     Launch attend{shaders::attention,
                   nullptr,

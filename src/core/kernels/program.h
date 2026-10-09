@@ -178,6 +178,15 @@ inline constexpr std::uint64_t kMaxReadback = 16;
 // composition share a pipeline. Exposed so a tool can hand a browser
 // exactly what the program compiles, to find which kernel its shader
 // compiler refuses (bench/kernel_dump.cpp).
+//
+// Workaround (browser): WebKit fails a pipeline given a constant for an
+// override its entry point does not use ("Compute library failed
+// creation"), though WebGPU allows any override the module declares — and a
+// module's entry points share its overrides, and the program sets
+// last_token on every launch of the last token. So the entry point's body
+// begins with a phony assignment of each constant the pipeline is given,
+// `_ = name;`, which uses it and computes nothing. An entry point not found
+// is left as it is, for the pipeline to refuse by name.
 struct Composed {
     std::string source;
     std::string_view entry_point;

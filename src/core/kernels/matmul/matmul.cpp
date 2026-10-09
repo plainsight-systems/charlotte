@@ -92,6 +92,9 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     const std::uint32_t set_rows = gated ? 4 : set_rows_for(rows);
     std::vector<Override> decode_overrides = overrides;
     decode_overrides.push_back({"set_rows", static_cast<double>(set_rows)});
+    // x_tile's length, set on decode too, which never touches it: WebKit
+    // sizes no workgroup array by an override's default (matmul.wgsl).
+    decode_overrides.push_back({"x_tile_vec4s", static_cast<double>(8 * kTiles.back().tokens)});
     Launch decode{shaders::matmul,
                   format,
                   std::vector<std::byte>(bytes.begin(), bytes.end()),
@@ -114,6 +117,7 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     for (const auto [tile, steps] : kTiles) {
         std::vector<Override> with_tile = overrides;
         with_tile.push_back({"tile_tokens", static_cast<double>(tile)});
+        with_tile.push_back({"x_tile_vec4s", static_cast<double>(8 * tile)});   // matmul.wgsl's x_tile
         const std::uint32_t invocations = (tile / kMicro) * (kTileOutputs / kMicro);
         Launch prefill{shaders::matmul,
                        format,

@@ -26,12 +26,20 @@ override head_dimension: u32 = 128;
 override query_heads: u32 = 16;
 override key_value_heads: u32 = 8;
 
-// Derived from the shape when the pipeline is built; never set.
-override queries_per_tile: u32 = 1024u / head_dimension;               // M
-override keys_per_tile: u32 = 2048u / head_dimension;                  // B
-override group: u32 = query_heads / key_value_heads;                   // G
-override rows_per_tile: u32 = queries_per_tile / group;                // R
-override lanes_per_query: u32 = workgroup_size / queries_per_tile;     // 64 / M
+// Derived from the shape, by the launcher (attention.cpp), and the sizes of
+// the workgroup arrays they shape with them. Workaround (browser): WebKit
+// fails a pipeline whose override is initialized from other overrides
+// ("Failed to evaluate override value") or whose workgroup array is sized
+// by an expression of them, or by one left at its default ("failed to
+// evaluate override expression"), so each is a plain override, set on every
+// launch; the defaults are Qwen3's, as above.
+override queries_per_tile: u32 = 8u;      // M, 1024 / d
+override keys_per_tile: u32 = 16u;        // B, 2048 / d
+override group: u32 = 2u;                 // G, query heads / key-value heads
+override rows_per_tile: u32 = 4u;         // R, M / G
+override lanes_per_query: u32 = 8u;       // 64 / M
+override k_tile_words: u32 = 1040u;       // B × (d / 2 + 1)
+override p_tile_floats: u32 = 128u;       // M × B
 
 override partial_rows: u32 = 512u;   // the partial buffers' query rows
 
@@ -58,9 +66,9 @@ const kChunkKeys = 64u;
 // conflicts; the tile of values as stored, B × d / 2 = 1,024 words; the
 // tile's scores, then weights; and each query's chunk statistics.
 var<workgroup> q_tile: array<f32, 1024>;
-var<workgroup> k_tile: array<u32, keys_per_tile * (head_dimension / 2u + 1u)>;
+var<workgroup> k_tile: array<u32, k_tile_words>;
 var<workgroup> v_tile: array<u32, 1024>;
-var<workgroup> p_tile: array<f32, queries_per_tile * keys_per_tile>;
+var<workgroup> p_tile: array<f32, p_tile_floats>;
 var<workgroup> chunk_live: array<u32, queries_per_tile>;
 var<workgroup> chunk_m: array<f32, queries_per_tile>;
 var<workgroup> chunk_l: array<f32, queries_per_tile>;

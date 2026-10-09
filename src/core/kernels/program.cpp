@@ -277,6 +277,31 @@ Constants constants_of(const Launch& launch) {
 
 }  // namespace
 
+namespace {
+
+// The source with `_ = name;` for each constant at the start of the entry
+// point's body (compose, program.h); unchanged where `fn <entry>(` is not
+// found.
+std::string with_constants_used(std::string source, std::string_view entry_point,
+                                const std::vector<std::pair<std::string_view, double>>& constants) {
+    const std::string signature = "fn " + std::string(entry_point) + "(";
+    std::size_t at = source.find(signature);
+    if (at == std::string::npos) return source;
+    at += signature.size();
+    for (int depth = 1; at < source.size() && depth > 0; ++at) {
+        if (source[at] == '(') ++depth;
+        if (source[at] == ')') --depth;
+    }
+    const std::size_t body = source.find('{', at);
+    if (body == std::string::npos) return source;
+    std::string uses;
+    for (const auto& [name, value] : constants) uses += "\n    _ = " + std::string(name) + ";";
+    source.insert(body + 1, uses);
+    return source;
+}
+
+}  // namespace
+
 Composed compose(const Launch& launch) {
     std::string source(shaders::step);
     source += '\n';
@@ -289,7 +314,9 @@ Composed compose(const Launch& launch) {
         source += '\n';
         source += launch.pack_format->pack_wgsl();
     }
-    return {std::move(source), launch.entry_point, constants_of(launch)};
+    Constants constants = constants_of(launch);
+    source = with_constants_used(std::move(source), launch.entry_point, constants);
+    return {std::move(source), launch.entry_point, std::move(constants)};
 }
 
 namespace {

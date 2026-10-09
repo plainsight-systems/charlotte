@@ -52,7 +52,13 @@ var<workgroup> partials: array<f32, 256>;
 // share a vector: token i's k-quad v at x_tile[8i + v], row slot s's at
 // w_tile[9s + v], each slot's row padded a vec4 so the 16 slots a read
 // takes, s = oq + 16j, fall in distinct banks.
-var<workgroup> x_tile: array<vec4<f32>, 8u * tile_tokens>;
+// Workaround (browser): WebKit fails a pipeline whose workgroup array is
+// sized by an expression of overrides, or by an override left at its
+// default, so x_tile's length, 8 × tile_tokens, is its own override, set by
+// the launcher (matmul.cpp) on every launch: with tile_tokens for prefill,
+// and the largest tile's for decode, which never touches x_tile.
+override x_tile_vec4s: u32 = 256u;
+var<workgroup> x_tile: array<vec4<f32>, x_tile_vec4s>;
 var<workgroup> w_tile: array<vec4<f32>, 576>;
 
 const kTileRows = 64u;       // a prefill tile's outputs
