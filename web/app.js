@@ -4,6 +4,8 @@
 import { renderCache } from './cache_view.js';
 import { loadCatalog } from './catalog.js';
 import { createChat } from './chat.js';
+import { createRecorder } from './diagnostics_recorder.js';
+import { createDiagnosticsView } from './diagnostics_view.js';
 import { showDevice, showStarting, showUnavailable } from './device_status.js';
 import { cacheKey } from './download.js';
 import { createModelController } from './model_controller.js';
@@ -18,13 +20,27 @@ const page = {
   deviceStatus: document.querySelector('#device-status'),
   fakeBanner: document.querySelector('#fake-banner'),
   platformNotice: document.querySelector('#platform-notice'),
+  diagnostics: document.querySelector('#diagnostics'),
   models: document.querySelector('#models'),
   model: document.querySelector('#model'),
   cache: document.querySelector('#cache'),
   chat: document.querySelector('#chat'),
 };
 
-showPlatformNotice(page.platformNotice, unsupportedPlatform(navigator));
+const platform = unsupportedPlatform(navigator);
+showPlatformNotice(page.platformNotice, platform);
+
+// What this visit does, kept so a page the browser kills leaves a record,
+// and the last visit's shown where it stopped or failed (diagnostics.js).
+const diagnosticsView = createDiagnosticsView(page.diagnostics);
+const recorder = createRecorder({
+  storage: storageOrNull(), now: () => Date.now(), userAgent: navigator.userAgent, platform,
+  onChange: (session) => diagnosticsView.render({ previous: recorder.previous, session, now: Date.now() }),
+});
+diagnosticsView.render({ previous: recorder.previous, session: recorder.current(), now: Date.now() });
+// A stall is the absence of change, so it is looked for, not told.
+setInterval(() => diagnosticsView.render({ previous: recorder.previous, session: recorder.current(), now: Date.now() }),
+  2000);
 
 if (!('gpu' in navigator)) {
   showUnavailable(page.deviceStatus,
@@ -54,6 +70,7 @@ if (!('gpu' in navigator)) {
       return sent;
     },
     cancel: (id) => client.request(Request.CANCEL, { target: id }),
+    onTurn: (step, message) => recorder.turn(step, message),
   });
 
   const picker = createPicker(page.models, {
@@ -81,6 +98,7 @@ if (!('gpu' in navigator)) {
     client,
     cache,
     onCacheChanged: refreshCache,
+    onState: (state) => recorder.modelState(state),
     onLoaded: (model, verdict) => {
       chat.open(model, verdict.chat);
       // ?benchmark, on the development site: the page's throughput measured
@@ -104,11 +122,23 @@ function startWorker() {
     onDevice: (device) => {
       showDevice(page.deviceStatus, device);
       page.fakeBanner.hidden = !device.fake;
+      recorder.device(device);
     },
+    onDeviceEvent: (event) => recorder.event(event),
   });
   worker.addEventListener('error', (event) => {
     showDevice(page.deviceStatus, { ok: false, stage: 'worker', error: event.message });
     client.failAll(new Error(`the worker stopped: ${event.message}`));
   });
   return client;
+}
+
+// localStorage, or null where the browser refuses it (a private tab, a
+// policy): reading the property itself can throw.
+function storageOrNull() {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
 }

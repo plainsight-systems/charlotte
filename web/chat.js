@@ -41,8 +41,10 @@ import { compileTemplate, offersThinking } from './template.js';
 const PLACEHOLDER = 'Choose a model to start.';
 
 // `generate(prompt, { sampling, seed, onText })` starts a reply and returns
-// { id, reply }; `cancel(id)` stops it early.
-export function createChat(root, { generate, cancel }) {
+// { id, reply }; `cancel(id)` stops it early. `onTurn(step, message)`, if
+// given, follows each turn for the diagnostics (diagnostics_recorder.js):
+// 'start', 'text' as the reply streams, then 'done' or 'failed'.
+export function createChat(root, { generate, cancel, onTurn }) {
   let active = null;
 
   const close = () => {
@@ -61,7 +63,7 @@ export function createChat(root, { generate, cancel }) {
       return;
     }
     active = { generating: null };
-    root.replaceChildren(conversationPanel(model, chat, render, active, { generate, cancel }));
+    root.replaceChildren(conversationPanel(model, chat, render, active, { generate, cancel, onTurn }));
   };
 
   close();
@@ -72,7 +74,7 @@ export function createChat(root, { generate, cancel }) {
 // fractional pixels.
 const atEnd = (element) => element.scrollHeight - element.scrollTop - element.clientHeight < 24;
 
-function conversationPanel(model, chat, render, session, { generate, cancel }) {
+function conversationPanel(model, chat, render, session, { generate, cancel, onTurn }) {
   let messages = [];
 
   const log = h('div', { className: 'chat-log', role: 'log', 'aria-live': 'polite' });
@@ -103,6 +105,7 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
 
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
     const started = performance.now();
+    onTurn?.('start');
     // The reply drawn at most once a frame (see the top of this file).
     let reply = '';
     let undrawn = '';
@@ -116,6 +119,7 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
       if (following) log.scrollTop = log.scrollHeight;
     };
     const onText = (piece) => {
+      onTurn?.('text');
       reply += piece;
       undrawn += piece;
       if (frame === null) frame = requestAnimationFrame(draw);
@@ -152,6 +156,7 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
       const seconds = (performance.now() - started) / 1000;
       const ended = { cancelled: ' · stopped', context: ' · context full', limit: ' · limit reached' }[stopReason] ?? '';
       const following = atEnd(log);
+      onTurn?.('done');
       replyBubble.append(h('p', { className: 'message-facts',
         text: `${tokens} tokens · ${(tokens / seconds).toFixed(1)} tok/s · ` +
               `${reusedTokens} of ${promptTokens} prompt tokens cached · seed ${seed}${ended}` }));
@@ -162,6 +167,7 @@ function conversationPanel(model, chat, render, session, { generate, cancel }) {
       replyBubble.remove();
       input.value = text;
       error.textContent = failure.message;
+      onTurn?.('failed', failure.message);
     } finally {
       session.generating = null;
       button.textContent = 'Send';

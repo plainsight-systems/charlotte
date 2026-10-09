@@ -17,12 +17,15 @@ import { cachedFileName, requestPersistence } from './opfs.js';
 import { preflight, rangesOfFile } from './preflight.js';
 import { Request } from './protocol.js';
 
-export function createModelController({ element, client, cache, onLoaded, onCacheChanged }) {
+export function createModelController({ element, client, cache, onLoaded, onCacheChanged, onState }) {
   let state = null;
   let step = null;
 
+  // Every state shown is also handed to `onState`, if given, for the
+  // diagnostics (diagnostics_recorder.js).
   const show = (next) => {
     state = next;
+    onState?.(state);
     renderModel(element, state, actions);
   };
 
