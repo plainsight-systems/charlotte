@@ -125,8 +125,10 @@ for both builds alike: the machine's state, not the code.
 
 ## What this leaves
 
-Building kernels was the first thing to fail on the phone, so nothing past
-it has run there: whether the default budget's buffers survive use on an
-iPhone, whether two steps in flight hang WebKit's queue, and what the
-phone's GPU makes of the decode loop. The diagnostics will name the next
-failure.
+With the kernels building, the next load on the iPhone ran to the first
+prompt and iOS reloaded the page: killed for its memory under the 2 GiB
+default, as [`2026-10-09-experimental-phone-support.md`](2026-10-09-experimental-phone-support.md)
+expected. With a phone's budget capped at 512 MiB, Qwen3 0.6B loads and
+answers there, two steps in flight, so WebKit's queue did not hang on that
+turn. Untried on the phone: a larger budget, long turns, and its decode
+rate.

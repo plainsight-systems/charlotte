@@ -3,6 +3,19 @@
 **Date:** 2026-10-09
 **Method:** desk research, sources cited inline, and an audit of this repository at commit `3d1a366`. Figures marked planner arithmetic come from running the real planner natively over the three pinned model files. The only phone evidence is one iPhone run (Chrome, iOS 26) that passed the GPU check, downloaded Qwen3 0.6B, and then failed to load or run with an error nobody captured.
 
+> **Outcome, 2026-10-09.** The plan's first steps ran the same day, on an
+> iPhone on iOS 26.6.1 in Chrome. The first failure was not memory but
+> WebKit's shader compiler, which this note ranked third: three faults, not
+> the one it named, kept 26 of 31 kernels from building
+> ([`2026-10-09-webkit-shader-compiler.md`](2026-10-09-webkit-shader-compiler.md)).
+> With those worked around, Qwen3 0.6B loaded under the 2 GiB default, and
+> at the first prompt iOS reloaded the page, as this note expected of
+> memory. With a phone's budget capped at 512 MiB (`web/platform_policy.js`),
+> 1,128 tokens of context, Qwen3 0.6B loads and answers on the iPhone, two
+> steps in flight and 512-token prefill blocks unchanged. Llama 3.2 1B and
+> Gemma 3 1B do not fit that budget. The figures and plan below are as
+> written before any of this ran.
+
 Charlotte can be tried on phones without touching its kernels' arithmetic or its buffer layout, but not with its desktop load policy. The iPhone run most likely died on memory. Under the default 2 GiB budget the planner creates about 2 GiB of GPU buffers for Qwen3 0.6B the moment a load begins, three quarters of it KV cache that exists only because the budget allows it. That's above the roughly 1.5 GB page limit that a WebKit engineer describes and a third party measured on an iPhone, and when iOS kills a page for memory it leaves no message, which fits a failure nobody could capture. Both phone browsers grant every WebGPU limit Charlotte asks for, because it asks only for the spec defaults. So limits aren't the problem. Memory, command-buffer behaviour and compiler differences are. Two code-level risks rank just behind memory. WebKit has a 2026 report of exactly the override-expression workgroup arrays Charlotte's matmul and attention kernels declare failing to build. And a WebKit bug shows two command buffers in flight hanging silently on iOS, which is Charlotte's normal decode pattern. The plan is to make failures visible and persistent first, rerun the iPhone once unchanged to learn what actually killed it, and then apply a phone memory budget (768 MiB on iOS, 1 GiB on Android). After that come the kernel declaration rewrite and a cap of 128 prompt tokens per step with one step in flight. Qwen3 on the iPhone is the first target, because it's the only listed model that every source puts within reach.
 
 A note on evidence. Platform facts below come from the cited sources. Memory and context figures marked **planner arithmetic** come from the codebase audit, which compiled a scratch program against `build/native-release/libcharlotte_core.a` and ran the real `residency::plan_residency` natively over the three pinned model files with WebGPU's default limits. They're the planner's own numbers, not phone measurements. FLOP counts are the audit's arithmetic from the model shapes. Phone timings are inferences.
