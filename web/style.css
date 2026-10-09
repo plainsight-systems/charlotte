@@ -84,6 +84,13 @@ a { color: var(--amber-text); }
 .side-head h2 { margin: 0; }
 .side:focus { outline: none; }
 @media (max-width: 720px) {
+  /* The visual viewport's height (viewport.js): with the keyboard up, the
+     page fits above it, and the notice and footer step aside. */
+  body { height: var(--app-height, 100dvh); }
+  .keyboard-open .platform-notice, .keyboard-open .foot { display: none; }
+  /* 16px or more, or iOS zooms the page into a field it focuses; specific
+     enough to win over the fields' own sizes, set later in this sheet. */
+  :root .layout :is(input, textarea) { font-size: 16px; }
   .bar { padding: env(safe-area-inset-top) .75rem .5rem; gap: .5rem; }
   .bar .brand { margin-right: auto; }
   .menu-button, .drawer-close {
@@ -135,7 +142,7 @@ button, input, textarea { font: inherit; color: inherit; }
 
 .url-form { display: grid; gap: .35rem; font-size: .85rem; }
 .url-form label { color: var(--dim); }
-.url-row { display: flex; gap: .4rem; }
+.url-row { display: flex; gap: .4rem; min-width: 0; }   /* shrinks with its grid track */
 .url-row input {
   flex: 1; min-width: 0; padding: .35rem .5rem; font-family: var(--mono); font-size: .8rem;
   background: none; border: 1px solid var(--line); border-radius: 6px;

@@ -9,6 +9,7 @@ import { createDiagnosticsView } from './diagnostics_view.js';
 import { showDevice, showStarting, showUnavailable } from './device_status.js';
 import { cacheKey } from './download.js';
 import { createDrawer } from './drawer.js';
+import { fitToVisualViewport } from './viewport.js';
 import { createModelController } from './model_controller.js';
 import { ModelCache, storageStatus } from './opfs.js';
 import { createPicker } from './picker.js';
@@ -35,6 +36,9 @@ const kNoticeRead = 'charlotte.platform-notice.read';
 if (readStored(kNoticeRead) !== platform) {
   showPlatformNotice(page.platformNotice, platform, { onDismiss: () => writeStored(kNoticeRead, platform) });
 }
+
+// The page fits what can be seen, the keyboard up or down (viewport.js).
+fitToVisualViewport(document.documentElement);
 
 // On a narrow screen the models are a drawer, and the chat the screen.
 const drawer = createDrawer({
