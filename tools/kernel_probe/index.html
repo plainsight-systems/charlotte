@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Kernel probe</title>
+<!--
+  Compiles each kernel of a model, one at a time, as the program would
+  (kernels/program.h's compose), and lists pass or fail with the browser's
+  own messages: what the page cannot say, which kernel a browser's shader
+  compiler refuses. Development only; never deployed.
+
+  charlotte_dump_kernels <model.gguf> > tools/kernel_probe/<name>.json
+  then serve tools/kernel_probe/ over http(s) and open ?model=<name>.
+  Method and findings: docs/research/2026-10-09-webkit-shader-compiler.md.
+-->
+<pre id="out" style="font:13px/1.35 monospace;white-space:pre-wrap"></pre>
+<script type="module">
+const out = document.getElementById('out');
+const log = (line) => { out.textContent += line + '\n'; };
+const model = new URLSearchParams(location.search).get('model') ?? 'qwen3';
+log(`ua: ${navigator.userAgent}`);
+try {
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice();   // spec defaults, as the harness asks
+  device.addEventListener('uncapturederror', (e) => log(`uncaptured: ${e.error.message}`));
+  const kernels = await (await fetch(`./${model}.json`, { cache: 'no-store' })).json();
+  log(`${model}: ${kernels.length} kernels`);
+  let failed = 0;
+  const results = [];
+  for (const [i, k] of kernels.entries()) {
+    const label = `${i} ${k.name ?? k.entryPoint} ${k.name ? "" : JSON.stringify(k.constants)}`;
+    device.pushErrorScope('validation');
+    const module = device.createShaderModule({ code: k.source });
+    const info = await module.getCompilationInfo();
+    const compileMessages = info.messages.map((m) => `${m.type} ${m.lineNum}:${m.linePos} ${m.message}`);
+    const moduleError = await device.popErrorScope();
+    let pipelineError = null;
+    try {
+      await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: k.entryPoint, constants: k.constants } });
+    } catch (e) {
+      pipelineError = `${e.name}: ${e.message}`;
+    }
+    const ok = !moduleError && !pipelineError && !compileMessages.some((m) => m.startsWith('error'));
+    if (!ok) failed += 1;
+    results.push({ i, ok, label, compileMessages, moduleError: moduleError?.message ?? null, pipelineError });
+    log(`${ok ? 'PASS' : 'FAIL'} ${label}`);
+    for (const m of compileMessages) log(`    compile: ${m}`);
+    if (moduleError) log(`    module: ${moduleError.message}`);
+    if (pipelineError) log(`    pipeline: ${pipelineError}`);
+  }
+  log(`done: ${kernels.length - failed} pass, ${failed} fail`);
+  globalThis.probeResults = results;
+} catch (e) {
+  log(`probe failed: ${e.name}: ${e.message}`);
+}
+</script>

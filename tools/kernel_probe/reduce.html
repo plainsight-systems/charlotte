@@ -1,0 +1,84 @@
+<!doctype html><meta charset="utf-8"><title>Kernel reducer</title>
+<!--
+  Shrinks one failing kernel (?model=<name>&i=<index>, from the probe's
+  list) to the fewest lines that still fail the way it did: compiling as
+  WGSL, then failing pipeline creation with "Compute library failed
+  creation". Line-by-line delta debugging, then whole balanced blocks and
+  single statements until none can go. Development only; never deployed.
+-->
+<pre id="out" style="font:12px/1.3 monospace;white-space:pre-wrap"></pre>
+<script type="module">
+const out = document.getElementById('out');
+const log = (line) => { out.textContent += line + '\n'; };
+const params = new URLSearchParams(location.search);
+const model = params.get('model') ?? 'qwen3';
+const index = Number(params.get('i') ?? 30);
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const kernels = await (await fetch(`./${model}.json`, { cache: 'no-store' })).json();
+const kernel = kernels[index];
+let tests = 0;
+// Interesting: compiles as WGSL, but the pipeline fails as the original did.
+async function interesting(lines) {
+  tests += 1;
+  device.pushErrorScope('validation');
+  const module = device.createShaderModule({ code: lines.join('\n') });
+  const info = await module.getCompilationInfo();
+  const moduleError = await device.popErrorScope();
+  if (moduleError || info.messages.some((m) => m.type === 'error')) return false;
+  try {
+    await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: kernel.entryPoint, constants: kernel.constants } });
+    return false;
+  } catch (e) {
+    return e.message.includes('Compute library failed creation');
+  }
+}
+let lines = kernel.source.split('\n').filter((l) => l.trim() !== '' && !l.trim().startsWith('//'));
+log(`kernel ${index} ${kernel.entryPoint}: ${lines.length} lines; fails as given: ${await interesting(lines)}`);
+// ddmin over lines.
+let n = 2;
+while (lines.length >= 2) {
+  const size = Math.ceil(lines.length / n);
+  let reduced = false;
+  for (let start = 0; start < lines.length; start += size) {
+    const complement = [...lines.slice(0, start), ...lines.slice(start + size)];
+    if (await interesting(complement)) {
+      lines = complement;
+      n = Math.max(n - 1, 2);
+      reduced = true;
+      break;
+    }
+  }
+  if (!reduced) {
+    if (n >= lines.length) break;
+    n = Math.min(n * 2, lines.length);
+  }
+}
+// Then remove balanced blocks and single statements until none can go.
+const depth = (l) => (l.match(/\{/g) ?? []).length - (l.match(/\}/g) ?? []).length;
+for (let changed = true; changed;) {
+  changed = false;
+  const candidates = [];
+  for (let i = 0; i < lines.length; ++i) {
+    const d = depth(lines[i]);
+    if (d === 0) candidates.push([i, i]);
+    if (d > 0) {
+      let level = 0;
+      for (let j = i; j < lines.length; ++j) {
+        level += depth(lines[j]);
+        if (level === 0) { candidates.push([i, j]); if (j > i + 1) candidates.push([i + 1, j - 1]); break; }
+      }
+    }
+  }
+  candidates.sort((x, y) => (y[1] - y[0]) - (x[1] - x[0]));
+  for (const [from, to] of candidates) {
+    const without = [...lines.slice(0, from), ...lines.slice(to + 1)];
+    if (await interesting(without)) { lines = without; changed = true; break; }
+  }
+}
+log(`reduced to ${lines.length} lines after ${tests} compiles:`);
+log('-----');
+log(lines.join('\n'));
+log('-----');
+log('done');
+</script>

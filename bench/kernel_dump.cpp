@@ -8,7 +8,7 @@
 // its graph, and writes each distinct kernel's composition — the WGSL, its
 // entry point and its override constants (kernels/program.h's compose) — as
 // a JSON array, in the order the graph first launches it. A browser page
-// then compiles each on its own (the probe in docs/research's phone note).
+// then compiles each on its own (tools/kernel_probe/).
 //
 // It runs no GPU: planning and the graph need only the file's index.
 //
