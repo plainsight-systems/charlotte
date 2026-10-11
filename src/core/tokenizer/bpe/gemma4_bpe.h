@@ -74,9 +74,9 @@ namespace bllm::tokenizer::bpe {
 //     special token to the next, so a piece is no longer and the merge's
 //     heap no larger. What is merged is bounded by admission, not by the
 //     tokens it makes: text admitted under a limit of T tokens is at most T
-//     × longest_cover() normalized bytes (tokenizer.h), so an encode under
-//     the embedder's 510 costs at most 43 ns × 510 × the cover — the cover
-//     found at load, over this vocabulary.
+//     × longest_cover() normalized bytes (tokenizer.h). This vocabulary's
+//     longest token is a run of 31 "▁", 93 bytes, so an encode under the
+//     embedder's 510 merges at most 47,430 bytes, about 2 ms.
 //   - Memory during an encode: within tokenizer.h's bound for
 //     kMaxEncodeBytes, whose count covers SentencePiece's escaped text, the
 //     larger.

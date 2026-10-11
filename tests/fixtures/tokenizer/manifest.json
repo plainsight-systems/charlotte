@@ -38,5 +38,18 @@
    "llama.cpp": "dcd387a412ca54e172a8d60eb71ef6753850c8ca",
    "sentencepiece": "0.2.2"
   }
+ },
+ "embeddinggemma-2-q8_0": {
+  "header": {
+   "url": "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-Q8_0.gguf",
+   "bytes": 16777216,
+   "sha256": "dcfe29826c35146fa38628079bc6d532102473a4230a175956294f89238bfc8c"
+  },
+  "reference": {
+   "repo": "google/embeddinggemma-2",
+   "revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+   "tokenizers": "0.23.1",
+   "llama.cpp": "a9d27ac693ff0a1d3cba449c912c2b891904a4c7"
+  }
  }
 }

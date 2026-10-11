@@ -3,3 +3,4 @@ dist/
 dist-dev/
 dist-diag/
 .cache/
+__pycache__/

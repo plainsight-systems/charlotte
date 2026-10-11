@@ -13,6 +13,7 @@
 #include "core/capability/capability.h"
 #include "core/gguf/byte_source.h"
 #include "core/tokenizer/bpe/byte_level_bpe.h"
+#include "core/tokenizer/bpe/gemma4_bpe.h"
 #include "core/tokenizer/bpe/sentencepiece_bpe.h"
 #include "core/tokenizer/pretokenize.h"
 #include "core/tokenizer/tokenizer.h"
@@ -59,7 +60,8 @@ const std::vector<std::string> kTexts{
 }  // namespace
 
 TEST_CASE("each listed model's tokenizer, loaded through the table, encodes and decodes as its encoder does") {
-    for (const std::string_view model : {"qwen3-0.6b-q4_0", "llama-3.2-1b-instruct-q4_0", "gemma-3-1b-it-q4_0"}) {
+    for (const std::string_view model :
+         {"qwen3-0.6b-q4_0", "llama-3.2-1b-instruct-q4_0", "gemma-3-1b-it-q4_0", "embeddinggemma-2-q8_0"}) {
         CAPTURE(model);
         Loaded l = load_through_table(model);
         // The encoder the algorithm wraps, loaded directly.
@@ -68,22 +70,30 @@ TEST_CASE("each listed model's tokenizer, loaded through the table, encodes and 
         REQUIRE(l.header.index.read_string("tokenizer.ggml.model", name) == gguf::MetadataError::Ok);
         bpe::ByteLevelBpe byte_level;
         bpe::SentencePieceBpe sentencepiece;
+        bpe::Gemma4Bpe gemma4;
         const bool is_byte_level = name == "gpt2";
+        const bool is_gemma4 = name == "gemma4";
         if (is_byte_level) REQUIRE(l.header.index.read_string("tokenizer.ggml.pre", pre) == gguf::MetadataError::Ok);
         if (is_byte_level) {
             const LoadResult r =
                 bpe::load_byte_level_bpe(source, l.header.index, *capability::find_pretokenizer(pre), byte_level);
+            REQUIRE_MESSAGE(r.ok(), r.subject);
+        } else if (is_gemma4) {
+            const LoadResult r = bpe::load_gemma4_bpe(source, l.header.index, gemma4);
             REQUIRE_MESSAGE(r.ok(), r.subject);
         } else {
             const LoadResult r = bpe::load_sentencepiece_bpe(source, l.header.index, sentencepiece);
             REQUIRE_MESSAGE(r.ok(), r.subject);
         }
         CHECK(l.tokenizer->vocabulary().size() ==
-              (is_byte_level ? byte_level.vocabulary().size() : sentencepiece.vocabulary().size()));
+              (is_byte_level ? byte_level.vocabulary().size()
+                             : is_gemma4 ? gemma4.vocabulary().size() : sentencepiece.vocabulary().size()));
         for (const std::string& text : kTexts) {
             CAPTURE(text);
             std::vector<TokenId> want;
-            REQUIRE((is_byte_level ? byte_level.encode(text, kNoTokenLimit, want) : sentencepiece.encode(text, kNoTokenLimit, want))
+            REQUIRE((is_byte_level ? byte_level.encode(text, kNoTokenLimit, want)
+                     : is_gemma4   ? gemma4.encode(text, kNoTokenLimit, want)
+                                   : sentencepiece.encode(text, kNoTokenLimit, want))
                         .error == EncodeError::Ok);
             // Twice: whatever the first left in a cache, the second's tokens are
             // the same. A cache changes how long encoding takes, never what it
@@ -97,6 +107,7 @@ TEST_CASE("each listed model's tokenizer, loaded through the table, encodes and 
             for (const TokenId t : want) {
                 l.tokenizer->decode(t, decoded);
                 if (is_byte_level) byte_level.decode(t, direct);
+                else if (is_gemma4) gemma4.decode(t, direct);
                 else sentencepiece.decode(t, direct);
             }
             CHECK(decoded == direct);
@@ -109,7 +120,7 @@ TEST_CASE("each listed model's tokenizer, loaded through the table, encodes and 
 }
 
 TEST_CASE("every algorithm the table lists carries its loader") {
-    for (const std::string_view name : {"gpt2", "llama"}) {
+    for (const std::string_view name : {"gemma4", "gpt2", "llama"}) {
         const Algorithm* algorithm = capability::find_tokenizer(name);
         REQUIRE(algorithm != nullptr);
         CHECK(algorithm->load != nullptr);
@@ -122,7 +133,7 @@ TEST_CASE("each listed model's encode is bounded by its token limit and kMaxEnco
         std::size_t cover;
     };
     for (const Model& m : {Model{"qwen3-0.6b-q4_0", 128}, Model{"llama-3.2-1b-instruct-q4_0", 128},
-                           Model{"gemma-3-1b-it-q4_0", 48}}) {
+                           Model{"gemma-3-1b-it-q4_0", 48}, Model{"embeddinggemma-2-q8_0", 93}}) {
         CAPTURE(m.name);
         const Loaded l = load_through_table(m.name);
         CHECK(l.tokenizer->longest_cover() == m.cover);

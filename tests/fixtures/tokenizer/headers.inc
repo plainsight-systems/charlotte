@@ -3,3 +3,4 @@
 {"qwen3-0.6b-q4_0", "tokenizer/qwen3-0.6b-q4_0.header", 382156480},
 {"llama-3.2-1b-instruct-q4_0", "tokenizer/llama-3.2-1b-instruct-q4_0.header", 773025920},
 {"gemma-3-1b-it-q4_0", "tokenizer/gemma-3-1b-it-q4_0.header", 721918496},
+{"embeddinggemma-2-q8_0", "tokenizer/embeddinggemma-2-q8_0.header", 309855456},

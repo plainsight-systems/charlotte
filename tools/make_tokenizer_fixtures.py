@@ -37,11 +37,16 @@ Output, under the given directory:
   headers.inc        for the C++ tests, each model's fetched header and the size
                      of the whole file, which reading its index checks against
 
+The models are web/models.json's, and the embedding models below, which the
+page's chat list does not offer. --only names the models to encode, leaving
+every other model's cases and pins as they were written; without it, every
+model is encoded again.
+
 Needs network access, a Hugging Face login with the Llama 3.2 and Gemma 3
 licences accepted, the packages in tools/requirements.txt, and a build of
 llama.cpp's llama-tokenize. Not run in CI; its output is committed.
 
-    python3 tools/make_tokenizer_fixtures.py <llama-tokenize> <llama.cpp commit> tests/fixtures/tokenizer
+    python3 tools/make_tokenizer_fixtures.py <llama-tokenize> <llama.cpp commit> tests/fixtures/tokenizer [--only <id>,...]
 """
 import hashlib
 import json
@@ -62,7 +67,36 @@ REFERENCE_REPOS = {
     "qwen3-0.6b-q4_0": "Qwen/Qwen3-0.6B",
     "llama-3.2-1b-instruct-q4_0": "meta-llama/Llama-3.2-1B-Instruct",
     "gemma-3-1b-it-q4_0": "google/gemma-3-1b-it",
+    "embeddinggemma-2-q8_0": "google/embeddinggemma-2",
 }
+
+# Models the tests cover that the page's chat list does not offer: an
+# embedding model is not a chat model. Each as web/models.json lists a model.
+EMBEDDING_MODELS = [
+    {"id": "embeddinggemma-2-q8_0",
+     "url": "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-Q8_0.gguf",
+     "sizeBytes": 309855456},
+]
+
+# What an embedding model is given: a text inside its task's prompt, as the
+# model card writes them (runtime/embedder.h), in place of a chat template's
+# renderings.
+TASK_PROMPTS = [
+    ("task: query", "task: search result | query: how does WebGPU run a model in a browser?"),
+    ("task: document", "title: none | text: Charlotte runs open-weight models in the browser on WebGPU."),
+    ("task: titled document", "title: Lighthouses | text: The keeper climbed the spiral stairs each evening."),
+    ("task: question answering", "task: question answering | query: Who wrote Charlotte's Web?"),
+    ("task: code retrieval", "task: code retrieval | query: reverse a linked list in C++"),
+    ("task: classification", "task: classification | query: I loved every minute of it!"),
+    # Gemma 4's runs of newlines, spaces and tabs are tokens up to 31 long;
+    # a longer run is merged from them, and a newline run is cut from the
+    # text around it before merging (tokenizer/bpe/gemma4_bpe.h).
+    ("forty newlines", "a" + "\n" * 40 + "b"),
+    ("thirty-one newlines", "a" + "\n" * 31 + "b"),
+    ("forty spaces", "a" + " " * 40 + "b"),
+    ("forty tabs", "a" + "\t" * 40 + "b"),
+    ("newlines between spaces", "a  \n\n  b \n c"),
+]
 
 # token_type values in a GGUF vocabulary.
 USER_DEFINED, UNUSED = 4, 5
@@ -204,7 +238,10 @@ def llama_cpp_ids(llama_tokenize, vocabulary, text):
 
 
 def rendered_prompts(model_id):
-    """The chat-template fixtures' renderings: real prompts, special tokens and all."""
+    """The chat-template fixtures' renderings: real prompts, special tokens and
+    all; for an embedding model, its task prompts."""
+    if any(m["id"] == model_id for m in EMBEDDING_MODELS):
+        return TASK_PROMPTS
     from make_template_fixtures import renderings
     return [(f"prompt: {conversation['name']} {json.dumps(variables)}", text)
             for conversation, variables, text in renderings(model_id)]
@@ -276,14 +313,28 @@ def write_cases(path, model_id, repo, revision, llama_commit, cases):
 
 
 def main():
-    if len(sys.argv) != 4:
-        sys.exit(f"usage: {sys.argv[0]} <llama-tokenize> <llama.cpp commit> <out dir>")
-    llama_tokenize, llama_commit, out = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
-    models = json.loads(pathlib.Path("web/models.json").read_text())["models"]
+    only = None
+    args = sys.argv[1:]
+    if len(args) == 5 and args[3] == "--only":
+        only = set(args[4].split(","))
+        args = args[:3]
+    if len(args) != 3:
+        sys.exit(f"usage: {sys.argv[0]} <llama-tokenize> <llama.cpp commit> <out dir> [--only <id>,...]")
+    llama_tokenize, llama_commit, out = args[0], args[1], pathlib.Path(args[2])
+    models = json.loads(pathlib.Path("web/models.json").read_text())["models"] + EMBEDDING_MODELS
+    if only is not None and not only <= {m["id"] for m in models}:
+        sys.exit(f"--only names models no list holds: {sorted(only - {m['id'] for m in models})}")
+    manifest_path = out / "manifest.json"
+    kept = json.loads(manifest_path.read_text()) if only is not None and manifest_path.exists() else {}
 
     disagreements, written, manifest, splits = [], {}, {}, {}
     with tempfile.TemporaryDirectory() as scratch:
         for model in models:
+            if only is not None and model["id"] not in only:
+                if model["id"] not in kept:
+                    sys.exit(f"{model['id']}: not encoded and not in {manifest_path}; run it too")
+                manifest[model["id"]] = kept[model["id"]]
+                continue
             model_id = model["id"]
             header = fetch_header(model["url"])
             metadata, end = read_metadata(header)

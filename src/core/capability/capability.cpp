@@ -15,6 +15,7 @@
 #include "core/formats/q6_k/q6_k.h"
 #include "core/formats/q8_0/q8_0.h"
 #include "core/tokenizer/bpe/byte_level_bpe.h"
+#include "core/tokenizer/bpe/gemma4_bpe.h"
 #include "core/tokenizer/bpe/sentencepiece_bpe.h"
 #include "core/tokenizer/pretokenize.h"
 
@@ -63,6 +64,7 @@ static_assert([] {
     return true;
 }());
 constexpr std::array kTokenizers{
+    Row<std::string_view, tokenizer::Algorithm>{"gemma4", &tokenizer::bpe::kGemma4},
     Row<std::string_view, tokenizer::Algorithm>{"gpt2", &tokenizer::bpe::kByteLevel},
     Row<std::string_view, tokenizer::Algorithm>{"llama", &tokenizer::bpe::kSentencePiece},
 };
