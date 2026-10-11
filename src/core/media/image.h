@@ -39,7 +39,15 @@ namespace bllm::media {
 //      buffers hold the budget's most patches and no more (SL.con.3). No
 //      photograph comes near it: a 10 to 1 panorama of 4,000 × 400 is 260
 //      tokens.
-//   2. The pixels: Pillow's separable resampler as llama.cpp adapts it
+//   2. The fit: llama.cpp resizes to the grid with its padding style for
+//      gemma4v, PAD_CEIL, the default — the image is not stretched to the
+//      grid but fitted inside it, its aspect kept: scale s = min(width /
+//      W, height / H) in f32, the fitted size min(ceil(W s), width) ×
+//      min(ceil(H s), height), placed at offset ((width − w) / 2, (height −
+//      h) / 2), integer division, the rest of the grid black. Rounding each
+//      side to 48 changes the aspect a little, so a photo gains a bar of a
+//      few black pixels on one side or two.
+//   3. The pixels: Pillow's separable resampler as llama.cpp adapts it
 //      (resize_pillow), bicubic with a = −0.5. For each axis, once an image,
 //      each output pixel's taps: its centre (o + 0.5) × s in source pixels, s
 //      = source / target, the filter widened by s when shrinking, support 2s,
@@ -51,8 +59,9 @@ namespace bllm::media {
 //      arithmetic once the weights are fixed, and the weights' f64 is IEEE
 //      in the module as natively (no fast-math), so equal pixels give equal
 //      bytes on every machine.
-//   3. The patches: the resampled image cut into patch × patch squares,
-//      row-major over the grid — patch (px, py) is row py × columns + px —
+//   4. The patches: the grid, with the resampled image placed in it, cut
+//      into patch × patch squares,
+//      row-major — patch (px, py) is row py × columns + px —
 //      each a row of 3 × patch² floats, channel, then row, then column
 //      within the patch: element c × patch² + ky × patch + kx. That is the
 //      layout of the patch embedding's weight, F32 of shape (16, 16, 3, 768)
@@ -169,6 +178,18 @@ enum class ImageError {
 [[nodiscard]] ImageGrid image_grid(std::uint32_t width, std::uint32_t height, std::uint32_t patch,
                                    std::uint32_t pooling, ImageBudget budget) noexcept;
 
+// Where a source of `width` × `height` lies in `grid`: the size it is
+// resampled to and its offset, its aspect kept (step 2 above).
+struct ImageFit {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t x;
+    std::uint32_t y;
+};
+
+// Preconditions: both sides at least 1; the grid image_grid gave for them.
+[[nodiscard]] ImageFit image_fit(std::uint32_t width, std::uint32_t height, const ImageGrid& grid) noexcept;
+
 // One image, resampled band by band and cut into patches.
 class ImageResampler {
 public:
@@ -184,27 +205,42 @@ public:
     // its bytes. Refuses BadBand.
     [[nodiscard]] ImageError accept(std::span<const std::uint8_t> rgba, std::uint32_t first_row);
 
-    // Once every row is in: the vertical pass, then the patches written to
-    // `out`, grid.columns × grid.rows rows of 3 × patch² floats. Refuses
+    // Once every row is in: the vertical pass, once, then the patches written
+    // to `out`, grid.columns × grid.rows rows of 3 × patch² floats. Refuses
     // Incomplete. Precondition: `out` holds exactly that many floats.
     [[nodiscard]] ImageError patches(std::span<float> out);
 
+    // Once every row is in: the grid's pixels, RGB, width × height × 3 bytes,
+    // the image placed in black, as llama.cpp's resize leaves them — what the
+    // patches are cut from, for the reference test. Refuses Incomplete.
+    // Precondition: `out` holds exactly that many bytes.
+    [[nodiscard]] ImageError canvas(std::span<std::uint8_t> out);
+
 private:
+    // One axis's taps: for each output pixel, its first source pixel, how
+    // many it reads, and `size` fixed-point weights, zero past `count`.
     struct Taps {
-        std::vector<std::uint32_t> first;   // each output's first source pixel
-        std::vector<std::uint32_t> count;   // and how many it reads
-        std::vector<std::int32_t> weights;  // fixed point, `width` a output
-        std::uint32_t width = 0;
+        std::vector<std::uint32_t> first;
+        std::vector<std::uint32_t> count;
+        std::vector<std::int32_t> weights;
+        std::uint32_t size = 0;
     };
+
+    void finish();
 
     Taps horizontal_;
     Taps vertical_;
-    std::vector<std::uint8_t> intermediate_;   // target width × source height × 3
+    bool horizontal_pass_ = false;
+    bool vertical_pass_ = false;
+    std::vector<std::uint8_t> intermediate_;   // fitted width × source height × 3
+    std::vector<std::uint8_t> fitted_;         // fitted width × fitted height × 3, after finish
     ImageGrid grid_{};
+    ImageFit fit_{};
     std::uint32_t source_width_ = 0;
     std::uint32_t source_height_ = 0;
     std::uint32_t patch_ = 0;
     std::uint32_t next_row_ = 0;
+    bool finished_ = false;
 };
 
 }  // namespace bllm::media

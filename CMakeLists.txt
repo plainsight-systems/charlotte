@@ -74,6 +74,7 @@ add_library(charlotte_core STATIC
     src/core/runtime/stops.cpp
     src/core/residency/routes.cpp
     src/core/gpu/dispatch_math.cpp
+    src/core/media/image.cpp
 )
 
 if(BLLM_ENABLE_DIAGNOSTICS)

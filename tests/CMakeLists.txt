@@ -60,6 +60,7 @@ add_executable(charlotte_tests
     kernels_rope_test.cpp
     residency_piece_writer_test.cpp
     residency_routes_test.cpp
+    media_image_test.cpp
     main_test.cpp
 )
 
