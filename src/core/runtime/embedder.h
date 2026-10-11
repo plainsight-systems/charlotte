@@ -1,0 +1,218 @@
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <span>
+#include <string>
+#include <string_view>
+
+#include "core/kernels/program.h"
+#include "core/runtime/ends.h"
+#include "core/tokenizer/tokenizer.h"
+
+namespace bllm::runtime {
+
+// Axis M (encode): changes with a new stage in the encode path.
+//
+// The encode path: text in, one embedding out — a unit vector the page
+// compares by dot product. Where a generator (generator.h) runs turns over
+// a conversation, an embedder runs one forward pass over a text, the whole
+// text at once, every token seeing every other (graph/encoder.h), and
+// reads back the pooled vector. No cache, no sampler, no stop set, no
+// decode: the pass is one step, and nothing of it is kept for the next.
+//
+//   - Text, UTF-8, is the page's whole input: the task's prompt written
+//     around it — "task: search result | query: …", "title: none | text: …"
+//     — by the page, as the page renders a chat template for a generator.
+//     Then:
+//       1. Encoded by the model's tokenizer (tokenizer.h) with the context
+//          offered, less the ends below, as its limit: text making more is
+//          refused before any piece is merged, TooManyTokens with its least
+//          count, so the page can cut it into chunks that fit.
+//       2. Wrapped in the file's ends (ends.h): BOS before and EOS after,
+//          each where tokenizer.ggml.add_bos_token and add_eos_token say
+//          so — both, for EmbeddingGemma 2, as llama.cpp's and
+//          sentence-transformers' tokenization of it add them. A generator
+//          adds neither: its chat template writes them.
+//       3. One step (kernels/interface.h): position 0, its tokens, logits 1,
+//          fed 0. A text admitted is at most kPrefillBlock tokens with its
+//          ends, so it is one step, which is what lets every token attend
+//          to every other within it (graph/encoder.h).
+//       4. The program reads back the step's embedding: embedding_length_out
+//          floats, f32, unit length, from the plan's `embedding` working
+//          buffer — 3 KiB for EmbeddingGemma 2's 768.
+//       5. The embedding callback, once, with the vector and how many tokens
+//          the text made; valid only during the call.
+//   - The context offered is the smaller of kPrefillBlock, 512 tokens, and
+//     the model's trained context (residency/plan.h): the most one step
+//     holds. EmbeddingGemma 2 is trained to 8,192 by its card and declares
+//     262,144 in its file; a text longer than 510 tokens of its own is
+//     refused, named, and a page splits it — document retrieval embeds
+//     chunks at this size or smaller. Longer inputs take a pass whose
+//     layers each run over the whole sequence before the next begins,
+//     with working buffers sized to it: another design, not this one.
+//   - One encode at a time: a second while one runs is refused, Busy, at
+//     once. A lost device refuses every later one. A step's failure is
+//     reported with WebGPU's message, and nothing is kept, so the next
+//     encode is unaffected.
+//   - Failure is visible: an embedding is delivered only from a completed
+//     mapping (kernels/program.h), so a lost device cannot report a vector
+//     it did not compute. A non-finite component — the pass overflowing —
+//     is reported as NonFinite, the vector not delivered, rather than
+//     handed to a page that would rank by it.
+//   - It owns the tokenizer and the program; its callbacks carry its state,
+//     held while an encode runs, as the generator's are, so destroying an
+//     embedder mid-encode reports Cancelled. The upload the program borrows
+//     outlives it (I.11).
+//
+// What it costs, counted, for EmbeddingGemma 2 at Q8_0 on the target; N the
+// text's tokens with its ends:
+//   - On the CPU, once an encode: the text encoded, about 43 ns a byte as
+//     SentencePiece-style BPE runs (tokenizer/bpe/gemma4_bpe.h); N + 2
+//     identifiers written into the step — one write of 48 + 16 × ceil(N /
+//     4) bytes; one program run: 17 calls into WebGPU reading back, and 2
+//     or 3 a launch (kernels/program.h); one finite check over 768 floats;
+//     one callback. Nothing is allocated an encode: the tokens and the
+//     step are reserved at load (MEM.9).
+//   - On the GPU: 296 dispatches a step (graph/encoder.h), about 0.44 ms at
+//     1.5 µs each (kernels/interface.h); the layers' weights, 151 MB with
+//     the per-layer inputs' projection, read once a 32-token tile of the
+//     step — once for N up to 32, 0.38 ms at 400 GB/s; and 1.36 × 10⁸
+//     multiply-adds a token in the products, with attention's 57,344 N²
+//     beside them. At N = 512 that is 8.5 × 10¹⁰: about 59 ms at the 2.9
+//     TFLOPS Qwen3's 951-token prefill reached on the target
+//     (docs/research/2026-10-09-webkit-shader-compiler.md, 285 ms for 8.4 ×
+//     10¹¹ operations) — an estimate from a measured rate, not a count of
+//     this pass; a query of 16 tokens is about 1 ms, bound by the
+//     dispatches and the weights' one read.
+//   - Its result waits on the one step and its 3 KiB mapping, about 0.5 ms
+//     median on the target (sampler/sampler.h's map).
+//
+// What it asks of the other contracts:
+//   - kernels/program.h: kMaxReadback rises from 16 bytes to 4 KiB, so a
+//     program reads back an embedding as it reads back the draw's record —
+//     two slots of the range's size, copied after the step's pass, mapped
+//     once submitted. Unchanged for a generator, whose range stays 16.
+//   - tokenizer/tokenizer.h: nothing; the embedder calls encode with its
+//     limit, as the generator does, and adds the ends itself.
+//   - preflight/preflight.h: Run, for a model whose architecture encodes
+//     (arch/architecture.h), is its encoder's graph building, its tokenizer
+//     loading, and its ends resolving (ends.h) — no stop set, which a model
+//     that never samples has no use for.
+//   - src/wasm/bindings.cpp: bllm_load_finish builds an embedder, not a
+//     generator, for an architecture that encodes, answering with the
+//     context offered and the embedding's length; and one crossing more,
+//       bllm_embed(request, text, text_length)
+//     answered through bllm_vector(request, pointer, length) — a
+//     Float32Array view of the module's memory, valid for that call, the
+//     vector's one crossing (WASM.2) — then once with the tokens the text
+//     made, or with the refusal or failure, named. bllm_generate refuses a
+//     model that encodes, and bllm_embed one that generates, each by name.
+//
+// Verification the implementation is held to:
+//   - Against the reference, EmbeddingGemma 2 at Q8_0, the file pinned by
+//     SHA-256 and fetched as test data: for each of a set of pinned texts —
+//     a short query, a passage of a few hundred tokens, one of exactly 510
+//     tokens, and text in three scripts — the embedding llama.cpp's
+//     llama-embedding gives, mean pooling and its own normalization, on its
+//     CPU backend and on Metal, kept as a fixture by
+//     tools/make_reference_embeddings.sh. Each of ours is within the
+//     largest difference llama.cpp shows between its own two backends on
+//     that text, component by component, and its cosine with each of
+//     theirs at least theirs with each other's. llama.cpp is pinned for
+//     this tool at a commit of its own, a9d27ac693ff0a1d3cba449c912c2b891904a4c7,
+//     the first holding gemma-embedding2 (src/models/gemma-embedding2.cpp);
+//     the logits fixtures keep their pin, 988190680d5a89fce97de3c20df2c2813731fd61,
+//     and are not regenerated. Two pins of one dependency, each for one
+//     tool's fixtures, so advancing either regenerates only its own.
+//   - The tokens, before the GPU: each pinned text's identifiers, ends
+//     included, those llama-tokenize gives at the same pin
+//     (tokenizer/bpe/gemma4_bpe.h).
+//   - On the GPU, the same text embedded twice gives the same bits; an
+//     encode after a refused one, and after a failed step, gives the bits a
+//     fresh embedder gives; destroying an embedder mid-encode reports
+//     Cancelled; and each refusal — Busy, TooManyTokens with its count —
+//     named. ends.h's refusals, on the CPU, over headers
+//     tools/make_fixture_gguf.py writes with each flag removed or retyped.
+//
+// Guidelines, by corpus:
+//   C++ Core Guidelines
+//     I.11   Never transfer ownership by a raw pointer — the tokenizer and the
+//            program owned, by unique_ptr; the upload borrowed, and stated so.
+//     E.27   Use error codes systematically — EmbedError, each refusal
+//            named.
+//     SL.io.2 When reading, always consider ill-formed input — the text is
+//            bounded by the context before it is merged; a file without its
+//            ends declared is refused, not guessed at.
+//     I.4    Make interfaces precisely and strongly typed — the vector is a
+//            span of floats, its length the model's.
+//   C++ performance guidelines
+//     GPU.1  Keep data on the device; every host-device round trip needs a
+//            budget — one 3 KiB readback an encode; nothing else leaves the
+//            GPU.
+//     WASM.2 Batch work across the JS boundary — the text crosses once, the
+//            vector once, as a view.
+//     MEM.9  Allocate at init — the tokens, the step and the readback slots at
+//            load; an encode allocates nothing.
+//     GPU.6  Batch tiny GPU work — the whole text one step, one pass, one
+//            submit.
+
+enum class EmbedError {
+    Ok,
+    Busy,             // an encode is running
+    DeviceLost,       // a step reported the device lost; no encode can run
+    TooManyTokens,    // the text makes more than the context offered, ends included
+    NonFinite,        // a component of the vector is not finite
+    Step,             // the step failed; the message is WebGPU's
+    Cancelled,        // the embedder was destroyed with the encode in flight
+};
+
+// An encode's outcome. `tokens` is what the text made with its ends, or, for
+// TooManyTokens, the least it makes, with `context` the most one encode
+// holds, so the page can cut the text by the excess.
+struct EmbedResult {
+    EmbedError error = EmbedError::Ok;
+    tokenizer::EncodeResult encode;   // the tokenizer's refusal, where it refused
+    std::string_view message;         // WebGPU's, for Step; valid only during the call
+    std::uint64_t tokens = 0;
+    std::uint32_t context = 0;
+};
+
+// Once an encode: the unit vector, empty unless the result is Ok. Both are
+// valid only during the call.
+using EmbedCallback = void (*)(const EmbedResult& result, std::span<const float> embedding, void* userdata);
+
+class Embedder {
+public:
+    // Preconditions: `tokenizer` is the model's; `program` was built for its
+    // encoder's graph, reading back its `embedding` working buffer
+    // (graph/encoder.h); `ends` are the file's (ends.h); `context` is the
+    // context the plan offers; `dimensions` the encoder's embedding length
+    // (model_description.h).
+    Embedder(std::unique_ptr<tokenizer::Tokenizer> tokenizer, std::unique_ptr<kernels::Program> program, Ends ends,
+             std::uint32_t context, std::uint32_t dimensions);
+
+    // Starts an encode of `text`. On Ok `done` is called once, with the
+    // vector; otherwise it is not, and the returned result names the
+    // refusal. `text` is not read after the call.
+    [[nodiscard]] EmbedResult start(std::string_view text, EmbedCallback done, void* userdata);
+
+    // The most tokens one encode holds, its ends included.
+    [[nodiscard]] std::uint32_t context() const noexcept;
+
+    // The embedding's length: embedding_length_out, 768 for EmbeddingGemma 2.
+    [[nodiscard]] std::uint32_t dimensions() const noexcept;
+
+    ~Embedder();
+    Embedder(const Embedder&) = delete;
+    Embedder& operator=(const Embedder&) = delete;
+
+    // What the embedder and its in-flight callbacks share; defined only where
+    // the embedder is.
+    struct State;
+
+private:
+    std::shared_ptr<State> state_;   // shared with in-flight callbacks
+};
+
+}  // namespace bllm::runtime

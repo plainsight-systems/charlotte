@@ -11,10 +11,10 @@ files. It does not list the files; that is [`file-mapping.md`](file-mapping.md).
 
 | Axis | Triggered by | May change |
 |---|---|---|
-| **A** | a new architecture | its graph |
+| **A** | a new architecture | its graph, and the working buffers that graph binds |
 | **B** | a new weight format | its device layout, pack and unpack |
 | **C** | a GGUF format revision, or our parse contract | reader, its types, its errors |
-| **D** | the WebGPU surface, or granted device limits | device, planner, buffer writer |
+| **D** | the WebGPU surface, or granted device limits | device, planner's placement, buffer writer |
 | **E** | a new or optimized kernel, in one regime | that kernel only |
 | **F** | a new sampling method | the sampler |
 | **G** | a new cache or context mechanism | cache, prefix diff |
@@ -23,7 +23,7 @@ files. It does not list the files; that is [`file-mapping.md`](file-mapping.md).
 | **J** | **a model is measured** | its entry in the curated list |
 | **K** | a new tokenization algorithm or pre-tokenizer | that algorithm, or that pre-tokenizer's split pattern |
 | **L** | a browser network or storage API, or how we download | fetch transport, OPFS model cache |
-| **M** | a new stage in the generation loop | the runtime that sequences diff, prefill, decode and sample |
+| **M** | a new stage in a model's loop | the runtime that sequences it: diff, prefill, decode and sample for a generator; encode, one step and read back for an embedder |
 
 Every file maps to exactly one row. Two rows means it splits. Two files that
 always change together means they merge — unless they cannot, for a reason
@@ -90,13 +90,28 @@ for Qwen3 0.6B, four of each layer's eight launches and the output head,
 same holds for their block form. Most kernel files are correctness surface; the
 two matmul regimes are the performance surface.
 
+## M is a family too
+
+A generator and an embedder run different loops over the same kernels. A
+generator's turn diffs the conversation against the cache, prefills, then
+decodes and samples a token at a time; an embedder's encode tokenizes a text,
+wraps it in the file's ends, runs one step and reads back a vector. Adding a
+stage to one — speculative decoding, say, or batching several texts into one
+encode — is not the same reason as adding one to the other. So M is
+parameterized by loop: M(generate), the turn loop and its stop set, and
+M(encode), the embedder and its ends.
+
+The test is E's: **a stage added to one loop must produce a diff that touches
+no other loop's files.** What the two share is below them — the program, the
+tokenizer, the plan — each on its own axis.
+
 ## The boxes that are already one axis
 
 `Gates` (I — it applies the table, it does not contain criteria), `Jinja` (H —
 it renders a template it does not interpret), `Graph` (A — one per
 architecture), `Tokenize` (K — one per tokenization algorithm, with pre-tokenizer split
-patterns selected by name), and each kernel
-(E).
+patterns selected by name), `Wrap` (M(encode) — the file's ends around a
+text), `Pool` (E), and each kernel (E).
 
 ## The boxes that are compound
 
@@ -107,6 +122,8 @@ patterns selected by name), and each kernel
 | **Sample and emit** | F, K, H | sampler · detokenize · emit |
 | **Diff and KV cache** | G, D | prefix diff · cache resources |
 | **Pick** | H, J | picker interface · the curated list, which is measured policy |
+| **Working buffers** | A, D | each graph's working set — which buffers it binds, how large · the planner's placement of them |
+| **Encode** | M, A, E, D | the embedder · the architecture's graph, composed from the encoder's blocks · the kernels · the program |
 
 **Diff and KV cache** is the split worth insisting on.
 `longest_common_prefix(old, new) → length` is a pure function over two integer
@@ -121,6 +138,15 @@ so upload changes no value. What it rearranges is where bytes lie: each
 format's device layout splits its blocks into streams, and that layout belongs
 to the format, which unpack reads it by. Upload never learns what a format's
 fields mean.
+
+**Working buffers** split the same way the planner and the writer do. Which
+buffers a graph binds, and at what size, changes when a graph or a kernel
+needs one — attention's partials, selection's candidates, an encoder's
+scores — which is A or E. Where they lie in device memory changes with the
+limits a device grants, which is D. So each graph builder declares its working
+set as a list of needs, and the planner places whatever list it is given,
+knowing no kernel by name. A list kept in the planner would change for every
+kernel added, and an encoder would make it branch on the model's kind.
 
 **Upload** is also the box that carries the most risk if left whole. The
 planner is pure arithmetic over a tensor index and a limit set, and preflight
@@ -161,6 +187,28 @@ with it. The strict rule says merge them; they are different languages, so the
 coupling is a language artifact rather than a design choice. They stay a
 co-located pair, and nothing should be introduced between them to make the
 separation look intentional.
+
+**An encoder adds no regime.** Regime is the shape of a call, and an
+encoder's one step over a whole text is prefill's shape: its matrix products
+run their prefill forms, chosen by token count as a decoder's are. What an
+encoder changes is what the model is: attention in both directions over the
+step's own keys, with no cache. That differs in kind from attention against a
+cache, so it is its own kernel, block attention, beside attention, not a
+regime of it or a flag inside it.
+
+**Rope's encode form is a variant; block attention is a kernel.** Rope does
+the same operation for an encoder — QK-norm and rotation by position — and
+only writes its keys and values to the step's buffers instead of packing them
+into the cache, with a value norm where the model declares one. The same
+operation, writing elsewhere, is an entry point of the same module, as a
+matrix product's decode and prefill forms are. Attention in both directions
+masks, tiles and folds differently from attention against a cache, so a
+change to one should never re-verify the other.
+
+**Two graph builders, not one with a flag.** A decoder's blocks end in logits
+and the draw and bind a cache; an encoder's end in a pooled vector and bind
+none. A builder serving both would change whenever either did. They share the
+kernels and the residual convention, not code.
 
 ## How to apply this
 

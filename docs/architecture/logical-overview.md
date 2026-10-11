@@ -62,6 +62,29 @@ re-tokenized every turn; the diff is what makes that cheap. The KV cache is
 drawn as state rather than as a step, because that is what it is — see below.
 
 ```mermaid
+flowchart LR
+    task["Task prompt<br/>written by the page"] --> tok["Tokenize<br/>algorithm"]
+    tok --> wrap["Wrap<br/>the file's ends"]
+    wrap --> step["Encode<br/>one step, the whole text"]
+    step --> pool["Pool<br/>mean, project, unit length"]
+    pool --> back["Read back<br/>one vector"]
+    classDef default fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    classDef fork fill:#FAECE7,stroke:#D85A30,color:#993C1D
+    classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
+    class tok fork
+    class step regime
+```
+
+**Encode** runs per text, for a model whose architecture embeds rather than
+generates. There is no conversation, no cache and no sampling. The page writes
+the task's prompt around the text, as it renders a chat template for a
+generator, and the tokens, wrapped in the begin and end tokens the file says
+to add, are one step of at most a prefill block, so every token attends to
+every other. What comes back is one unit-length vector, which the page
+compares with others by dot product. A longer text is refused with its token
+count, so the page can cut it into pieces that fit.
+
+```mermaid
 flowchart TD
     sched["Graph<br/>per architecture"]
     sched --> mm["matmul<br/>GEMM · GEMV"]
@@ -149,6 +172,37 @@ never stored whole; they are computed in tiles and combined as they go.
 Concatenating heads moves nothing — each head writes its own columns — and
 the output projection maps them back to the hidden width.
 
+```mermaid
+flowchart TD
+    emb["Embed<br/>a row of the table per token"] --> pli["Per-layer inputs<br/>every layer's at once,<br/>where the model has them"]
+    subgraph layer["Each layer, in order"]
+        att["Attention<br/>both directions,<br/>the step's own keys"] --> ffn["Feed-forward<br/>each row alone"]
+        ffn --> ple["Per-layer block<br/>where the model has one"]
+    end
+    pli --> att
+    ple --> fnorm["Final norm<br/>every row"]
+    fnorm --> pool["Mean<br/>of every row"]
+    pool --> proj["Project<br/>to the embedding's length"]
+    proj --> unit["Unit length"]
+    classDef default fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
+    class att,ffn,ple,proj regime
+```
+
+**Inside Encode.** The same layers, run once over the whole text, with three
+differences in the attention block. Keys and values are the step's own and are
+never cached: nothing of one text is kept for the next. The mask is a window
+either side of each token, not the causal one: a key is live when it lies
+within half the layer's window of the query, and a global layer's window is
+its whole context. And where the model normalizes values, the step that
+normalizes and rotates queries and keys normalizes values too, without a
+gain. A model with per-layer inputs, as Gemma 4's are, computes every layer's
+from the embedding before the first layer, and each layer's per-layer block
+gates by its own. Every row reaches the end: the final norm covers every
+token, the mean pools them into one row, and only that row is projected,
+since a mean and a projection commute. The vector is then scaled to unit
+length, so a dot product between two is their cosine.
+
 ## Principles
 
 These decide how any difference between models is handled. Each was tested
@@ -211,11 +265,15 @@ against real files, but none is specific to the files tested.
 
 9. **Regime is orthogonal to model.** Prefill and decode are shapes of a call,
    not properties of a model. A kernel whose best form depends on that shape
-   has one implementation per regime, and never one per family.
+   has one implementation per regime, and never one per family. An encoder
+   adds no regime: its one step over a whole text is prefill's shape, and
+   what differs — attention in both directions, with no cache — is a property
+   of the model, handled as one under principle 6.
 
 ## The design space
 
-What varies across decoder-only transformers, and which principle handles it.
+What varies across transformers, decoders and the encoders that embed text,
+and which principle handles it.
 
 | What varies | Examples | Handled as |
 |---|---|---|
@@ -235,6 +293,12 @@ What varies across decoder-only transformers, and which principle handles it.
 | Tokenization algorithm | BPE, SentencePiece, WordPiece | its own implementation (2) |
 | Pre-tokenizer | a split pattern, named per lineage | selected by name; the file names it but does not carry it (2) |
 | Weight format | per tensor | pack and unpack (2) |
+| What a model returns | next-token logits, or a pooled embedding | the architecture's kind of graph, chosen once with it (2) |
+| Attention direction | causal, or both ways within a window | file parameter, and a shared kernel for each kind (3, 6) |
+| Value norm | present or absent | declared with the architecture; a variant of the step that normalizes queries and keys |
+| Per-layer inputs | Gemma 4's, or none | graph |
+| Layer output scale | present or absent | graph; applied in the next norm's add |
+| Pooling | mean, or another | file parameter, and a shared kernel (3, 6) |
 
 Two consequences are worth stating outright:
 
@@ -260,6 +324,9 @@ want different kernels.
 | Runs when | every generated token | the first turn, a long system prompt, and every re-prefill after the template rewrites history or context overflows |
 
 So the matmul is two kernels, and so is attention. Neither forks on family.
+An encoder runs the prefill shape alone: its products take their prefill
+forms by token count, as a decoder's prefill does, and its attention is a
+kernel of its own because it differs in kind, not in shape.
 
 ## The KV cache is state keyed on tokens
 
@@ -303,8 +370,10 @@ Two consequences:
   re-render, and the diff finds a short common prefix on its own. It is slower
   for that turn, correct by construction, and visible to the user.
 
-The cache's mechanism is the same for every model. Its storage precision is
-not — that is policy, below.
+The cache's mechanism is the same for every model that generates. Its storage
+precision is not — that is policy, below. An encoder keeps no cache: its keys
+and values live for its one step, in working buffers, and nothing of one text
+reaches the next.
 
 ## Per-model policy
 
@@ -339,7 +408,8 @@ for one model and not another is policy, not code.
 
 **Context offered** is derived, not chosen: the smaller of the file's declared
 context and the memory budget divided by KV bytes per token at the chosen
-precision.
+precision. An encoder, with no cache, offers the smaller of a prefill block
+and the file's declared context: the most one step holds.
 
 **Where policy lives.** The curated model list is a list of measured
 configurations — file, hash, cache precision, memory budget, sampling per
@@ -370,7 +440,7 @@ before it:
 | Describe | its architecture is implemented and can describe the file |
 | Fit | the residency plan fits the **granted** device limits and the budget |
 | Upload | its weights reach the GPU and read back identical |
-| Run | the graph, every weight format, the tokenizer and pre-tokenizer |
+| Run | the graph, every weight format, the tokenizer and pre-tokenizer; a generator's stop set, an encoder's begin and end tokens |
 
 Every check that can run does, so a verdict lists everything a model still
 needs, each item tagged with the stage it stops; the stage reached is the one

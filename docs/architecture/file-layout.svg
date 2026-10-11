@@ -25,8 +25,9 @@
 <g class="gray"><rect x="448" y="104" width="180" height="44" rx="4"/><text class="th" x="538" y="123" text-anchor="middle">opfs.js</text><text class="ts" x="538" y="139" text-anchor="middle">L · model file cache</text></g>
 <g class="gray"><rect x="52" y="156" width="180" height="44" rx="4"/><text class="th" x="142" y="175" text-anchor="middle">load.js</text><text class="ts" x="142" y="191" text-anchor="middle">L · chunks to the runtime</text></g>
 <g class="gray"><rect x="250" y="156" width="180" height="44" rx="4"/><text class="th" x="340" y="175" text-anchor="middle">duplicates.js</text><text class="ts" x="340" y="191" text-anchor="middle">L · confirm copies in the cache</text></g>
+<g class="gray"><rect x="448" y="156" width="180" height="44" rx="4"/><text class="th" x="538" y="175" text-anchor="middle">task_prompt.js</text><text class="ts" x="538" y="191" text-anchor="middle">H · an embedding's task prompt</text></g>
 <line class="arr" x1="340" y1="210" x2="340" y2="230" marker-end="url(#a)"/>
-<g class="coral"><rect x="40" y="232" width="600" height="52" rx="4"/><text class="th" x="340" y="251" text-anchor="middle">The boundary: worker.js ⇄ bindings.cpp</text><text class="ts" x="340" y="267" text-anchor="middle">preflight · load: begin, chunk, finish · generate · cancel</text></g>
+<g class="coral"><rect x="40" y="232" width="600" height="52" rx="4"/><text class="th" x="340" y="251" text-anchor="middle">The boundary: worker.js ⇄ bindings.cpp</text><text class="ts" x="340" y="267" text-anchor="middle">preflight · load: begin, chunk, finish · generate · cancel · embed</text></g>
 <line class="arr" x1="340" y1="284" x2="340" y2="304" marker-end="url(#a)"/>
 <rect class="frame" x="40" y="306" width="600" height="312" rx="8"/>
 <text class="th" x="56" y="326">src/core/ — C++, builds and tests natively</text>
@@ -46,9 +47,9 @@
 <g class="gray"><rect x="346" y="506" width="135" height="44" rx="4"/><text class="th" x="413.5" y="525" text-anchor="middle">cache/prefix</text><text class="ts" x="413.5" y="541" text-anchor="middle">G · pure diff</text></g>
 <g class="gray"><rect x="493" y="506" width="135" height="44" rx="4"/><text class="th" x="560.5" y="525" text-anchor="middle">cache/kv</text><text class="ts" x="560.5" y="541" text-anchor="middle">G · bookkeeping</text></g>
 <g class="gray gpu"><rect x="52" y="562" width="135" height="44" rx="4"/><text class="th" x="119.5" y="581" text-anchor="middle">kernels/*</text><text class="ts" x="119.5" y="597" text-anchor="middle">E · per kernel</text></g>
-<g class="gray"><rect x="199" y="562" width="135" height="44" rx="4"/><text class="th" x="266.5" y="581" text-anchor="middle">graph/</text><text class="ts" x="266.5" y="597" text-anchor="middle">A · shared blocks</text></g>
+<g class="gray"><rect x="199" y="562" width="135" height="44" rx="4"/><text class="th" x="266.5" y="581" text-anchor="middle">graph/</text><text class="ts" x="266.5" y="597" text-anchor="middle">A · decoder, encoder</text></g>
 <g class="gray"><rect x="346" y="562" width="135" height="44" rx="4"/><text class="th" x="413.5" y="581" text-anchor="middle">sampler/</text><text class="ts" x="413.5" y="597" text-anchor="middle">F · top-k candidates</text></g>
-<g class="gray"><rect x="493" y="562" width="135" height="44" rx="4"/><text class="th" x="560.5" y="581" text-anchor="middle">runtime/</text><text class="ts" x="560.5" y="597" text-anchor="middle">M · the turn loop</text></g>
+<g class="gray"><rect x="493" y="562" width="135" height="44" rx="4"/><text class="th" x="560.5" y="581" text-anchor="middle">runtime/</text><text class="ts" x="560.5" y="597" text-anchor="middle">M · turns, encodes</text></g>
 <line class="arr" x1="340" y1="618" x2="340" y2="638" marker-end="url(#a)"/>
 <rect class="frame" x="40" y="640" width="600" height="196" rx="8"/>
 <text class="th" x="56" y="660">Contract headers — no axis; modules depend on these</text>

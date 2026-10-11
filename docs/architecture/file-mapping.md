@@ -41,6 +41,7 @@ module's own header, and contract 11 in the two boundary files.
 | `web/dom.js`, `web/units.js` | H | building elements safely; formatting sizes |
 | `web/models.json` | J | the curated list: one measured configuration per model |
 | `web/template.js` | H | rendering the model's chat template, as a pure function of the conversation and the date |
+| `web/task_prompt.js` | H | an embedding model's task prompt written around a text, as a pure function of the task and the text |
 | `web/vendor/jinja.js` | dependency | `@huggingface/jinja`, byte-for-byte as published; its hash is checked in the tests |
 | `web/chat.js` | H | the conversation panel: renders each turn through the template, streams the reply, stops it |
 | `web/conversation.js` | H | messages as the template sees them, and the conversation shortened to fit the context |
@@ -63,13 +64,14 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/preflight/` | I | the gates: how far this build can take a model, stage by stage |
 | `src/core/model/` | contract | the model description: every number, with no reference to architecture |
 | `src/core/policy/` | contract | a model's measured configuration, and the defaults for an unmeasured one |
-| `src/core/arch/architecture.h` | contract | what every architecture supplies |
+| `src/core/arch/architecture.h` | contract | what every architecture supplies, and which kind of graph: a generator's or an embedder's |
 | `src/core/arch/describe` | C | what describing shares: GGUF's `<arch>.<key>` and `blk.<layer>.<suffix>` naming, and the shape each role's weight has |
 | `src/core/arch/<arch>/` | A | reading its numbers into the model description, and its graph |
-| `src/core/graph/` | A | the blocks each architecture's graph composes: embed, attention, gated feed-forward, output |
+| `src/core/graph/graph` | A | the blocks a generator's graph composes — embed, attention against the cache, gated feed-forward, output — and the working buffers they bind |
+| `src/core/graph/encoder` | A | the blocks an embedder's graph composes — embed, per-layer inputs, attention both ways, gated feed-forward, per-layer block, pooled output — and the working buffers they bind |
 | `src/core/formats/format.h` | contract | what every weight format supplies |
 | `src/core/formats/<format>/` | B | device layout, pack and unpack in WGSL |
-| `src/core/residency/plan` | D | the planner, pure: weights, cache and working buffers, and the context offered |
+| `src/core/residency/plan` | D | the planner, pure: where the weights, a generator's cache and the working set a graph declares lie, and the context offered |
 | `src/core/residency/weight_view` | contract | what a kernel is given for a weight |
 | `src/core/residency/routes`, `piece_writer` | D | pure: where each byte of the file goes, and the writes each chunk completes |
 | `src/core/residency/upload` | D | creating planned buffers and carrying out the writes |
@@ -83,7 +85,8 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/tokenizer/<algorithm>/` | K | encode and decode |
 | `src/core/tokenizer/pretokenize` | K | split patterns keyed by name, and the Unicode category tables they need |
 | `src/core/sampler/` | F | sampling methods; settings and seed are passed in |
-| `src/core/runtime/` | M | the turn loop: diff, prefill, decode, sample |
+| `src/core/runtime/runtime`, `generator`, `stops` | M (generate) | the turn loop: diff, prefill, decode, sample; and the tokens that stop it |
+| `src/core/runtime/embedder`, `ends` | M (encode) | the encode path: wrap a text in the file's ends, one step, read back a vector |
 
 Rows marked *contract* carry no axis. A contract header changes only
 when the contract itself changes, which is cross-cutting by definition: every
@@ -113,6 +116,12 @@ and production never materialises a dequantized weight.
 | **Prefill · Decode** | `core/runtime` M · `core/arch/<arch>` A · `core/kernels/*` E | yes |
 | **Sample** | `core/sampler` F | no |
 | **Emit** | `core/tokenizer/<algorithm>` K · the boundary · `web/chat.js` H | yes |
+| **Task prompt** | `web/task_prompt.js` H | no |
+| **Tokenize**, for an embedder | `core/tokenizer/<algorithm>` K | no |
+| **Wrap** | `core/runtime/ends` M | no |
+| **Encode** | `core/runtime/embedder` M · `core/arch/<arch>` A · `core/graph/encoder` A · `core/kernels/*` E · `core/kernels/program` D | yes |
+| **Pool** | `core/kernels/pool` E · `core/kernels/matmul` E | no |
+| **Read back** | `core/kernels/program` D · the boundary | yes |
 
 ## Inside a pass, block to files
 
@@ -126,7 +135,7 @@ runs, in what order, with what parameters.
 | Order of every block below, per architecture | `core/arch/<arch>` A, composing `core/graph` A |
 | Step parameters: position, token count and the tokens' identifiers | `core/kernels/interface` contract · `core/runtime` M |
 | Launching every block, a step | `core/kernels/program` D |
-| Working buffers: hidden, normed, query, key, value, attention, partials, output, activation, logits | `core/residency/plan` D |
+| Working buffers: hidden, normed, query, key, value, attention, partials, output, activation, logits, selection's and the draw's | declared by `core/graph/graph` A · placed by `core/residency/plan` D |
 | **Embed** | `core/kernels/gather` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
 | **Norms**: attention, feed-forward, final, each with the residual add before it | `core/kernels/norm` E · `core/formats/f32` B |
 | **Projections**: Q, K, V and Wo; feed-forward gate, up and down; the output head | `core/kernels/matmul` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
@@ -138,6 +147,29 @@ runs, in what order, with what parameters.
 Which of these blocks share a launch, and why, is in
 [`kernel-fusions.md`](kernel-fusions.md). The output head reads the token
 embedding where the file ties them, as the residency plan records.
+
+## Inside an encode, block to files
+
+The **Encode** box, opened up as the pass above is: each block of an
+embedder's step in [`logical-overview.md`](logical-overview.md), with the files
+that implement it. The kernels are the same shared kernels wherever they can
+be; an encoder adds block attention and pooling, and forms of rope, norm and
+the matrix product that its graph selects.
+
+| Block | Files, with axis |
+|---|---|
+| Order of every block below, per encoding architecture | `core/arch/<arch>` A, composing `core/graph/encoder` A |
+| Step parameters: position 0, the text's tokens | `core/kernels/interface` contract · `core/runtime/embedder` M |
+| Launching every block, the one step | `core/kernels/program` D |
+| Working buffers: the decoder's own but the cache's and sampler's, and the per-layer inputs, scores, pooled row, projection and embedding | declared by `core/graph/encoder` A · placed by `core/residency/plan` D |
+| **Embed** | `core/kernels/gather` E · `core/formats/<format>` B · `core/residency/weight_view` contract |
+| **Per-layer inputs**: one projection and one norm, for every layer | `core/kernels/matmul` E · `core/kernels/norm` E · `core/formats/<format>` B, BF16 among them |
+| **Norms**, each with the residual add, its post-norm and the layer output scale | `core/kernels/norm` E · `core/formats/f32` B |
+| **Projections**: Q, K and V together, Wo; gate and up together, down | `core/kernels/matmul` E · `core/formats/<format>` B |
+| **QK-norm, value norm, RoPE**, in place | `core/kernels/rope` E, its encode form · `core/model` contract |
+| **Attention**: scores, the window either side, softmax, weighted sum | `core/kernels/block_attention` E |
+| **Per-layer block**: the gate times the layer's input, the projection back | `core/kernels/matmul` E, an epilogue reading the input · `core/kernels/norm` E |
+| **Pool**: mean of every row, projection, unit length | `core/kernels/pool` E · `core/kernels/matmul` E, over one row as the head runs |
 
 ## Files that serve several boxes
 
@@ -156,6 +188,12 @@ changes on exactly one axis.
   streaming decode on the way out.
 - **`web/fetch.js`** serves Preflight, which reads the header prefix, and Fetch,
   which downloads the whole file.
+- **`kernels/program`** serves Prefill · Decode and Encode, and the read back
+  of each: a generator's drawn token, an embedder's vector.
+- **The shared kernels** — gather, norm, rope, the matrix products — serve a
+  generator's pass and an embedder's. A form one of them needs, such as rope's
+  encode form, is a variant its graph selects; the kernel never learns which
+  kind of model it serves.
 
 ## Pre-tokenization is C++
 
@@ -221,7 +259,10 @@ Four rules hold for every contract:
 4. **Model description** — `core/model`. Every number the planner, cache and
    graph need, per layer where the model varies per layer, and each layer's
    tensors by role. The graph and the kernels address weights by role and
-   identifier; no tensor name reaches them.
+   identifier; no tensor name reaches them. Whether attention is causal or
+   runs both ways is in it, and for a model that embeds, what its encoder
+   adds: the per-layer inputs, the output projection, the embedding's length
+   and the pooling.
 5. **Residency plan** — `core/residency/plan`. A pure function: tensor index,
    model description, granted limits and policy in; buffers, each weight's
    place in them, the cache, the working buffers and the context offered, out.
@@ -229,8 +270,13 @@ Four rules hold for every contract:
    advertised maxima, and its packing works at WebGPU's default limits.
    - Three pools that never share a buffer, because their lifetimes differ:
      weights packed in file order into as few buffers as the limits allow; the
-     cache, keys and values per layer; and one set of working buffers every
-     layer reuses, sized for a 512-token prefill block at f32.
+     cache, keys and values per layer, for a model that generates; and one set
+     of working buffers every layer reuses, sized for a 512-token prefill
+     block at f32.
+   - The working buffers are the graph's to name: each graph builder declares
+     its working set — which buffers, how many rows of what width, and
+     whether it keeps a cache — and the planner places what it is given,
+     knowing no kernel by name.
    - Each working buffer is a buffer of its own: WebGPU refuses one buffer
      bound both writable and read-only in a dispatch, and a kernel reads one
      working buffer while writing another.
@@ -251,7 +297,8 @@ Four rules hold for every contract:
      reserve is how far a turn can roll back. Position p lives in slot p mod
      slots. A full-attention layer holds the whole context offered.
    - The context offered is the largest the memory budget allows, capped at
-     the context the model was trained for.
+     the context the model was trained for. A model that keeps no cache offers
+     a prefill block, capped the same way: the most one step holds.
    - An output head stored as a byte-for-byte copy of the token embedding is
      marked a candidate duplicate and given buffers of its own. The page
      compares the two in the cached file before upload, and upload shares only
@@ -265,8 +312,9 @@ Four rules hold for every contract:
    written at load; then weights, then activations. Bind groups are built at
    load; a token costs one uniform write and its dispatches. The runtime picks
    the regime from the number of tokens in the step.
-8. **KV cache** — `core/cache/kv`. Full length for full-attention layers; a
-   ring of the planned slots for sliding-window layers. Truncation resets a
+8. **KV cache** — `core/cache/kv`, for a model that generates. Full length
+   for full-attention layers; a ring of the planned slots for sliding-window
+   layers. Truncation resets a
    counter. A rollback within the policy's reserve keeps the cache; a deeper
    one empties it, because a ring's overwritten entries can only be rebuilt
    from the first token. Capacity and window come from the model description,
@@ -285,7 +333,9 @@ Four rules hold for every contract:
     function of the seed and the token's position, so a seed reproduces a run.
 11. **The boundary** — `web/worker.js` and `src/wasm/bindings.cpp`. Preflight a
     prefix and load a chunk, each under the model's load policy; generate
-    from a rendered prompt and the turn's policy; cancel. The rendered prompt
+    from a rendered prompt and the turn's policy; cancel; or, for a model
+    that embeds, embed a text, its vector crossing once as a view of the
+    module's memory. The rendered prompt
     crosses twice a turn: to the worker as a string, then into the module's
     memory as UTF-8 bytes. The reply's text crosses twice a piece it
     completes, from the module to the worker and from the worker to the page

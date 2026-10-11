@@ -93,6 +93,57 @@ projections, two QK-norms, RoPE, a cache write, attention, a projection and
 an add for attention, and a norm, two projections, an activation, a
 projection and an add for the feed-forward, in each of 28 layers.
 
+## An encoder's step
+
+An embedder runs one step over a whole text (`core/graph/encoder.h`). The
+rules above hold, and four more follow from them:
+
+- **The layer output scale rides in the next norm's add.** Gemma 4 multiplies
+  all of X by a per-layer scalar once a layer's last block is added; the norm
+  that adds that block does it, after the add and before its reduction.
+- **The per-layer gate's product with the layer's input is its matmul's
+  epilogue,** as the activation is gate and up's: GELU of the product, times
+  the layer's slice of the per-layer inputs, written once.
+- **Every layer's per-layer input is one matmul and one norm,** before the
+  first layer, from the embedding: the projection to every layer's width at
+  once, then each layer's slice normalized on its own, with the projection's
+  scale folded into the norm's ε. Each layer's gate reads its slice in place.
+- **Pooling comes before the output projection,** so the projection runs over
+  one row, as a decoder's head does.
+
+And one launch is two: **attention's scores and its weighted sum are separate
+launches,** the scores written between them. At a global layer's head size of
+512, WebGPU's default 16 KiB of workgroup memory leaves an online-softmax tile
+either too many accumulators an invocation or a recomputation of the scores
+for every slice of the output; one write and read of the scores, 4 MiB a
+layer at 512 tokens, costs less (`core/kernels/block_attention/block_attention.h`).
+
+For one layer, in order:
+
+| # | Launch | Fused into it |
+|---|---|---|
+| 1 | norm | the last layer's per-layer output added into X through its post-norm, then X times the last layer's output scale; the attention norm and its gain |
+| 2 | matmul | the Q, K and V projections |
+| 3 | rope, encode form | QK-norm, the value norm, RoPE on queries and keys, all in place; no cache |
+| 4 | block attention, scores | scores in both directions within the window, scaled, and each chunk's maximum |
+| 5 | block attention, weighted sum | softmax and the weighted sum |
+| 6 | matmul | the output projection |
+| 7 | norm | that output added into X through its post-norm; the feed-forward norm and its gain |
+| 8 | matmul | the gate and up projections, and the activation of their product |
+| 9 | matmul | the down projection |
+| 10 | norm, add only | that output added into X through its post-norm; X not normalized, since the gate reads it as it is |
+| 11 | matmul | the per-layer gate, its GELU, and its product with the layer's input |
+| 12 | matmul | the per-layer projection back to the hidden width |
+
+Around the layers: the gather, one launch for each piece of the embedding
+table; the per-layer inputs' projection and norm; and after the layers the
+final norm over every row, the mean, the output projection over one row, and
+the scaling to unit length.
+
+| Model | Layers | Gather | Per-layer inputs | Layers × 12 | Final norm, mean, projection, unit | Launches a step | At 1.5 µs each |
+|---|---|---|---|---|---|---|---|
+| EmbeddingGemma 2 | 24 | 2 | 2 | 288 | 4 | 296 | 0.44 ms |
+
 ## Levers not taken
 
 - **The norm folded into the matmul after it.** Each matmul workgroup would

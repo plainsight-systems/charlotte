@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="680" height="734" viewBox="0 0 680 734" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="1034" viewBox="0 0 680 1034" role="img">
 <title>Each logical box mapped to the files that implement it, with each file's change axis</title>
-<desc>Twelve logical boxes, each with the files that implement it and the axis each file changes on. Seven boxes span more than one axis and split into files on different axes: Pick, Preflight, Gates, Upload, KV cache, Prefill and Decode, and Emit. Files are coloured by layer: JavaScript, C++ core, or the WASM boundary.</desc>
+<desc>Eighteen logical boxes, in three groups — Load, Generate and Encode — each with the files that implement it and the axis each file changes on. Nine boxes span more than one axis and split into files on different axes: Pick, Preflight, Gates, Upload, KV cache, Prefill and Decode, Emit, Encode, and Read back. Files are coloured by layer: JavaScript, C++ core, or the WASM boundary.</desc>
 <style>
   .bg { fill: #FFFFFF; }
   .th { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #2C2C2A; }
@@ -17,7 +17,7 @@
     <path d="M 0 1 L 8 5 L 0 9" fill="none" stroke="#888780" stroke-width="1.5"/>
   </marker>
 </defs>
-<rect class="bg" x="0" y="0" width="680" height="734"/>
+<rect class="bg" x="0" y="0" width="680" height="1034"/>
 
 <text class="th" x="40" y="44">Logical box</text>
 <text class="th" x="192" y="44">Files, and the axis each changes on</text>
@@ -94,13 +94,46 @@
 <g class="gray"><rect x="344" y="606" width="105" height="28" rx="5"/><text class="ts" x="396" y="624" text-anchor="middle">wasm/bindings</text></g>
 <g class="teal"><rect x="457" y="606" width="98" height="28" rx="5"/><text class="ts" x="506" y="624" text-anchor="middle">web/chat · H</text></g>
 
-<g class="coral"><rect x="40" y="658" width="12" height="12" rx="2"/></g>
-<text class="ts" x="60" y="669">spans more than one change axis, so its files split</text>
-<g class="teal"><rect x="40" y="680" width="12" height="12" rx="2"/></g>
-<text class="ts" x="60" y="691">JavaScript</text>
-<g class="purple"><rect x="150" y="680" width="12" height="12" rx="2"/></g>
-<text class="ts" x="170" y="691">C++ core</text>
-<g class="gray"><rect x="250" y="680" width="12" height="12" rx="2"/></g>
-<text class="ts" x="270" y="691">WASM boundary</text>
-<text class="ts" x="40" y="718">A file in more than one row serves several boxes, always on its one axis.</text>
+<text class="ts" x="40" y="666">Encode</text>
+
+<g class="gray"><rect x="40" y="674" width="134" height="32" rx="6"/><text class="th" x="107" y="695" text-anchor="middle">Task prompt</text></g>
+<line class="arr" x1="174" y1="690" x2="190" y2="690" marker-end="url(#a)"/>
+<g class="teal"><rect x="192" y="676" width="150" height="28" rx="5"/><text class="ts" x="267" y="694" text-anchor="middle">web/task_prompt · H</text></g>
+
+<g class="gray"><rect x="40" y="714" width="134" height="32" rx="6"/><text class="th" x="107" y="735" text-anchor="middle">Tokenize</text></g>
+<line class="arr" x1="174" y1="730" x2="190" y2="730" marker-end="url(#a)"/>
+<g class="purple"><rect x="192" y="716" width="144" height="28" rx="5"/><text class="ts" x="264" y="734" text-anchor="middle">tokenizer/&lt;alg&gt; · K</text></g>
+
+<g class="gray"><rect x="40" y="754" width="134" height="32" rx="6"/><text class="th" x="107" y="775" text-anchor="middle">Wrap</text></g>
+<line class="arr" x1="174" y1="770" x2="190" y2="770" marker-end="url(#a)"/>
+<g class="purple"><rect x="192" y="756" width="124" height="28" rx="5"/><text class="ts" x="254" y="774" text-anchor="middle">runtime/ends · M</text></g>
+
+<g class="coral"><rect x="40" y="794" width="134" height="66" rx="6"/><text class="th" x="107" y="832" text-anchor="middle">Encode</text></g>
+<line class="arr" x1="174" y1="810" x2="190" y2="810" marker-end="url(#a)"/>
+<line class="arr" x1="174" y1="844" x2="190" y2="844" marker-end="url(#a)"/>
+<g class="purple"><rect x="192" y="796" width="150" height="28" rx="5"/><text class="ts" x="267" y="814" text-anchor="middle">runtime/embedder · M</text></g>
+<g class="purple"><rect x="350" y="796" width="118" height="28" rx="5"/><text class="ts" x="409" y="814" text-anchor="middle">arch/&lt;arch&gt; · A</text></g>
+<g class="purple"><rect x="476" y="796" width="124" height="28" rx="5"/><text class="ts" x="538" y="814" text-anchor="middle">graph/encoder · A</text></g>
+<g class="purple"><rect x="192" y="830" width="105" height="28" rx="5"/><text class="ts" x="244" y="848" text-anchor="middle">kernels/* · E</text></g>
+<g class="purple"><rect x="305" y="830" width="140" height="28" rx="5"/><text class="ts" x="375" y="848" text-anchor="middle">kernels/program · D</text></g>
+
+<g class="gray"><rect x="40" y="874" width="134" height="32" rx="6"/><text class="th" x="107" y="895" text-anchor="middle">Pool</text></g>
+<line class="arr" x1="174" y1="890" x2="190" y2="890" marker-end="url(#a)"/>
+<g class="purple"><rect x="192" y="876" width="112" height="28" rx="5"/><text class="ts" x="248" y="894" text-anchor="middle">kernels/pool · E</text></g>
+<g class="purple"><rect x="312" y="876" width="128" height="28" rx="5"/><text class="ts" x="376" y="894" text-anchor="middle">kernels/matmul · E</text></g>
+
+<g class="coral"><rect x="40" y="914" width="134" height="32" rx="6"/><text class="th" x="107" y="935" text-anchor="middle">Read back</text></g>
+<line class="arr" x1="174" y1="930" x2="190" y2="930" marker-end="url(#a)"/>
+<g class="purple"><rect x="192" y="916" width="140" height="28" rx="5"/><text class="ts" x="262" y="934" text-anchor="middle">kernels/program · D</text></g>
+<g class="gray"><rect x="340" y="916" width="105" height="28" rx="5"/><text class="ts" x="392" y="934" text-anchor="middle">wasm/bindings</text></g>
+
+<g class="coral"><rect x="40" y="958" width="12" height="12" rx="2"/></g>
+<text class="ts" x="60" y="969">spans more than one change axis, so its files split</text>
+<g class="teal"><rect x="40" y="980" width="12" height="12" rx="2"/></g>
+<text class="ts" x="60" y="991">JavaScript</text>
+<g class="purple"><rect x="150" y="980" width="12" height="12" rx="2"/></g>
+<text class="ts" x="170" y="991">C++ core</text>
+<g class="gray"><rect x="250" y="980" width="12" height="12" rx="2"/></g>
+<text class="ts" x="270" y="991">WASM boundary</text>
+<text class="ts" x="40" y="1018">A file in more than one row serves several boxes, always on its one axis.</text>
 </svg>
