@@ -142,6 +142,13 @@ if (!('gpu' in navigator)) {
       if (loaded.embeddingLength !== null) {
         show(page.search);
         search.open(model, loaded);
+        // ?benchmark, on the development site: the encode's times
+        // (web/dev/embed_benchmark.js).
+        if (new URLSearchParams(location.search).has('benchmark')) {
+          import('./dev/embed_benchmark_run.js')
+            .then(({ runEmbedBenchmark }) => runEmbedBenchmark({ client, model, verdict }))
+            .catch((error) => console.error('benchmark:', error));
+        }
         return;
       }
       show(page.chat);

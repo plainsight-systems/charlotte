@@ -7,7 +7,7 @@ import { RUNS, SCENARIOS, SEED, promptFor, summarize } from './benchmark.js';
 
 // The conditions a browser figure needs (WASM.11). DevTools' being closed is
 // the runner's to state; the page cannot see it.
-async function conditionsOf(model, verdict, sampling) {
+export async function conditionsOf(model, verdict, sampling) {
   let version = null;
   try {
     const high = await navigator.userAgentData?.getHighEntropyValues(['fullVersionList', 'platformVersion']);

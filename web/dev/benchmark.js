@@ -65,7 +65,7 @@ const median = (values) => {
   return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 };
 
-const spread = (values) => ({ median: median(values), least: values.length ? Math.min(...values) : null,
+export const spread = (values) => ({ median: median(values), least: values.length ? Math.min(...values) : null,
   most: values.length ? Math.max(...values) : null });
 
 // runs: { scenario, warmup, hidden, ttftMs, decodeMs, tokens, promptTokens,
