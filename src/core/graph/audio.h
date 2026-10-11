@@ -87,9 +87,8 @@ namespace bllm::graph {
 //          re-norm).
 //       2. The output projection with its bias: `hidden` into `projected`,
 //          R × 1,536 (matmul's biased Write).
-//       3. An RMS norm without a gain: `projected` into `activation`, the
-//          first 1,536 of each row's floats (norm.h's unit gain, width
-//          1,536).
+//       3. An RMS norm without a gain: `projected` into `activation`, as
+//          rows of 1,536 floats (norm.h's unit gain, width 1,536).
 //       4. The multimodal projection, 1,536 to 512: `activation` into
 //          `soft_tokens`. Its rows are the rows the text step reads.
 //   - setup(), the encoder's setup graph, a step of 13 rows run once at
@@ -232,6 +231,17 @@ private:
         residency::BufferRange mel, subsampled, hidden, normed, query, key, value, attention, output, activation,
             projected, soft_tokens, positions, relative, range_sums;
     };
+
+    [[nodiscard]] const residency::WeightView& view(gguf::TensorId tensor) const;
+    // A product's launches, `input` into `output`: clamped where it has
+    // bounds, through the activation where `activated`.
+    void product(const model::AudioProduct& p, const residency::BufferRange& input,
+                 const residency::BufferRange& output, bool activated = false);
+    // The norm that begins a block: the pending result added as `pending_`
+    // says, X normalized with `gain` into `normed`, or not normalized.
+    [[nodiscard]] kernels::Launch norm(const residency::WeightView& gain, bool normalize);
+    // Layer l's 13 rows of `relative`.
+    [[nodiscard]] residency::BufferRange relative(std::uint32_t layer) const;
 
     const model::ModelDescription* model_;
     const residency::ResidencyPlan* plan_;

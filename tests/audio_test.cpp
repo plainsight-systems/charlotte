@@ -7,6 +7,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -71,6 +72,31 @@ model::ModelDescription described(const gguf::TensorIndex& index) {
 }
 
 std::string_view name_of(const Header& h, gguf::TensorId id) { return h.index.tensor(id).name; }
+
+std::uint64_t workgroups(const kernels::Launch& l, std::uint32_t tokens) {
+    return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens,
+                                    l.partial_rows, l.row_divisor},
+                                   l.workgroup_size, 0, tokens, true);
+}
+
+residency::ResidencyPlan planned(const Header& h, const model::ModelDescription& m) {
+    residency::ResidencyPlan plan;
+    const auto r = residency::plan_residency(h.index, m, kDefaults, policy::LoadPolicy{},
+                                             graph::audio_working_set(m, kRows), plan, kAudioRanges);
+    REQUIRE_MESSAGE(r.ok(), r.subject);
+    return plan;
+}
+
+const residency::BufferRange& scratch(const residency::ResidencyPlan& plan, std::string_view purpose) {
+    const auto s = std::find_if(plan.scratch.begin(), plan.scratch.end(),
+                                [&](const residency::PlannedScratch& p) { return p.purpose == purpose; });
+    REQUIRE(s != plan.scratch.end());
+    return s->range;
+}
+
+bool binds(const kernels::Binding& b, const residency::BufferRange& r) {
+    return b.buffer == r.buffer && b.offset == r.offset && b.size == r.length;
+}
 
 }  // namespace
 
@@ -212,4 +238,134 @@ TEST_CASE("the audio encoder cannot plan against the vision span: its tensors li
     const auto planned = residency::plan_residency(h.index, m, kDefaults, policy::LoadPolicy{},
                                                    graph::audio_working_set(m, kRows), plan, kVisionRanges);
     CHECK(planned.error == residency::PlanError::MissingTensorBytes);
+}
+
+TEST_CASE("the audio graph: 199 blocks' launches at R of 1, 75 and 508, a layer's 16 in order, clamps on their spans") {
+    const Header h = read_mmproj();
+    const arch::MediaEncoder* encoder = capability::find_media_encoder(arch::MediaKind::Audio, "gemma4a");
+    REQUIRE(encoder == &arch::kGemma4Audio);
+    CHECK(capability::find_media_encoder(arch::MediaKind::Image, "gemma4a") == nullptr);
+    const model::ModelDescription m = described(h.index);
+    const residency::ResidencyPlan plan = planned(h, m);
+    std::vector<kernels::Launch> launches;
+    const auto built = encoder->graph(m, plan, launches);
+    REQUIRE_MESSAGE(built.ok(), built.subject);
+
+    const std::vector<std::string_view> layer{"ffn.norm",       "ffn.up",           "ffn.down",  "attention.norm",
+                                              "attention.q",    "attention.k",      "attention.v", "attention.local",
+                                              "attention.output", "conv.norm",      "conv.in",   "conv.light",
+                                              "conv.out",       "ffn2.norm",        "ffn2.up",   "ffn2.down"};
+    for (const std::uint32_t rows : {1u, 75u, kRows}) {
+        CAPTURE(rows);
+        // A product's launches for one step: its form for the step, and a
+        // combine where the gate splits it; one block each.
+        std::vector<std::pair<std::string_view, std::uint32_t>> blocks;
+        for (const kernels::Launch& l : launches) {
+            const std::uint64_t w = workgroups(l, rows);
+            CHECK(w <= 65535);
+            if (w == 0) continue;
+            if (blocks.empty() || blocks.back() != std::pair{l.role, l.layer}) blocks.emplace_back(l.role, l.layer);
+        }
+        REQUIRE(blocks.size() == 199);
+        CHECK(blocks[0].first == "subsample.first");
+        CHECK(blocks[1].first == "subsample.second");
+        CHECK(blocks[2].first == "subsample.project");
+        for (std::uint32_t l = 0; l < 12; ++l) {
+            for (std::size_t i = 0; i < layer.size(); ++i) {
+                CHECK(blocks[3 + 16 * l + i] == std::pair{layer[i], l});
+            }
+        }
+        CHECK(blocks[195].first == "out.renorm");
+        CHECK(blocks[196].first == "out.project");
+        CHECK(blocks[197].first == "out.norm");
+        CHECK(blocks[198].first == "out.embed");
+    }
+
+    // Every launch of a clamped product binds its weight's span, as does the
+    // biased output projection; none of them splits along K.
+    const auto span_of = [&](gguf::TensorId weight) -> const residency::BufferRange& {
+        const auto s = std::find_if(plan.spans.begin(), plan.spans.end(),
+                                    [&](const residency::PlannedSpan& p) { return p.weight == weight; });
+        REQUIRE(s != plan.spans.end());
+        return s->span;
+    };
+    const auto weight_of = [&](const kernels::Launch& l) -> std::optional<gguf::TensorId> {
+        if (l.layer == kernels::kNoLayer) {
+            if (l.role == "out.project") return m.audio->output_projection;
+            return std::nullopt;
+        }
+        const model::ConformerLayer& c = m.audio->layers[l.layer];
+        const std::pair<std::string_view, const model::AudioProduct*> products[] = {
+            {"ffn.up", &c.ffn_up},       {"ffn.down", &c.ffn_down},   {"attention.q", &c.query},
+            {"attention.k", &c.key},     {"attention.v", &c.value},   {"attention.output", &c.attention_output},
+            {"conv.in", &c.pointwise_in}, {"conv.out", &c.pointwise_out}, {"ffn2.up", &c.ffn_up_1},
+            {"ffn2.down", &c.ffn_down_1}};
+        for (const auto& [role, p] : products) {
+            if (l.role == role) return p->weight;
+        }
+        return std::nullopt;
+    };
+    std::size_t spanned = 0;
+    for (const kernels::Launch& l : launches) {
+        const auto weight = weight_of(l);
+        if (!weight) continue;
+        CAPTURE(l.role);
+        CAPTURE(l.layer);
+        CHECK(binds(l.bindings[0], span_of(*weight)));
+        CHECK(l.entry_point.find("split") == std::string_view::npos);
+        ++spanned;
+    }
+    CHECK(spanned >= 12 * 10 + 1);
+
+    // The reused buffers: the second convolution's rows in `normed`, the
+    // GLU's in `attention`, the light convolution's in `query`, the output
+    // norm's in `activation`; each layer's attention its own relative rows.
+    const auto first = [&](std::string_view role, std::uint32_t at_layer = kernels::kNoLayer) -> const kernels::Launch& {
+        const auto l = std::find_if(launches.begin(), launches.end(),
+                                    [&](const kernels::Launch& x) { return x.role == role && x.layer == at_layer; });
+        REQUIRE(l != launches.end());
+        return *l;
+    };
+    CHECK(binds(first("subsample.first").bindings[3], scratch(plan, "subsampled")));
+    CHECK(binds(first("subsample.second").bindings[3], scratch(plan, "normed")));
+    CHECK(binds(first("conv.light", 3).bindings[2], scratch(plan, "attention")));
+    CHECK(binds(first("conv.light", 3).bindings[3], scratch(plan, "query")));
+    CHECK(binds(first("out.norm").bindings[4], scratch(plan, "activation")));
+    const residency::BufferRange& relative = scratch(plan, "relative");
+    const std::uint64_t table = 13ull * 1024 * 4;
+    for (std::uint32_t l = 0; l < 12; ++l) {
+        const kernels::Binding& b = first("attention.local", l).bindings[1];
+        CHECK(b.buffer == relative.buffer);
+        CHECK(b.offset == relative.offset + l * table);
+        CHECK(b.size == table);
+    }
+}
+
+TEST_CASE("the audio setup: each layer's relative table, attn_k_rel times the 13 positions, into its own rows") {
+    const Header h = read_mmproj();
+    const model::ModelDescription m = described(h.index);
+    const residency::ResidencyPlan plan = planned(h, m);
+    std::vector<kernels::Launch> launches;
+    const auto built = arch::kGemma4Audio.setup(m, plan, launches);
+    REQUIRE_MESSAGE(built.ok(), built.subject);
+    std::vector<std::uint32_t> layers;
+    const residency::BufferRange& relative = scratch(plan, "relative");
+    const std::uint64_t table = 13ull * 1024 * 4;
+    for (const kernels::Launch& l : launches) {
+        CHECK(l.role == "relative.project");
+        if (workgroups(l, 13) == 0) continue;
+        layers.push_back(l.layer);
+        CAPTURE(l.entry_point);
+        const auto bound = [&](const residency::BufferRange& r) {
+            return std::any_of(l.bindings.begin(), l.bindings.end(),
+                               [&](const kernels::Binding& b) { return binds(b, r); });
+        };
+        // A split's ranges read the positions and write range sums; its
+        // combine reads those and writes the table; any other form both.
+        const bool combine = l.entry_point.starts_with("combine");
+        const bool split = l.entry_point.starts_with("split");
+        if (!combine) CHECK(bound(scratch(plan, "positions")));
+        if (!split) CHECK(bound({relative.buffer, relative.offset + l.layer * table, table}));
+    }
+    CHECK(std::unique(layers.begin(), layers.end()) - layers.begin() == 12);
 }

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/arch/describe.h"
+#include "core/graph/audio.h"
 #include "core/media/audio.h"
 
 namespace bllm::arch {
@@ -230,5 +231,34 @@ DescribeResult pairs_gemma4a(const model::ModelDescription& audio, const model::
     }
     return {};
 }
+
+namespace {
+
+// The subsampling; each layer's two half-step feed-forwards around its
+// attention and its convolution module; the output (graph/audio.h).
+graph::GraphResult audio(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
+                         std::vector<kernels::Launch>& out) {
+    graph::AudioBuilder b(model, plan, out);
+    if (auto r = b.subsample(); !r.ok()) return r;
+    for (std::uint32_t layer = 0; layer < model.audio->layers.size(); ++layer) {
+        if (auto r = b.feed_forward(layer, 0); !r.ok()) return r;
+        if (auto r = b.attention(layer); !r.ok()) return r;
+        if (auto r = b.convolution(layer); !r.ok()) return r;
+        if (auto r = b.feed_forward(layer, 1); !r.ok()) return r;
+    }
+    return b.output();
+}
+
+// Each layer's relative position table, once at load (graph/audio.h).
+graph::GraphResult setup(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
+                         std::vector<kernels::Launch>& out) {
+    graph::AudioBuilder b(model, plan, out);
+    return b.setup();
+}
+
+}  // namespace
+
+const MediaEncoder kGemma4Audio{MediaKind::Audio, kProjector, describe_gemma4a, audio, setup, pairs_gemma4a,
+                                 {"<|audio|>", "<|audio>", "<audio|>"}};
 
 }  // namespace bllm::arch

@@ -5,6 +5,7 @@
 
 #include "core/arch/embedding_gemma2/embedding_gemma2.h"
 #include "core/arch/gemma3/gemma3.h"
+#include "core/arch/gemma4a/gemma4a.h"
 #include "core/arch/gemma4v/gemma4v.h"
 #include "core/arch/llama/llama.h"
 #include "core/arch/qwen3/qwen3.h"
@@ -50,6 +51,7 @@ constexpr std::array kArchitectures{
     Row<std::string_view, arch::Architecture>{"qwen3", &arch::kQwen3},
 };
 constexpr std::array kMediaEncoders{
+    Row<std::string_view, arch::MediaEncoder>{"gemma4a", &arch::kGemma4Audio},
     Row<std::string_view, arch::MediaEncoder>{"gemma4v", &arch::kGemma4Vision},
 };
 constexpr std::array kFormats{
