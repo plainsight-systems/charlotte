@@ -21,6 +21,7 @@ namespace bllm::kernels {
 // callback that lands after the Program is gone still has what it touches
 // (R.20, R.21).
 struct Program::State {
+    const residency::Upload* upload = nullptr;   // borrowed: it outlives the program
     gpu::Instance instance;
     gpu::DeviceHandle device;
     // Whether the device has been lost: a step that fails on a lost device
@@ -412,6 +413,7 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
 
     auto state = std::make_shared<State>();
     state->instance = gpu::retain(upload.instance());
+    state->upload = &upload;
     state->device = gpu::retain(upload.device());
     state->device_status = upload.device_status();
     WGPUDevice device = state->device.get();
@@ -597,7 +599,7 @@ namespace {
 // Records and submits one step: run()'s, and in a diagnostic build
 // run_profiled()'s — its first `limit` launches, timed when `profiled`.
 void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, const Step& step, std::uint32_t limit,
-                bool profiled, StepCallback done,
+                bool profiled, std::span<const RunInput> inputs, std::span<const RunCopy> copies, StepCallback done,
 #if BLLM_DIAGNOSTICS_ENABLED
                 Program::ProfileCallback profile_done,
 #endif
@@ -648,8 +650,39 @@ void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, 
     // arithmetic may wrap (interface.h): refused, before any launch.
     bool fits = std::uint64_t{step.position} + step.tokens <= kMaxPositions;
     if (!fits) o.message.assign("a step past position 2^24");
+    // Inputs and copies within their ranges, whole words, or the step fails
+    // before anything is written or run.
+    for (const RunInput& in : inputs) {
+        if (!fits) break;
+        if (in.bytes.size() > in.to.size || in.bytes.size() % 4 != 0) {
+            fits = false;
+            o.message.assign("an input larger than its buffer's range, or not whole words");
+        }
+    }
+    for (const RunCopy& c : copies) {
+        if (!fits) break;
+        const Binding& from = c.link->from();
+        const Binding& to = c.link->to();
+        if (c.bytes % 4 != 0 || c.from_offset % 4 != 0 || c.to_offset % 4 != 0 || c.from_offset > from.size ||
+            c.bytes > from.size - c.from_offset || c.to_offset > to.size || c.bytes > to.size - c.to_offset) {
+            fits = false;
+            o.message.assign("a copy outside its link's ranges, or not whole words");
+        }
+    }
+    if (fits) {
+        for (const RunInput& in : inputs) {
+            if (in.bytes.empty()) continue;
+            wgpuQueueWriteBuffer(s.queue.get(), s.upload->buffer(in.to.buffer), in.to.offset, in.bytes.data(),
+                                 in.bytes.size());
+        }
+    }
     if (fits) {
         const gpu::CommandEncoder encoder(wgpuDeviceCreateCommandEncoder(device, nullptr));
+        for (const RunCopy& c : copies) {
+            if (c.bytes == 0) continue;
+            wgpuCommandEncoderCopyBufferToBuffer(encoder.get(), c.link->source(), c.link->from().offset + c.from_offset,
+                                                 c.link->target(), c.link->to().offset + c.to_offset, c.bytes);
+        }
         {
 #if BLLM_DIAGNOSTICS_ENABLED
             WGPUComputePassDescriptor pass_desc = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
@@ -802,12 +835,31 @@ void Program::run(const Step& step, StepCallback done, void* userdata) {
         return;
     }
 #endif
-    begin_step(s, state_, step, static_cast<std::uint32_t>(s.launches.size()), false, done,
+    begin_step(s, state_, step, static_cast<std::uint32_t>(s.launches.size()), false, {}, {}, done,
 #if BLLM_DIAGNOSTICS_ENABLED
                nullptr,
 #endif
                userdata);
 }
+
+void Program::run(const Step& step, std::span<const RunInput> inputs, std::span<const RunCopy> copies,
+                  StepCallback done, void* userdata) {
+    State& s = *state_;
+#if BLLM_DIAGNOSTICS_ENABLED
+    if (s.profiled_outstanding > 0) {
+        done(ProgramError::Step, "a step beside a profiled one", {}, userdata);
+        return;
+    }
+#endif
+    begin_step(s, state_, step, static_cast<std::uint32_t>(s.launches.size()), false, inputs, copies, done,
+#if BLLM_DIAGNOSTICS_ENABLED
+               nullptr,
+#endif
+               userdata);
+}
+
+ProgramLink::ProgramLink(const residency::Upload& source, Binding from, const residency::Upload& target, Binding to)
+    : source_(source.buffer(from.buffer)), target_(target.buffer(to.buffer)), from_(from), to_(to) {}
 
 #if BLLM_DIAGNOSTICS_ENABLED
 std::uint32_t Program::launch_count() const noexcept {
@@ -864,7 +916,7 @@ void Program::run_profiled(const Step& step, std::uint32_t launches, ProfileCall
         refuse("a third step while two are outstanding");
         return;
     }
-    begin_step(s, state_, step, launches, true, nullptr, done, userdata);
+    begin_step(s, state_, step, launches, true, {}, {}, nullptr, done, userdata);
 }
 #endif
 

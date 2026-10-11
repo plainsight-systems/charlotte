@@ -104,7 +104,10 @@ WGPUBufferUsage usage(Pool pool) {
             return WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst |
                    (diagnostics_enabled() ? WGPUBufferUsage_CopySrc : WGPUBufferUsage_None);
         case Pool::Cache: return WGPUBufferUsage_Storage;
-        case Pool::Scratch: return WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc;
+        // Written as well as read back: a vision step's patches are written
+        // into `pixels`, and its rows copied into a text step's `hidden`
+        // (kernels/program.h, runtime/vision.h).
+        case Pool::Scratch: return WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
     }
     return WGPUBufferUsage_None;
 }

@@ -431,3 +431,67 @@ TEST_CASE("compose uses every constant a pipeline is given in its entry point, w
     launch.entry_point = "absent";
     CHECK(kernels::compose(launch).source.find("_ = columns;") == std::string::npos);
 }
+
+TEST_CASE("a run writes its inputs and copies across a link before its pass; out of range, the step fails") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    // Two uploads on one device, as a text model and its vision encoder are.
+    Stamping a, b;
+    upload_for_stamps(instance.get(), *device, a);
+    upload_for_stamps(instance.get(), *device, b);
+    const auto source = stamp_program(instance.get(), a);   // stamps into a's `sampled`
+    const residency::BufferRange hidden = scratch(b.model, "hidden");
+    const kernels::Binding read_back{hidden.buffer, hidden.offset, 16};
+    // b's program reads back the first 16 bytes of its `hidden`, which only
+    // the run's input or copy writes.
+    const auto target = build_program(
+        instance.get(), *b.upload,
+        {kernels::Launch{kStamp, nullptr, std::vector<std::byte>(4), {{b.sampled.buffer, b.sampled.offset, 16}}, 1, 1}},
+        read_back);
+    const kernels::ProgramLink link(*a.upload, {a.sampled.buffer, a.sampled.offset, 16}, *b.upload,
+                                    {hidden.buffer, hidden.offset, hidden.length});
+
+    kernels::Step stamped = step_at(5, true);
+    REQUIRE(try_step(instance.get(), *source, stamped).error == kernels::ProgramError::Ok);
+
+    const auto words_of = [](const StepOutcome& o) {
+        std::vector<std::uint32_t> w(o.readback.size() / 4);
+        if (!o.readback.empty()) std::memcpy(w.data(), o.readback.data(), o.readback.size());
+        return w;
+    };
+    const auto run_with = [&](std::span<const kernels::RunInput> inputs, std::span<const kernels::RunCopy> copies) {
+        struct Ran {
+            StepOutcome outcome{kernels::ProgramError::Step, {}, {}};
+            bool done = false;
+        } ran;
+        target->run(step_at(0, true), inputs, copies,
+                    [](kernels::ProgramError e, std::string_view m, std::span<const std::byte> bytes, void* userdata) {
+                        auto& r = *static_cast<Ran*>(userdata);
+                        r.outcome = {e, std::string(m), std::vector<std::byte>(bytes.begin(), bytes.end())};
+                        r.done = true;
+                    },
+                    &ran);
+        pump_until(instance.get(), ran.done, "the step");
+        return ran.outcome;
+    };
+
+    // The copy: a's stamp lands in b's hidden before b's pass.
+    const kernels::RunCopy copy{&link, 0, 0, 16};
+    const StepOutcome copied = run_with({}, std::span(&copy, 1));
+    REQUIRE_MESSAGE(copied.error == kernels::ProgramError::Ok, copied.message);
+    CHECK(words_of(copied) == std::vector<std::uint32_t>{5, 1, 7, 9});
+
+    // An input: written before the pass, read back after it.
+    const std::uint32_t written[4] = {11, 12, 13, 14};
+    const kernels::RunInput input{{hidden.buffer, hidden.offset, 16}, std::as_bytes(std::span(written))};
+    const StepOutcome put = run_with(std::span(&input, 1), {});
+    REQUIRE_MESSAGE(put.error == kernels::ProgramError::Ok, put.message);
+    CHECK(words_of(put) == std::vector<std::uint32_t>{11, 12, 13, 14});
+
+    // Out of range: an input larger than its range, a copy past its link's.
+    const std::uint32_t too_many[5] = {1, 2, 3, 4, 5};
+    const kernels::RunInput over{{hidden.buffer, hidden.offset, 16}, std::as_bytes(std::span(too_many))};
+    CHECK(run_with(std::span(&over, 1), {}).error == kernels::ProgramError::Step);
+    const kernels::RunCopy past{&link, 4, 0, 16};
+    CHECK(run_with({}, std::span(&past, 1)).error == kernels::ProgramError::Step);
+}

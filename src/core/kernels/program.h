@@ -44,6 +44,14 @@ namespace bllm::kernels {
 //     (kernels/schedule.h). Launches run in the
 //     order given, which is the graph's; WebGPU orders dispatches in a pass
 //     by their buffer use, so a launch sees what the one before it wrote.
+//   - Inputs and links: a run may write bytes into its own upload's
+//     working buffers before its pass — a vision step's patches, one
+//     wgpuQueueWriteBuffer — and encode copies before its pass from another
+//     program's working buffer through a ProgramLink made at load — a
+//     vision step's soft tokens into a text step's image rows
+//     (runtime/vision.h). Each program binds only its own upload's buffers;
+//     the link holds the two it copies between. Working buffers are created
+//     COPY_DST for them (residency/upload.h).
 //   - Read back: a step that asks for logits copies the readback range into
 //     one of the two slots, after its pass, in its own command buffer, and
 //     maps the slot once submitted; its callback carries the bytes. Steps
@@ -158,6 +166,47 @@ enum class ProgramError {
 };
 
 class Program;
+class ProgramLink;
+
+// Bytes a run writes into one of its upload's buffers before its pass: a
+// vision step's patches into `pixels` (runtime/vision.h). One
+// wgpuQueueWriteBuffer, which copies the bytes before it returns.
+struct RunInput {
+    Binding to;
+    std::span<const std::byte> bytes;
+};
+
+// A copy a run encodes before its pass, from another program's working
+// buffer into this one's, through a link made at load: a vision step's soft
+// tokens into a text step's image rows (runtime/vision.h). Offsets are
+// within the link's ranges; every value a multiple of 4.
+struct RunCopy {
+    const ProgramLink* link;
+    std::uint64_t from_offset;
+    std::uint64_t to_offset;
+    std::uint64_t bytes;
+};
+
+// A route between two uploads' working buffers on one device, made at load,
+// so a run of the target program can copy between them without either
+// program binding the other's buffers. It holds the two buffers borrowed.
+// Preconditions: both uploads finished on the same device and outlive the
+// link; `from` and `to` name working buffers each created.
+class ProgramLink {
+public:
+    ProgramLink(const residency::Upload& source, Binding from, const residency::Upload& target, Binding to);
+
+    [[nodiscard]] WGPUBuffer source() const noexcept { return source_; }
+    [[nodiscard]] WGPUBuffer target() const noexcept { return target_; }
+    [[nodiscard]] const Binding& from() const noexcept { return from_; }
+    [[nodiscard]] const Binding& to() const noexcept { return to_; }
+
+private:
+    WGPUBuffer source_;
+    WGPUBuffer target_;
+    Binding from_;
+    Binding to_;
+};
 
 using BuildCallback = void (*)(std::unique_ptr<Program> program, ProgramError error, std::string_view message,
                                void* userdata);
@@ -244,6 +293,14 @@ public:
     // outstanding is refused at once. Preconditions: 1 <= step.tokens <=
     // kPrefillBlock, every identifier below the vocabulary.
     void run(const Step& step, StepCallback done, void* userdata);
+
+    // Runs one step as run() does, first writing `inputs` into their buffers
+    // and encoding `copies` before the pass. An input or copy outside its
+    // range, or not of whole words, fails the step, Step, without running
+    // it. Preconditions: run()'s; every input's buffer is the program's
+    // upload's.
+    void run(const Step& step, std::span<const RunInput> inputs, std::span<const RunCopy> copies, StepCallback done,
+             void* userdata);
 
     ~Program();
     Program(const Program&) = delete;
