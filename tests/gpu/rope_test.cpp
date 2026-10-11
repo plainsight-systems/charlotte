@@ -18,6 +18,7 @@
 
 #include "core/formats/f16/f16.h"
 #include "core/gguf/reader.h"
+#include "bllm/shaders_generated.h"
 #include "core/kernels/rope/rope.h"
 #include "core/quant/q4_0.h"
 #include "support/acquire.h"
@@ -351,4 +352,136 @@ TEST_CASE("tokens prefilled as one step and decoded one at a time write the same
                              prefilled.values.begin() + slot * width));
         }
     }
+}
+
+namespace {
+
+// EmbeddingGemma 2's sliding and global layers, in rope's encode form.
+constexpr Shape kEgSliding{"eg_sliding", 4, 2, 256, model::RotaryPairing::Halves, true, false, 1e4f};
+constexpr Shape kEgGlobal{"eg_global", 4, 1, 512, model::RotaryPairing::Halves, true, false, 1e6f};
+
+// What an encode-form step leaves in place: its rows of the query, key and
+// value buffers.
+struct Encoded {
+    std::vector<float> query, key, value;
+};
+
+kernels::Launch encode_launch_for(const Uploaded& u, const Shape& s, bool value_norm) {
+    const std::string n = s.name;
+    return kernels::rope_encode_launch({model::LayerDescription{s.query_heads, s.key_value_heads, s.d, 0, 0, s.base, {}},
+                                        s.pairing, &u.view("qn_" + n), &u.view("kn_" + n), nullptr, value_norm,
+                                        kEpsilon, u.query, u.key, u.value});
+}
+
+Encoded run_encode(WGPUInstance instance, const gpu::Device& device, const Uploaded& u, const Shape& s,
+                   std::uint32_t position, std::uint32_t tokens, bool value_norm) {
+    const std::string n = s.name;
+    std::vector<kernels::Launch> launches;
+    launches.push_back(copy_launch(u.view("q_" + n), u.query, s.query_heads * s.d, 0));
+    launches.push_back(copy_launch(u.view("k_" + n), u.key, s.key_value_heads * s.d, 0));
+    launches.push_back(copy_launch(u.view("v_" + n), u.value, s.key_value_heads * s.d, 0));
+    launches.push_back(encode_launch_for(u, s, value_norm));
+    const auto program = build_program(instance, *u.upload, std::move(launches));
+    run_step(instance, *program, tokens, {}, position);
+    const auto read = [&](const residency::BufferRange& r, std::uint32_t width) {
+        return read_floats(instance, device, u.upload->buffer(r.buffer), 0, tokens * width);
+    };
+    return {read(u.query, s.query_heads * s.d), read(u.key, s.key_value_heads * s.d),
+            read(u.value, s.key_value_heads * s.d)};
+}
+
+// Checks an encode-form step against f64: queries and keys normalized with
+// their gains and rotated, within rope.h's bound; values normalized without
+// a gain within the norm's margin against the head's largest, or, without
+// the value norm, as they were, bit for bit.
+void check_encode(const Uploaded& u, const Shape& s, const Encoded& got, std::uint32_t position, std::uint32_t tokens,
+                  bool value_norm, std::span<const float> turns) {
+    const std::string n = s.name;
+    const auto q = u.floats("q_" + n), k = u.floats("k_" + n), v = u.floats("v_" + n);
+    const auto qn = u.floats("qn_" + n), kn = u.floats("kn_" + n);
+    const std::vector<float> none(s.d / 2, 1.0f);
+    for (std::uint32_t t = 0; t < tokens; ++t) {
+        const std::uint32_t p = position + t;
+        CAPTURE(p);
+        const auto check_rotated = [&](std::span<const float> from, std::span<const float> gain, std::uint32_t heads,
+                                       const std::vector<float>& out, const char* what) {
+            for (std::uint32_t h = 0; h < heads; ++h) {
+                const std::size_t at = (std::size_t{t} * heads + h) * s.d;
+                const Head want = reference_head(s, from.subspan(at, s.d), gain, none, turns, p, true);
+                for (std::uint32_t i = 0; i < s.d; ++i) {
+                    const double error = std::abs(out[at + i] - want.values[i]);
+                    if (!(error <= bound(s, want, i))) {
+                        FAIL_CHECK(what << " head " << h << " value " << i << " off by " << error);
+                        return;
+                    }
+                }
+            }
+        };
+        check_rotated(q, qn, s.query_heads, got.query, "query");
+        check_rotated(k, kn, s.key_value_heads, got.key, "key");
+        for (std::uint32_t h = 0; h < s.key_value_heads; ++h) {
+            const std::size_t at = (std::size_t{t} * s.key_value_heads + h) * s.d;
+            double squares = 0, largest = 0;
+            for (std::uint32_t i = 0; i < s.d; ++i) squares += double{v[at + i]} * v[at + i];
+            const double r = 1.0 / std::sqrt(squares / s.d + static_cast<double>(kEpsilon));
+            for (std::uint32_t i = 0; i < s.d; ++i) largest = std::max(largest, std::abs(v[at + i] * r));
+            for (std::uint32_t i = 0; i < s.d; ++i) {
+                if (!value_norm) {
+                    if (got.value[at + i] != v[at + i]) {
+                        FAIL_CHECK("value head " << h << " value " << i << " changed without the value norm");
+                        return;
+                    }
+                    continue;
+                }
+                const double error = std::abs(got.value[at + i] - v[at + i] * r);
+                if (!(error <= largest * std::ldexp(1.0, -17))) {
+                    FAIL_CHECK("value head " << h << " value " << i << " off by " << error);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("rope's encode form normalizes and rotates in place, values normalized without a gain where asked") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_rows(instance.get(), *device);
+    for (const Shape& s : {kEgSliding, kEgGlobal}) {
+        const auto turns = turns_of(encode_launch_for(u, s, true), s.d);
+        for (const bool value_norm : {true, false}) {
+            for (const std::uint32_t tokens : {1u, 3u, kRows}) {
+                for (const std::uint32_t position : {0u, 8188u}) {
+                    CAPTURE(s.name);
+                    CAPTURE(value_norm);
+                    CAPTURE(tokens);
+                    CAPTURE(position);
+                    const Encoded got = run_encode(instance.get(), *device, u, s, position, tokens, value_norm);
+                    check_encode(u, s, got, position, tokens, value_norm, turns);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("the encode form is its own source, binds six buffers and sizes its tables by the head") {
+    const residency::WeightView gain(gguf::TensorType::F32, gguf::TensorShape{1, {512, 0, 0, 0}, 512},
+                                     {{residency::BufferIndex{0}, 0, 2048, 0, 1}});
+    const residency::BufferRange q{residency::BufferIndex{1}, 0, 64}, k{residency::BufferIndex{2}, 0, 64},
+        v{residency::BufferIndex{3}, 0, 64};
+    const kernels::Launch l = kernels::rope_encode_launch(
+        {model::LayerDescription{4, 1, 512, 0, 0, 1e6f, {}}, model::RotaryPairing::Halves, &gain, &gain, nullptr, true,
+         kEpsilon, q, k, v});
+    CHECK(l.kernel.ends_with(shaders::rope_encode));
+    CHECK(l.kernel.starts_with(shaders::rope));
+    CHECK(l.entry_point == "main");
+    CHECK(l.bindings.size() == 6);
+    CHECK(l.pack_format == nullptr);
+    CHECK(l.invocations_per_row == (4 + 2 * 1) * 512 / 8);
+    CHECK(l.constants.size() == 1040);
+    CHECK(std::find(l.overrides.begin(), l.overrides.end(), kernels::Override{"pairs_per_head", 256}) !=
+          l.overrides.end());
+    CHECK(std::find(l.overrides.begin(), l.overrides.end(), kernels::Override{"value_norm", 1}) != l.overrides.end());
 }

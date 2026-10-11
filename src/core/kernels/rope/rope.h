@@ -43,8 +43,9 @@ namespace bllm::kernels {
 //     H_kv) × d / 8 invocations a row — 512 for Qwen3, 384 for Llama 3.2,
 //     192 for Gemma 3. Workgroups of 64, so 512 / d heads a workgroup, and a
 //     row is a whole number of workgroups — 8, 6 and 3 — so every invocation
-//     of a workgroup works on one token. Head dimensions 64, 128 and 256,
-//     the listed models': d / 8 must divide the workgroup, and the
+//     of a workgroup works on one token. Head dimensions 64, 128, 256 and
+//     512 — the listed models', and EmbeddingGemma 2's global layers, whose
+//     head is one whole workgroup: d / 8 must divide the workgroup, and the
 //     frequencies fill at most the constants below.
 //   - Angles depend on the position and the pair, not the head. So each
 //     workgroup that rotates — any whose heads include a query or key head —
@@ -57,8 +58,12 @@ namespace bllm::kernels {
 //     sines, by pair, so under Halves invocation i of a head reads vec4 i of
 //     each — adjacent invocations adjacent words, and a workgroup's heads
 //     the same ones, which workgroup memory broadcasts. A workgroup of value
-//     heads alone computes none. With the norm's 64 partial sums, a
-//     workgroup holds at most 1.25 KiB of workgroup memory.
+//     heads alone computes none. The tables are sized by an override,
+//     `pairs_per_head`, d / 2, set on every launch as WebKit requires of an
+//     override sizing a workgroup array
+//     (docs/research/2026-10-09-webkit-shader-compiler.md), so a head of 128
+//     takes the 1 KiB it took. With the norm's 64 partial sums, a workgroup
+//     holds 0.75 KiB at d = 64 and 2.25 KiB at d = 512.
 //   - The norm reduces each head in workgroup memory: an invocation's own 8
 //     squares, then a tree across its head's d / 8 invocations, every head
 //     of the workgroup at once — log2(d / 8) levels, 4 for Qwen3, 5 for
@@ -80,14 +85,16 @@ namespace bllm::kernels {
 //     pack(vec4 i) and pack(vec4 i + d / 8) at words w + 2i and w + 2i + d /
 //     4, w = (s × H_kv + h) × d / 2, under F16. A step's tokens take distinct
 //     slots, since a ring holds at least a prefill block (residency/plan.h).
-//   - Variants are override constants: `halves`, `qk_norm`, `factors`, and
-//     the shape — `head_dimension`, `query_heads`, `key_value_heads` — so
-//     every index folds when the pipeline is built. A model has one shape and
-//     one pairing, so one pipeline; Gemma 3's two rotary bases are constants.
+//   - Variants are override constants: `halves`, `qk_norm`, `factors`,
+//     `value_norm`, the encode form's alone, and the shape —
+//     `head_dimension`, `query_heads`, `key_value_heads`, `pairs_per_head` —
+//     so every index folds when the pipeline is built. A model has one
+//     pairing, and a shape for each kind of layer, so a pipeline each;
+//     Gemma 3's two rotary bases are constants.
 //   - Constants (binding 1), as WGSL lays them out:
 //       struct Rope { slots: u32, epsilon: f32,
-//                     turns: array<vec4<f32>, 32> }   // offset 16; d / 2 used
-//     528 bytes.
+//                     turns: array<vec4<f32>, 64> }   // offset 16; d / 2 used
+//     1,040 bytes, five slots of the constants buffer.
 //   - Bindings: 2 the query gain, 3 the key gain, 4 the factors, read-only; 5
 //     the query buffer, read and written; 6 the key and 7 the value buffers,
 //     read-only; 8 the layer's keys and 9 its values in the cache, written.
@@ -97,12 +104,40 @@ namespace bllm::kernels {
 //     their place, read-only there and here, so no buffer is bound both
 //     writable and read-only (residency/plan.h).
 //
+// Two forms, each one source: rope.wgsl, what both share — the constants,
+// the gains and factors, the queries, the angle tables, the norm's tree and
+// the rotation — then the form's entry point, rope_cache.wgsl for the
+// decoder's form above and rope_encode.wgsl for the encode form below,
+// joined by the launcher at compile time. Neither form's source holds the
+// other's: the decoder's packs with the cache format, which an encoder has
+// none of, and a change to one form's entry point touches no other.
+//
+// The encode form, for an encoder (graph/encoder.h), whose step attends to
+// its own keys and values and keeps no cache:
+//   - The same steps — the angles, QK-norm, the rotation — over the same
+//     invocations and workgroups, but every head written back in place, f32:
+//     queries to the query buffer, keys to the key buffer, values to the
+//     value buffer, nothing packed and no cache bound.
+//   - Values normalized on their own, per head, without a gain, where
+//     `value_norm` is set — Gemma 4's ggml_rms_norm of each value head, with
+//     the file's ε. Every workgroup then reduces, a workgroup of value heads
+//     alone among them; without it, as the decoder's form.
+//   - QK-norm is required, so its gains are always bound; a launch without
+//     factors binds the query gain in their place. Bindings: 2 the query
+//     gain, 3 the key gain, 4 the factors, read-only; 5 the queries, 6 the
+//     keys and 7 the values, each read and written. Six storage buffers.
+//   - Bytes, a token and a layer: queries, keys and values each read and
+//     written, 8 d (H_q + 2 H_kv) — 16 KiB for EmbeddingGemma 2's sliding
+//     layers, 24 KiB for its global ones; a 512-token step of its 24 layers
+//     moves 208 MiB, about 0.55 ms at 400 GB/s.
+//
 // What it asks of the launch contract (kernels/interface.h, program.h): a
 // launch names the format whose pack it composes, beside the one whose
 // unpack it composes, and the program composes and keys pipelines by both;
 // and a launch's constants may run to 1 KiB, each launch's taking a whole
 // number of 256-byte slots of the constants buffer, where every launch's
-// took one. Constants stay written once, at load.
+// took one — at most 1,280 bytes, for this kernel's 1,040. Constants stay
+// written once, at load.
 //
 // Determinism (GDSA.2): run to run, and independent of the step's other rows
 // and token count — a head is reduced by its own invocations in one fixed
@@ -194,7 +229,14 @@ namespace bllm::kernels {
 // same tokens prefilled as one step and decoded one at a time, writing the
 // same query and cache bits. On the CPU: each turn within half a unit of its
 // f64 value.
-//
+
+// The encode form, likewise: EmbeddingGemma 2's sliding shape, d = 256 with 4
+// query and 2 key-value heads, and its global shape, d = 512 with 4 and 1,
+// both under Halves with QK-norm and the value norm, at steps of 1, 3 and 512
+// tokens from position 0 — queries, keys and values in place against f64,
+// within the norm's margin and the rotation's; values left as they were
+// without `value_norm`; and the decoder's form at d = 128 the same bits as
+// before the tables were sized by an override.//
 // Guidelines, by corpus:
 //   C++ Core Guidelines
 //     I.4    Make interfaces precisely and strongly typed — the pairing is an
@@ -234,10 +276,28 @@ struct RopeLaunch {
     const formats::Format* cache_format;           // never null; its pack writes the cache
 };
 
-// The launch for one layer. Preconditions: the head dimension is 64, 128 or
-// 256, and (query heads + 2 × key-value heads) × head dimension / 8 a
+// The launch for one layer. Preconditions: the head dimension is 64, 128,
+// 256 or 512, and (query heads + 2 × key-value heads) × head dimension / 8 a
 // multiple of 64; the views are F32 of the widths stated; `cache_format` has a pack and
 // is the format the plan sized `cache` in.
 [[nodiscard]] Launch rope_launch(const RopeLaunch& rope);
+
+// One layer's rope launch in its encode form (above).
+struct RopeEncodeLaunch {
+    model::LayerDescription layer;                 // heads, head dimension, rotary base
+    model::RotaryPairing pairing;
+    const residency::WeightView* query_norm;       // F32, head dimension; never null
+    const residency::WeightView* key_norm;         // F32, head dimension; never null
+    const residency::WeightView* factors;          // F32, head dimension / 2; null without
+    bool value_norm;                               // values normalized per head, without a gain
+    float epsilon;
+    residency::BufferRange query;                  // the plan's working buffers, each written in place
+    residency::BufferRange key;
+    residency::BufferRange value;
+};
+
+// The encode form's launch for one layer. Preconditions: rope_launch's on
+// the shape and the views; the query and key gains both present.
+[[nodiscard]] Launch rope_encode_launch(const RopeEncodeLaunch& rope);
 
 }  // namespace bllm::kernels

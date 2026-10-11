@@ -131,8 +131,8 @@ namespace bllm::graph {
 //   - Launches in the graph: 21 a layer — the two norms, rope, attention and
 //     its combine, and 4 for each of the 4 products — 588, with the gather,
 //     the final norm, the head, selection's 3 passes and the draw 595. Each
-//     is a bind group and a 256-byte constants slot, rope's 3: 651 slots,
-//     163 KiB, written once at load (kernels/program.h). 31 pipelines: the
+//     is a bind group and a 256-byte constants slot, rope's 5: 707 slots,
+//     177 KiB, written once at load (kernels/program.h). 31 pipelines: the
 //     gather, 3 norm variants, rope, attention and its combine, 4 forms of
 //     each of the 4 products, 4 more for the Q4_1 down projections, the
 //     head, selection's two entry points and the draw.

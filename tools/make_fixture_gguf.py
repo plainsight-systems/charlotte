@@ -346,7 +346,8 @@ def forward_model(seed=0x9E3779B9, arch="qwen3"):
 def rope_rows(rows=4, seed=0x1B873593):
     """For each listed model's attention shape — Qwen3 0.6B's 16 query and 8
     key-value heads of 128, Llama 3.2 1B's 32 and 8 of 64, Gemma 3 1B's 4 and
-    1 of 256 — rows of queries, keys and values, the QK-norm gains, and for
+    1 of 256, and EmbeddingGemma 2's 4 and 2 of 256 and 4 and 1 of 512 — rows
+    of queries, keys and values, the QK-norm gains, and for
     Llama its rotary frequency factors as Llama 3's converter computes them
     (factor 32, low and high frequency factors 1 and 4, original context
     8,192, base 500,000). Deterministic pseudo-random F32, held as tensors so
@@ -363,7 +364,10 @@ def rope_rows(rows=4, seed=0x1B873593):
         return b"".join(struct.pack("<f", v) for v in values)
 
     tensors = []
-    for name, query_heads, kv_heads, d in (("qwen", 16, 8, 128), ("llama", 32, 8, 64), ("gemma", 4, 1, 256)):
+    # EmbeddingGemma 2's sliding and global layers follow, after the listed
+    # models', so theirs keep the values they had.
+    for name, query_heads, kv_heads, d in (("qwen", 16, 8, 128), ("llama", 32, 8, 64), ("gemma", 4, 1, 256),
+                                           ("eg_sliding", 4, 2, 256), ("eg_global", 4, 1, 512)):
         for role, heads in (("q", query_heads), ("k", kv_heads), ("v", kv_heads)):
             width = heads * d
             tensors.append((f"{role}_{name}".encode(), [width, rows], T_F32,

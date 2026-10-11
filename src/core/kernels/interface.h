@@ -177,10 +177,10 @@ inline constexpr std::size_t kStepHead = 48;
 
 // Each launch's constants lie at their own offset in one uniform buffer, in
 // a whole number of slots on the alignment WebGPU's default limits require
-// for a uniform binding's offset — one for most kernels, three for rope's
-// 528 bytes — and no larger than this.
+// for a uniform binding's offset — one for most kernels, five for rope's
+// 1,040 bytes — and no larger than this.
 inline constexpr std::uint32_t kLaunchConstantsAlignment = 256;   // minUniformBufferOffsetAlignment
-inline constexpr std::uint32_t kMaxLaunchConstants = 1024;
+inline constexpr std::uint32_t kMaxLaunchConstants = 1280;
 
 // A bound range of a buffer the residency plan names: a piece of a weight,
 // a working buffer, a layer's cache.

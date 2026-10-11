@@ -99,6 +99,8 @@ bllm_embed_shaders(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/norm/norm.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/attention/attention.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope_cache.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope_encode.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/topk/topk.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/sampler/draw.wgsl"
 )

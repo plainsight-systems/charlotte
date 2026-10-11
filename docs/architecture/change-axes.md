@@ -200,8 +200,9 @@ regime of it or a flag inside it.
 the same operation for an encoder — QK-norm and rotation by position — and
 only writes its keys and values to the step's buffers instead of packing them
 into the cache, with a value norm where the model declares one. The same
-operation, writing elsewhere, is an entry point of the same module, as a
-matrix product's decode and prefill forms are. Attention in both directions
+operation, writing elsewhere, is a second form of the same kernel: the steps
+both forms share are one source, and each form's entry point is its own, so
+a change to one form touches no other. Attention in both directions
 masks, tiles and folds differently from attention against a cache, so a
 change to one should never re-verify the other.
 

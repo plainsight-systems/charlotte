@@ -47,15 +47,15 @@ const residency::PlannedCacheLayer kCache{{residency::BufferIndex{6}, 512, 4096}
 
 TEST_CASE("each pair's turns a position are its f64 frequency over 2 pi, rounded once") {
     for (const float base : {1e6f, 5e5f, 1e4f}) {
-        for (const std::uint32_t d : {64u, 128u, 256u}) {
+        for (const std::uint32_t d : {64u, 128u, 256u, 512u}) {
             CAPTURE(base);
             CAPTURE(d);
             const auto l = kernels::rope_launch({layer(4, 1, d, base), model::RotaryPairing::Halves, nullptr, nullptr,
                                                  nullptr, 1e-6f, kQuery, kKey, kValue, kCache, &formats::kF16});
-            REQUIRE(l.constants.size() == 528);
-            float turns[128];
+            REQUIRE(l.constants.size() == 1040);
+            float turns[256];
             std::memcpy(turns, l.constants.data() + 16, sizeof turns);
-            for (std::uint32_t k = 0; k < 128; ++k) {
+            for (std::uint32_t k = 0; k < 256; ++k) {
                 if (k >= d / 2) {
                     CHECK(turns[k] == 0.0f);
                     continue;
@@ -72,7 +72,10 @@ TEST_CASE("a rope launch binds its norms, factors, buffers and cache, and select
     const auto query_norm = vector(0, 256, 128), key_norm = vector(0, 1024, 128), factors = vector(0, 2048, 64);
     const auto qwen = kernels::rope_launch({layer(16, 8, 128, 1e6f), model::RotaryPairing::Halves, &query_norm,
                                             &key_norm, nullptr, 1e-6f, kQuery, kKey, kValue, kCache, &formats::kF16});
-    CHECK(qwen.kernel == shaders::rope);
+    // The shared source, then the decoder's form (rope.h).
+    CHECK(qwen.kernel.starts_with(shaders::rope));
+    CHECK(qwen.kernel.ends_with(shaders::rope_cache));
+    CHECK(qwen.kernel.size() == shaders::rope.size() + shaders::rope_cache.size());
     CHECK(qwen.format == nullptr);
     CHECK(qwen.pack_format == &formats::kF16);
     REQUIRE(qwen.bindings.size() == 8);
@@ -93,6 +96,8 @@ TEST_CASE("a rope launch binds its norms, factors, buffers and cache, and select
     CHECK(override_of(qwen, "halves") == 1.0);
     CHECK(override_of(qwen, "qk_norm") == 1.0);
     CHECK(override_of(qwen, "factors") == 0.0);
+    CHECK(override_of(qwen, "value_norm") == 0.0);
+    CHECK(override_of(qwen, "pairs_per_head") == 64);
     std::uint32_t slots = 0;
     float epsilon = 0;
     std::memcpy(&slots, qwen.constants.data(), 4);
