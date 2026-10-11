@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <initializer_list>
+#include <optional>
 #include <vector>
 
 #include "core/graph/graph.h"
@@ -134,68 +136,18 @@ namespace bllm::graph {
 // decoder needs, does not arise; a text's vector does not depend on any
 // other text, since nothing is batched.
 //
-// What it asks of the other contracts:
-//   - kernels/rope/rope.h: an `encode` entry point — queries and keys
-//     normalized with their gains and rotated in place, values normalized
-//     without one where `value_norm` is set, nothing packed into a cache;
-//     bindings 2 the query gain, 3 the key gain, 4 the factors or the key
-//     gain in their place, 5 queries, 6 keys and 7 values, read and written.
-//     And a head dimension of 512: d / 8 = 64 invocations a head, one
-//     workgroup; its norm's tree 6 levels; 256 angle pairs, 4 an
-//     invocation, 2 KiB of workgroup memory beside the 256 bytes of partial
-//     sums. Its constants' `turns` grow from 32 vec4s to 64 — 1,040 bytes,
-//     5 slots of 256 where they took 3 — for every rope launch: for Qwen3,
-//     28 launches × 512 bytes, 14 KiB more of constants written once at
-//     load, and nothing a step.
-//   - kernels/interface.h: kMaxLaunchConstants from 1,024 to 1,280, for
-//     rope's 1,040.
-//   - kernels/norm/norm.h: three variants, override constants, as its
-//     `add` and `post_norm` are:
-//       `normalize` (default true): false writes X after the add and nothing
-//         else — per_layer_block's step 1;
-//       `scaled`: X multiplied by a scalar after the add and before the
-//         reduction, the scalar an F32 view of one float at binding 7 — the
-//         layer output scale;
-//       `rows_per_token` (default 1): a launch covers N × rows_per_token rows
-//         of `width`, row r of token r / rows_per_token — the per-layer
-//         inputs' norm, 24 rows of 512 a token.
-//     Each changes one launch's form; the decoder's launches set none and
-//     are unchanged.
-//   - kernels/matmul/matmul.h: an epilogue, GatedByInput — activation(y) ×
-//     u[t × u_stride + u_offset + o], `u` a working buffer bound read-only
-//     at the binding after the output, `u_stride` and `u_offset` in the
-//     launch's constants — in both forms, as every epilogue has. Five
-//     bindings, as QKV's. And BF16 weights, through its format's unpack
-//     (formats/bf16/bf16.h), as any format: no change to the kernel.
-//   - residency/plan.h: it places a working set it is given, and no longer
-//     lists one. Which working buffers a graph binds, and how large, is the
-//     graph's knowledge (axis A), and where they lie the planner's (axis D);
-//     the list in plan.cpp — every kernel's buffers, the attention
-//     partials and selection's among them — is A and E knowledge in a D
-//     file, and an encoder would add a second list keyed on the model's
-//     kind. So plan.h states the shape of a need, ScratchNeed {purpose,
-//     rows, width}, and a WorkingSet — the needs, in order, and whether the
-//     graph keeps a KV cache — and plan_residency takes one. Each builder
-//     declares its own: graph.h's decoder_working_set(model), its list
-//     moved unchanged, and this file's encoder_working_set(model). The
-//     caller, preflight's plan_load, picks by the architecture's graph kind
-//     (arch/architecture.h). plan.h never includes a graph header, so the
-//     dependency still points one way.
-//     The move is its own change, first, intending no behavior change: the
-//     same buffers in the same order and the same bytes for each listed
-//     model, which the plan's tests hold. The encoder's working set:
-//     no KV cache, so the context offered is the smaller of kPrefillBlock
-//     and the trained context; and these working buffers, each
-//     kPrefillBlock rows at f32 — `hidden`, `normed`, `output` W wide;
-//     `query` and `attention` the widest layer's query heads × d, 2,048;
-//     `key` and `value` its key-value heads × d, 512; `activation` the
-//     feed-forward width, 2,048, which the gate reuses; `per_layer_raw` and
-//     `per_layer`, L × P, 12,288 wide, 24 MiB each; `scores` and
-//     `score_maxima` (block_attention.h), 4 MiB and 64 KiB at the widest
-//     layer's query heads; `pooled`, W wide; and `projected` and
-//     `embedding`, one row of D. About 70 MiB for EmbeddingGemma 2, beside
-//     its 294 MB of weights: 364 MB, under the 2 GiB default budget and a
-//     phone's 512 MiB (web/platform_policy.js).
+// The working set (encoder_working_set below), each kPrefillBlock rows at
+// f32 unless stated: `hidden`, `normed` and `output`, W wide; `query` and
+// `attention`, the widest layer's query heads × d, 2,048; `key` and `value`,
+// its key-value heads × d, 512; `activation`, the feed-forward width, 2,048,
+// which the per-layer gate's output reuses; `per_layer_raw` and `per_layer`,
+// L × P, 12,288 wide, 24 MiB each; `scores`, the widest layer's query heads
+// × kPrefillBlock rows of kPrefillBlock, 4 MiB, and `score_maxima`, a float
+// a chunk of each, 64 KiB (block_attention.h); `pooled`, W wide; and
+// `projected` and `embedding`, one row of D. No KV cache: the plan offers
+// the smaller of kPrefillBlock and the trained context. About 70 MiB for
+// EmbeddingGemma 2, beside its 294 MB of weights: 364 MB, under the 2 GiB
+// default budget and a phone's 512 MiB (web/platform_policy.js).
 //
 // What a step costs, counted, for EmbeddingGemma 2 at Q8_0 and N tokens:
 //   - Launches dispatched: the gather's 2 — the table's 142.6 MB is two
@@ -236,18 +188,14 @@ namespace bllm::graph {
 // (GPU.6).
 //
 // Verification the implementation is held to:
-//   - On the CPU, EmbeddingGemma 2's encoder graph over a description of its
-//     structure: the launches equal, one for one, what the kernel launchers
-//     return for the arguments the blocks above state; the per-layer slice
-//     each gate reads; the ε the per-layer norm is given, W times the file's;
-//     every pending post-norm and scale handed to the norm that adds it; and
-//     each shape refusal naming its layer.
-//   - On the GPU, a generated two-layer model of its shape, one sliding
-//     layer and one global, with Q8_0 weights and a BF16 projection: each
-//     working buffer after each block against an f64 reference of the same
-//     arithmetic over the same decoded weights, within the margins each
-//     kernel states; and the output against runtime/embedder.h's
-//     llama.cpp reference for the real file.
+//   - On the CPU, EmbeddingGemma 2's encoder graph over its pinned header
+//     (tests/encoder_test.cpp): 296 launches dispatched at steps of 2, 16,
+//     33 and 512 tokens, none past WebGPU's 65,535 workgroups; a layer's 12
+//     in the order above and the blocks around them; the ε the per-layer
+//     norm is given, W times the file's; the plan's working set, its fit in
+//     a phone's 512 MiB, and no cache.
+//   - Each kernel against f64 on the GPU, as its header states; and the
+//     whole step against llama.cpp's embeddings (runtime/embedder.h).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -267,12 +215,16 @@ namespace bllm::graph {
 //     CDSA.32 Transform static data once into the layout its consumer reads —
 //            the per-layer inputs computed once and read in place by slice.
 
+// The working buffers an encoder's step binds, for the residency plan to
+// place (residency/plan.h): the working set above, and no KV cache.
+[[nodiscard]] residency::WorkingSet encoder_working_set(const model::ModelDescription& model);
+
 // Appends an encode step's launches to `out`, block by block, in the order an
 // encoding architecture's graph calls them. Preconditions: `model` is a
 // describe's and has an encoder (model_description.h); `plan` was made from
-// it, as upload carried it out. embed is called once, first; per_layer_inputs
-// once, after it, where the model has per-layer inputs; pooled_output once,
-// last; `out` outlives the builder.
+// it with encoder_working_set, as upload carried it out. embed is called
+// once, first; per_layer_inputs once, after it; pooled_output once, last;
+// `out` outlives the builder.
 class EncoderBuilder {
 public:
     EncoderBuilder(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
@@ -298,6 +250,17 @@ private:
         residency::BufferRange hidden, normed, query, key, value, attention, output, activation, per_layer_raw,
             per_layer, scores, score_maxima, pooled, projected, embedding;
     };
+
+    [[nodiscard]] const residency::WeightView& view(gguf::TensorId tensor) const;
+    // The layer's weight in `role`, or null where it has none.
+    [[nodiscard]] const residency::WeightView* role(std::uint32_t layer, model::Role role) const;
+    // The plan's group whose members, in order, are `members`, or null.
+    [[nodiscard]] const residency::PlannedGroup* group(std::initializer_list<std::optional<gguf::TensorId>> members) const;
+    void product(const residency::WeightView& weight, const residency::BufferRange& input,
+                 const residency::BufferRange& output, kernels::Rows rows);
+    // The norm that begins a block, adding what `output` holds as pending
+    // says; `normalize` false for the add alone.
+    [[nodiscard]] kernels::Launch norm(const residency::WeightView& gain, bool normalize);
 
     const model::ModelDescription* model_;
     const residency::ResidencyPlan* plan_;

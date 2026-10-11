@@ -3,6 +3,7 @@
 #include <array>
 #include <span>
 
+#include "core/arch/embedding_gemma2/embedding_gemma2.h"
 #include "core/arch/gemma3/gemma3.h"
 #include "core/arch/llama/llama.h"
 #include "core/arch/qwen3/qwen3.h"
@@ -42,6 +43,7 @@ const Implementation* lookup(std::span<const Row<Identifier, Implementation>> ta
 // An identifier is supported exactly when it has a row here. Adding an
 // implementation adds its file and one row, and nothing else.
 constexpr std::array kArchitectures{
+    Row<std::string_view, arch::Architecture>{"gemma-embedding2", &arch::kEmbeddingGemma2},
     Row<std::string_view, arch::Architecture>{"gemma3", &arch::kGemma3},
     Row<std::string_view, arch::Architecture>{"llama", &arch::kLlama},
     Row<std::string_view, arch::Architecture>{"qwen3", &arch::kQwen3},

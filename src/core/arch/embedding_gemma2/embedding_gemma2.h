@@ -53,48 +53,12 @@ namespace bllm::arch {
 // per-layer inputs; then each layer's attention, gated feed-forward block
 // and per-layer block; then the pooled output.
 //
-// What it asks of the other contracts:
-//   - arch/architecture.h: an architecture's graph is one of two kinds,
-//     `std::variant<GraphFn, EncodeFn>` — a decoder's, given the cache
-//     format, or an encoder's, EncodeFn(const ModelDescription&, const
-//     ResidencyPlan&, std::vector<Launch>&) -> GraphResult, which has no
-//     cache. The kind is the architecture's, fixed in the capability table,
-//     so it cannot disagree with the graph that runs; preflight and load
-//     read it once, at load, and choose a generator or an embedder
-//     (runtime/embedder.h). A variant, not two pointers one of which is
-//     null, so no entry can hold both or neither (C.181).
-//   - model/model_description.h:
-//       - `AttentionMask mask`: Causal, every decoder's, or Bidirectional;
-//         for Bidirectional a layer's attention_window W means keys within
-//         W / 2 either side, as llama.cpp's symmetric window.
-//       - `bool value_norm`: values normalized per head without a gain, in
-//         rope's encode form.
-//       - Four roles: PerLayerGate, PerLayerProjection, PerLayerPostNorm and
-//         OutputScale — a change to the role vocabulary, which every
-//         architecture's describe leaves empty but this one.
-//       - `std::optional<EncoderDescription> encoder`, set by an encoding
-//         architecture and by no other: the per-layer projection and its
-//         norm, the per-layer width, the output projection, the embedding's
-//         length, and the pooling, Mean. What the planner sizes an
-//         encoder's working buffers by, and what makes it plan no cache
-//         (graph/encoder.h's asks of residency/plan.h). An architecture
-//         whose graph is an EncodeFn always sets it, and a GraphFn one never
-//         does — each architecture's describe test holds it to that.
-//   - arch/describe.h: read_hyperparameters reads attention.head_count_kv
-//     as one number or one a layer, as llama.cpp's get_key_or_arr does, and
-//     describe_layers takes the per-layer form; the other listed files
-//     store one number and describe as before.
-//   - capability/capability.h: one row, "gemma-embedding2".
-//
-// Verification the implementation is held to:
-//   - On the CPU, from ggml-org's Q8_0 file's header, fetched as test data:
-//     every number above, each layer's head shape, window and base, the
-//     encoder description, every tensor by role; and each refusal named —
-//     attention.causal true, pooling_type 2, a value length differing from
-//     its key length, shared_kv_layers 1, a per-layer tensor missing —
-//     over headers tools/make_fixture_gguf.py writes with that one change.
-//   - The graph: graph/encoder.h's verification.
-//   - The whole: runtime/embedder.h's reference against llama.cpp.
+// Verification the implementation is held to, on the CPU from ggml-org's
+// Q8_0 file's header, pinned and fetched as test data (tests/encoder_test.cpp):
+// every layer's heads, window and base, the mask, the value norm and the
+// attention scale, the encoder description, every per-layer tensor by role;
+// the plan and graph built over it; and preflight taking it to Run. The
+// whole, against llama.cpp, is runtime/embedder.h's.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines

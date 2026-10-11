@@ -7,9 +7,11 @@
 #include "core/arch/architecture.h"
 #include "core/capability/capability.h"
 #include "core/formats/format.h"
+#include "core/graph/encoder.h"
 #include "core/graph/graph.h"
 #include "core/kernels/interface.h"
 #include "core/model/model_description.h"
+#include "core/runtime/ends.h"
 #include "core/runtime/stops.h"
 #include "core/tokenizer/tokenizer.h"
 #include "core/tokenizer/vocabulary.h"
@@ -85,6 +87,15 @@ constexpr std::string_view to_string(graph::GraphError e) noexcept {
 // Run needs the architecture's graph to build over the plan Fit made, with
 // a cache format a kernel can write (graph/graph.h).
 void check_graph(const Described& d, const residency::ResidencyPlan& plan, Verdict& verdict) {
+    std::vector<kernels::Launch> launches;
+    // An encoder keeps no cache: its graph is given none.
+    if (const arch::EncodeFn encode = arch::encoder_graph(*d.architecture)) {
+        if (const auto r = encode(d.description, plan, launches); !r.ok()) {
+            verdict.blockers.push_back({Stage::Run, "architecture " + quoted(d.name) + " cannot run this file: " +
+                                                        std::string(to_string(r.error)) + " (" + r.subject + ")"});
+        }
+        return;
+    }
     const formats::Format* cache = capability::find_format(plan.cache_type);
     if (cache == nullptr || cache->pack_wgsl().empty()) {
         verdict.blockers.push_back({Stage::Run, "the cache format " +
@@ -92,13 +103,7 @@ void check_graph(const Described& d, const residency::ResidencyPlan& plan, Verdi
                                                     " cannot be written by this build"});
         return;
     }
-    const arch::GraphFn graph = arch::decoder_graph(*d.architecture);
-    if (graph == nullptr) {
-        verdict.blockers.push_back({Stage::Run, "architecture " + quoted(d.name) + " encodes, which this build runs no graph for"});
-        return;
-    }
-    std::vector<kernels::Launch> launches;
-    if (const auto r = graph(d.description, plan, *cache, launches); !r.ok()) {
+    if (const auto r = arch::decoder_graph(*d.architecture)(d.description, plan, *cache, launches); !r.ok()) {
         verdict.blockers.push_back({Stage::Run, "architecture " + quoted(d.name) + " cannot run this file: " +
                                                     std::string(to_string(r.error)) + " (" + r.subject + ")"});
     }
@@ -129,11 +134,19 @@ std::string fit_failure(const residency::PlanResult& r, const residency::Residen
     return "unrecognised error";
 }
 
+// The working buffers the architecture's kind of graph binds: a decoder's,
+// with its cache, or an encoder's, with none (graph/graph.h,
+// graph/encoder.h).
+residency::WorkingSet working_set_of(const Described& d) {
+    return arch::encoder_graph(*d.architecture) != nullptr ? graph::encoder_working_set(d.description)
+                                                            : graph::decoder_working_set(d.description);
+}
+
 // Fit: the residency plan fits the granted limits and the memory budget.
 // `plan` is the plan judged, for a load to carry out.
-void check_fit(const gguf::TensorIndex& index, const model::ModelDescription& description,
-               const residency::DeviceLimits& limits, const policy::LoadPolicy& policy,
-               Verdict& verdict, residency::ResidencyPlan& plan) {
+void check_fit(const gguf::TensorIndex& index, const Described& d, const residency::DeviceLimits& limits,
+               const policy::LoadPolicy& policy, Verdict& verdict, residency::ResidencyPlan& plan) {
+    const model::ModelDescription& description = d.description;
     if (limits.max_buffer_size == 0 || limits.max_storage_binding_size == 0 ||
         limits.storage_offset_alignment == 0) {
         verdict.blockers.push_back({Stage::Fit, "no GPU device was acquired, so fit cannot be judged"});
@@ -143,8 +156,8 @@ void check_fit(const gguf::TensorIndex& index, const model::ModelDescription& de
         verdict.blockers.push_back({Stage::Fit, "the device's storage-offset alignment is not a power of two"});
         return;
     }
-    if (const auto r = residency::plan_residency(index, description, limits, policy,
-                                                 graph::decoder_working_set(description), plan); !r.ok()) {
+    if (const auto r = residency::plan_residency(index, description, limits, policy, working_set_of(d), plan);
+        !r.ok()) {
         verdict.blockers.push_back({Stage::Fit, fit_failure(r, plan, policy)});
         return;
     }
@@ -238,15 +251,24 @@ void check_tokenizer(const gguf::TensorIndex& index, Verdict& verdict) {
     }
 }
 
-// Run needs the tokenizer to load from the header, and the stop set to
-// resolve over its vocabulary; checked only where the algorithm and the
-// pre-tokenizer it needs are listed, the blockers above having named
-// whichever is not.
+// Run needs the tokenizer to load from the header, and over its vocabulary
+// a generator's stop set to resolve, or an embedder's ends (runtime/ends.h);
+// checked only where the algorithm and the pre-tokenizer it needs are
+// listed, the blockers above having named whichever is not. `encodes` is
+// whether the architecture's graph encodes.
 void check_tokenizer_loads(gguf::ByteSource& source, const gguf::TensorIndex& index,
-                           const policy::LoadPolicy& policy, Verdict& verdict) {
+                           const policy::LoadPolicy& policy, bool encodes, Verdict& verdict) {
     std::unique_ptr<tokenizer::Tokenizer> loaded;
     if (const std::string stop = load_tokenizer(source, index, loaded); !stop.empty()) {
         verdict.blockers.push_back({Stage::Run, stop});
+        return;
+    }
+    if (encodes) {
+        runtime::Ends ends;
+        if (const runtime::EndsResult r = runtime::resolve_ends(index, loaded->vocabulary(), ends);
+            r.error != runtime::EndsError::Ok) {
+            verdict.blockers.push_back({Stage::Run, "the begin and end tokens cannot be resolved: " + r.subject});
+        }
         return;
     }
     runtime::StopSet stops;
@@ -282,7 +304,7 @@ std::string plan_load(const gguf::TensorIndex& index, const residency::DeviceLim
     Verdict verdict;
     const auto described = check_architecture(index, verdict);
     if (!described) return verdict.blockers.front().detail;
-    check_fit(index, described->description, limits, policy, verdict, plan);
+    check_fit(index, *described, limits, policy, verdict, plan);
     if (!verdict.fit) return verdict.blockers.front().detail;
     description = described->description;
     return {};
@@ -291,16 +313,18 @@ std::string plan_load(const gguf::TensorIndex& index, const residency::DeviceLim
 Verdict preflight(gguf::ByteSource& source, const gguf::TensorIndex& index, const residency::DeviceLimits& limits,
                   const policy::LoadPolicy& policy) {
     Verdict verdict;
+    bool encodes = false;
     if (const auto described = check_architecture(index, verdict)) {
+        encodes = arch::encoder_graph(*described->architecture) != nullptr;
         residency::ResidencyPlan plan;
-        check_fit(index, described->description, limits, policy, verdict, plan);
+        check_fit(index, *described, limits, policy, verdict, plan);
         if (verdict.fit) check_graph(*described, plan, verdict);
     }
     check_formats(index, verdict);
     check_rows(index, verdict);
     const std::size_t before = verdict.blockers.size();
     check_tokenizer(index, verdict);
-    if (verdict.blockers.size() == before) check_tokenizer_loads(source, index, policy, verdict);
+    if (verdict.blockers.size() == before) check_tokenizer_loads(source, index, policy, encodes, verdict);
 
     for (int s = static_cast<int>(kImplementedThrough) + 1;
          s <= static_cast<int>(Stage::Run); ++s) {

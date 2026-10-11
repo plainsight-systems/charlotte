@@ -39,11 +39,13 @@ add_executable(charlotte_tests
     contract_headers_test.cpp
     preflight_test.cpp
     arch_describe_test.cpp
+    encoder_test.cpp
     graph_test.cpp
     kernels_schedule_test.cpp
     kernels_topk_test.cpp
     kernels_order_test.cpp
     runtime_turn_test.cpp
+    runtime_ends_test.cpp
     runtime_stops_test.cpp
     sampler_test.cpp
     residency_plan_test.cpp

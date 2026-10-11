@@ -26,10 +26,12 @@ option(BLLM_ENABLE_DIAGNOSTICS
 
 add_library(charlotte_core STATIC
     src/core/arch/describe.cpp
+    src/core/arch/embedding_gemma2/embedding_gemma2.cpp
     src/core/arch/gemma3/gemma3.cpp
     src/core/arch/llama/llama.cpp
     src/core/arch/qwen3/qwen3.cpp
     src/core/graph/graph.cpp
+    src/core/graph/encoder.cpp
     src/core/capability/capability.cpp
     src/core/gguf/arrays.cpp
     src/core/gguf/index.cpp
@@ -68,6 +70,7 @@ add_library(charlotte_core STATIC
     src/core/kernels/topk/topk.cpp
     src/core/sampler/sampler.cpp
     src/core/runtime/turn.cpp
+    src/core/runtime/ends.cpp
     src/core/runtime/stops.cpp
     src/core/residency/routes.cpp
     src/core/gpu/dispatch_math.cpp
