@@ -104,7 +104,7 @@ namespace bllm::formats {
 //     unpack's scales above.
 //   - A block-scaled format cannot pack four values on their own: Q8_0's
 //     scale is its 32 values' largest, a reduction across invocations. So Q8_0
-//     has no pack, BF16 has no format, and the graph refuses a cache
+//     has no pack, nor has BF16 (formats/bf16), and the graph refuses a cache
 //     precision whose format has no pack, naming it, rather than run.
 //   - Its inverse is in the same WGSL, also reading no binding:
 //       fn unpack4(words: vec2<u32>) -> vec4<f32>

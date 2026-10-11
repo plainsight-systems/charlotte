@@ -37,13 +37,6 @@ namespace bllm::formats {
 // Optimization (practice): the weight decoded in the load path, never
 // expanded to f32 in memory (GDSA.18) — what ggml's BF16 matrix kernels do.
 //
-// What it asks of the other contracts:
-//   - formats/device_layout.h: kBF16Layout, beside kF16Layout.
-//   - formats/format.h: its note that BF16 has no format becomes that it has
-//     no pack; the rule it states — a cache precision whose format has no
-//     pack is refused — is unchanged.
-//   - capability/capability.h: one row, BF16.
-//
 // Verification the implementation is held to, on the GPU against a CPU
 // reference mirroring ggml_bf16_to_fp32: every weight bit for bit, over
 // groups of edge values — zeros of both signs, subnormals, the largest
