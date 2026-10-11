@@ -263,6 +263,9 @@ public:
     // The vision encoder attached, or null.
     [[nodiscard]] Vision* vision() noexcept;
 
+    // The model's tokenizer, whose vocabulary a companion's verdict reads.
+    [[nodiscard]] const tokenizer::Tokenizer& tokenizer() const noexcept;
+
     // The most tokens one encode holds, its ends included.
     [[nodiscard]] std::uint32_t context() const noexcept;
 

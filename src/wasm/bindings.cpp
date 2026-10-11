@@ -51,7 +51,8 @@
 // places JavaScript and C++ meet. The crossings are preflight a header prefix;
 // begin a load, load a chunk of the file, and finish the load (web/load.js);
 // generate from a rendered prompt and the turn's policy; cancel; and, for a
-// model that encodes, embed a text. A
+// model that encodes, embed a text, with an image where its companion has
+// loaded. A
 // prompt the tokenizer refuses as too long to encode is answered with code
 // "prompt-too-large", its bytes — normalized, or raw where it was refused
 // before normalizing — and kMaxEncodeBytes (tokenizer/tokenizer.h), which the
@@ -134,7 +135,7 @@
 // One turn at a time: the page waits for a turn's answer before the next.
 // A model that encodes refuses generate, by name.
 //
-//   bllm_embed(request, text, text_length)
+//   bllm_embed(request, text, text_length, image)
 //     Starts an encode of `text`, UTF-8 bytes in the module's memory which
 //     the page frees once the call returns: the embedder encodes them before
 //     it does. A refusal answers at once, named: no model loaded, a model
@@ -147,7 +148,40 @@
 //     (WASM.2) — and the encode answers with the tokens the text made; or
 //     with its failure, named: the vector not finite, a step's failure with
 //     WebGPU's message, the device lost, or the encode cancelled by a new
-//     load. One encode at a time.
+//     load. One encode at a time. With `image` 1, the image the slot holds
+//     goes where `text` writes <|image|>, once (runtime/vision.h); refused,
+//     by name, when no image is prepared or the placeholder is not there
+//     once — and with `image` 0, when it is there at all.
+//
+// A model that encodes may have a companion: the vision encoder, in a file
+// of its own, read in part (residency/file_ranges.h) and loaded beside it.
+// Its ranges cross as pairs of doubles, [begin, end), each an exact
+// integer; its image budget as the least and most tokens an image becomes.
+//   bllm_companion_preflight(request, resident, resident_length, file_size,
+//                            ranges, range_count, index_end, least, most,
+//                            limits..., memory_budget)
+//     Reads the companion's index and answers with how far this build takes
+//     it beside the loaded model (preflight.h's preflight_companion), or
+//     with the bytes the reader still needs. Answers unreadable, by name,
+//     when no model that encodes is loaded.
+//   bllm_companion_load_begin(request, prefix, prefix_length, file_size,
+//                             ranges, range_count, max_chunk, least, most,
+//                             memory_budget)
+//   bllm_companion_load_chunk(request, file_offset, length)
+//   bllm_companion_load_finish(request)
+//     As a model's load, over the ranges alone: finish builds the vision
+//     encoder's graph and program, links its rows into the text program's
+//     hidden buffer, and attaches the vision stage to the embedder,
+//     answering with the most tokens an image becomes. A companion loaded
+//     before is released at begin; a new model's load releases it too.
+//   bllm_image_begin(request, width, height)
+//     Starts an image in the vision stage's one slot, discarding what it
+//     held: answers with its grid — tokens, and the size it is resampled
+//     to — or its refusal, named.
+//   bllm_image_rows(request, first_row, pixels, length)
+//     The image's next band, whole RGBA rows from `first_row`, which the
+//     page frees once the call returns. Answers whether the image is ready
+//     to embed, or the band's refusal.
 //
 // A diagnostic build adds the check of a finished load, the same three
 // crossings over the file streamed a second time (residency/upload_check.h);
@@ -177,6 +211,7 @@
 #include <vector>
 
 #include "core/arch/architecture.h"
+#include "core/arch/vision_encoder.h"
 #include "core/cache/kv.h"
 #include "core/capability/capability.h"
 #include "core/gguf/reader.h"
@@ -189,6 +224,7 @@
 #include "core/runtime/ends.h"
 #include "core/runtime/generator.h"
 #include "core/runtime/stops.h"
+#include "core/runtime/vision.h"
 #include "core/sampler/sampler.h"
 #include "core/tokenizer/tokenizer.h"
 #include "core/gpu/self_check.h"
@@ -468,11 +504,32 @@ struct Check {
 };
 #endif
 
+// A companion's load (runtime/vision.h): its Upload of the ranges it reads,
+// one chunk buffer, and what begin made of its header for finish.
+struct CompanionLoad {
+    std::uint32_t begin_request = 0;
+    std::unique_ptr<bllm::residency::Upload> upload;
+    std::vector<std::byte> chunk;
+    bool settled = false;
+    bllm::model::ModelDescription description;
+    const bllm::arch::VisionEncoder* encoder = nullptr;
+    bllm::media::ImageBudget budget{};
+};
+
 struct Session {
     std::unique_ptr<bllm::gpu::Device> device;          // the checked device, kept
     std::unique_ptr<Load> load;
     std::unique_ptr<bllm::residency::Upload> loaded;    // the model a load finished
     std::uint64_t loaded_file_size = 0;
+    // What a companion's verdict pairs against: the loaded model's
+    // description and architecture (preflight.h's CompanionHost).
+    bllm::model::ModelDescription loaded_description;
+    std::string loaded_architecture;
+    std::unique_ptr<CompanionLoad> companion;
+    // The companion a load finished: its buffers, which the vision stage the
+    // embedder holds borrows. Declared before the embedder, so released
+    // after it.
+    std::unique_ptr<bllm::residency::Upload> companion_loaded;
     // Over `loaded`, whose buffers their programs borrow: declared after it,
     // so released before it. One or the other, as the model generates or
     // encodes.
@@ -1069,7 +1126,13 @@ EMSCRIPTEN_KEEPALIVE void bllm_load_begin(std::uint32_t request, const std::byte
 #if BLLM_DIAGNOSTICS_ENABLED
     s.check.reset();
 #endif
+    // A companion goes with the model it served: its vision stage went with
+    // the embedder, its buffers now.
+    s.companion.reset();
+    s.companion_loaded.reset();
     s.loaded.reset();
+    s.loaded_description = description;
+    s.loaded_architecture = std::string(architecture);
     s.load = std::make_unique<Load>();
     Load& load = *s.load;
     load.begin_request = request;
@@ -1205,7 +1268,8 @@ EMSCRIPTEN_KEEPALIVE void bllm_cancel(std::uint32_t request, std::uint32_t targe
 }
 
 // Starts an encode: see the top of this file.
-EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, std::uint32_t text_length) {
+EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, std::uint32_t text_length,
+                                     std::uint32_t image) {
     Session& s = session();
     if (s.embedder == nullptr) {
         bllm_reply(request, failure_json(s.generator != nullptr ? "the model generates; it does not embed"
@@ -1213,7 +1277,8 @@ EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, st
                                 .c_str());
         return;
     }
-    const bllm::runtime::EmbedResult started = s.embedder->start({text, text_length}, on_embedded, to_userdata(request));
+    const bllm::runtime::EmbedResult started =
+        s.embedder->start({text, text_length}, image != 0, on_embedded, to_userdata(request));
     using bllm::runtime::EmbedError;
     switch (started.error) {
         case EmbedError::Ok:
@@ -1240,10 +1305,327 @@ EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, st
         case EmbedError::DeviceLost:
             bllm_reply(request, failure_json("the GPU device was lost").c_str());
             return;
+        case EmbedError::ImageNotReady:
+            bllm_reply(request, failure_json("no image is prepared").c_str());
+            return;
+        case EmbedError::Placeholder:
+            bllm_reply(request, failure_json(image != 0 ? "the text must hold <|image|> once with an image"
+                                                        : "the text holds <|image|> and no image")
+                                    .c_str());
+            return;
         default:
             bllm_reply(request, failure_json("the encode cannot start").c_str());
             return;
     }
+}
+
+namespace {
+
+// `count` ranges as pairs of doubles, [begin, end), each an exact integer.
+bool read_ranges(const double* pairs, std::uint32_t count, std::vector<bllm::residency::FileRange>& out) {
+    out.clear();
+    for (std::uint32_t i = 0; i < 2 * count; ++i) {
+        if (!exact_integer(pairs[i]) || pairs[i] < 0) return false;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+        out.push_back({static_cast<std::uint64_t>(pairs[2 * i]), static_cast<std::uint64_t>(pairs[2 * i + 1])});
+    }
+    return true;
+}
+
+// The loaded model a companion pairs against; null when none encodes.
+std::optional<bllm::preflight::CompanionHost> host_of(const Session& s) {
+    if (s.embedder == nullptr || s.loaded == nullptr) return std::nullopt;
+    return bllm::preflight::CompanionHost{s.loaded_description, s.loaded_architecture,
+                                          s.embedder->tokenizer().vocabulary(), s.loaded->plan().total_bytes};
+}
+
+std::string verdict_json(const bllm::preflight::Verdict& verdict) {
+    std::string json = "{\"status\":\"read\",\"reached\":" + json_string(bllm::preflight::to_string(verdict.reached()));
+    json += ",\"fit\":" + fit_json(verdict.fit);
+    json += ",\"blockers\":[";
+    for (std::size_t i = 0; i < verdict.blockers.size(); ++i) {
+        const auto& b = verdict.blockers[i];
+        json += i == 0 ? "" : ",";
+        json += "{\"stage\":" + json_string(bllm::preflight::to_string(b.stage)) + ",\"detail\":" +
+                json_string(b.detail) + "}";
+    }
+    return json + "]}";
+}
+
+void on_companion_ready(std::unique_ptr<bllm::residency::Upload> upload, bllm::residency::UploadError error,
+                        const char* subject, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    CompanionLoad* load = session().companion.get();
+    if (load == nullptr || load->begin_request != request) {
+        bllm_reply(request, failure_json("the companion's load was replaced by another").c_str());
+        return;
+    }
+    if (upload == nullptr) {
+        load->settled = true;
+        const std::string named(bllm::residency::to_string(error));
+        bllm_reply(request,
+                   failure_json(subject != nullptr && *subject != '\0' ? named + " (" + subject + ")" : named).c_str());
+        return;
+    }
+    load->upload = std::move(upload);
+    bllm_reply(request, ("{\"ok\":true,\"chunkPointer\":" +
+                         std::to_string(reinterpret_cast<std::uintptr_t>(load->chunk.data())) +
+                         ",\"chunkBytes\":" + std::to_string(load->chunk.size()) + "}")
+                            .c_str());
+}
+
+void on_companion_accepted(bllm::residency::UploadError error, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    if (error != bllm::residency::UploadError::Ok) {
+        if (session().companion != nullptr) session().companion->settled = true;
+        bllm_reply(request, failure_json(bllm::residency::to_string(error)).c_str());
+        return;
+    }
+    bllm_reply(request, "{\"ok\":true}");
+}
+
+// The vision encoder's program is built: the link to the text program and
+// the vision stage, attached to the embedder.
+void on_vision_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kernels::ProgramError error,
+                     std::string_view message, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    Session& s = session();
+    CompanionLoad* load = s.companion.get();
+    if (load == nullptr || load->settled || s.companion_loaded == nullptr || s.embedder == nullptr) {
+        bllm_reply(request, failure_json("the companion's load was replaced by another").c_str());
+        return;
+    }
+    load->settled = true;
+    if (error != bllm::kernels::ProgramError::Ok) {
+        s.companion_loaded.reset();
+        bllm_reply(request, failure_json("the vision encoder's kernels did not build", message).c_str());
+        return;
+    }
+    const auto scratch = [](const bllm::residency::ResidencyPlan& plan, std::string_view purpose) {
+        for (const auto& p : plan.scratch) {
+            if (p.purpose == purpose) return bllm::kernels::Binding{p.range.buffer, p.range.offset, p.range.length};
+        }
+        return bllm::kernels::Binding{};
+    };
+    const auto& vision_plan = s.companion_loaded->plan();
+    auto link = std::make_unique<bllm::kernels::ProgramLink>(*s.companion_loaded, scratch(vision_plan, "soft_tokens"),
+                                                             *s.loaded, scratch(s.loaded->plan(), "hidden"));
+    const auto& vocabulary = s.embedder->tokenizer().vocabulary();
+    const bllm::runtime::ImageTokens tokens{*vocabulary.find("<|image|>"), *vocabulary.find("<|image>"),
+                                            *vocabulary.find("<image|>")};
+    const bllm::model::VisionDescription& v = *load->description.vision;
+    s.embedder->attach(std::make_unique<bllm::runtime::Vision>(std::move(program), std::move(link),
+                                                               scratch(vision_plan, "pixels"), load->budget,
+                                                               v.patch_size, v.pooling),
+                       tokens, s.loaded_description.embedding_width);
+    bllm_reply(request, ("{\"ok\":true,\"imageTokens\":" + std::to_string(load->budget.most) + "}").c_str());
+}
+
+void on_companion_finished(bllm::residency::UploadError error, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    Session& s = session();
+    CompanionLoad* load = s.companion.get();
+    if (error != bllm::residency::UploadError::Ok || load == nullptr) {
+        if (load != nullptr) load->settled = true;
+        bllm_reply(request, failure_json(bllm::residency::to_string(error)).c_str());
+        return;
+    }
+    s.companion_loaded = std::move(load->upload);
+    std::vector<bllm::kernels::Launch> launches;
+    const bllm::graph::GraphResult built = load->encoder->graph(load->description, s.companion_loaded->plan(), launches);
+    if (!built.ok()) {
+        load->settled = true;
+        s.companion_loaded.reset();
+        bllm_reply(request, failure_json("the vision encoder's graph does not build", built.subject).c_str());
+        return;
+    }
+    bllm::kernels::Program::build(*s.companion_loaded, std::move(launches), std::nullopt, on_vision_built,
+                                  to_userdata(request));
+}
+
+bool read_budget(std::uint32_t least, std::uint32_t most, bllm::media::ImageBudget& out) {
+    if (least == 0 || least > most) return false;
+    out = {least, most};
+    return true;
+}
+
+}  // namespace
+
+// Judges a companion beside the loaded model: see the top of this file.
+EMSCRIPTEN_KEEPALIVE void bllm_companion_preflight(std::uint32_t request, const std::byte* resident,
+                                                   std::uint32_t resident_length, double file_size,
+                                                   const double* ranges, std::uint32_t range_count,
+                                                   double index_end, std::uint32_t least_tokens,
+                                                   std::uint32_t most_tokens, double max_buffer_size,
+                                                   double max_binding_size, std::uint32_t offset_alignment,
+                                                   double memory_budget) {
+    Session& s = session();
+    const auto host = host_of(s);
+    if (!host) {
+        bllm_reply(request, "{\"status\":\"unreadable\",\"error\":\"no model that embeds is loaded\"}");
+        return;
+    }
+    std::vector<bllm::residency::FileRange> parsed;
+    bllm::media::ImageBudget budget{};
+    if (!exact_integer(file_size) || file_size < resident_length || !exact_integer(index_end) ||
+        !exact_integer(max_buffer_size) || !exact_integer(max_binding_size) || !exact_integer(memory_budget) ||
+        !read_ranges(ranges, range_count, parsed) || !read_budget(least_tokens, most_tokens, budget)) {
+        bllm_reply(request, "{\"status\":\"unreadable\",\"error\":\"the sizes passed in are not valid\"}");
+        return;
+    }
+    bllm::gguf::MemoryByteSource source{{resident, resident_length}, static_cast<std::uint64_t>(file_size)};
+    bllm::gguf::TensorIndex index;
+    const auto read = bllm::gguf::read_index(source, index);
+    if (read.error == bllm::gguf::ReadError::NeedMoreBytes) {
+        bllm_reply(request, ("{\"status\":\"need-bytes\",\"bytesNeeded\":" + std::to_string(read.bytes_needed) + "}").c_str());
+        return;
+    }
+    if (read.error != bllm::gguf::ReadError::Ok) {
+        bllm_reply(request, ("{\"status\":\"unreadable\",\"error\":" + json_string(bllm::gguf::to_string(read.error)) + "}").c_str());
+        return;
+    }
+    bllm::policy::LoadPolicy policy;
+    policy.memory_budget = static_cast<std::uint64_t>(memory_budget);
+    const bllm::residency::DeviceLimits limits{static_cast<std::uint64_t>(max_buffer_size),
+                                               static_cast<std::uint64_t>(max_binding_size), offset_alignment};
+    bllm_reply(request, verdict_json(bllm::preflight::preflight_companion(index, parsed, static_cast<std::uint64_t>(file_size),
+                                                                         static_cast<std::uint64_t>(index_end), limits,
+                                                                         policy, budget, *host))
+                            .c_str());
+}
+
+// Begins a companion's load beside the loaded model: see the top of this file.
+EMSCRIPTEN_KEEPALIVE void bllm_companion_load_begin(std::uint32_t request, const std::byte* prefix,
+                                                    std::uint32_t prefix_length, double file_size,
+                                                    const double* ranges, std::uint32_t range_count,
+                                                    std::uint32_t max_chunk, std::uint32_t least_tokens,
+                                                    std::uint32_t most_tokens, double memory_budget) {
+    Session& s = session();
+    const auto host = host_of(s);
+    if (s.device == nullptr || !host) {
+        bllm_reply(request, failure_json("no model that embeds is loaded to load a companion beside").c_str());
+        return;
+    }
+    if (s.companion != nullptr && !s.companion->settled) {
+        bllm_reply(request, failure_json("a companion's load is already in progress").c_str());
+        return;
+    }
+    std::vector<bllm::residency::FileRange> parsed;
+    bllm::media::ImageBudget budget{};
+    if (!exact_integer(file_size) || file_size < prefix_length || max_chunk == 0 || !exact_integer(memory_budget) ||
+        !read_ranges(ranges, range_count, parsed) || !read_budget(least_tokens, most_tokens, budget)) {
+        bllm_reply(request, failure_json("the sizes passed in are not valid").c_str());
+        return;
+    }
+    const auto size = static_cast<std::uint64_t>(file_size);
+    bllm::gguf::MemoryByteSource source{{prefix, prefix_length}, size};
+    bllm::gguf::TensorIndex index;
+    if (const auto read = bllm::gguf::read_index(source, index); read.error != bllm::gguf::ReadError::Ok) {
+        bllm_reply(request, failure_json("the index does not read from the bytes given",
+                                         bllm::gguf::to_string(read.error)).c_str());
+        return;
+    }
+    if (const auto r = bllm::residency::check_ranges(parsed, size, prefix_length); !r.ok()) {
+        bllm_reply(request, failure_json("the ranges are not ones a load can read").c_str());
+        return;
+    }
+    const auto& granted = s.device->limits();
+    const bllm::residency::DeviceLimits limits{granted.max_buffer_size, granted.max_storage_buffer_binding_size,
+                                               granted.min_storage_buffer_offset_alignment};
+    bllm::policy::LoadPolicy policy;
+    policy.memory_budget = static_cast<std::uint64_t>(memory_budget);
+    bllm::model::ModelDescription description;
+    bllm::residency::ResidencyPlan plan;
+    if (const std::string stop =
+            bllm::preflight::plan_companion(index, parsed, limits, policy, budget, *host, description, plan);
+        !stop.empty()) {
+        bllm_reply(request, failure_json(stop).c_str());
+        return;
+    }
+    std::string_view projector;
+    (void)index.read_string("clip.vision.projector_type", projector);
+    // A companion loaded before is replaced: its vision stage first, then its
+    // buffers.
+    if (s.embedder != nullptr) s.embedder->attach(nullptr, {}, 0);
+    s.companion_loaded.reset();
+    s.companion = std::make_unique<CompanionLoad>();
+    CompanionLoad& load = *s.companion;
+    load.begin_request = request;
+    load.chunk.resize(max_chunk);
+    load.description = description;
+    load.encoder = bllm::capability::find_vision_encoder(projector);
+    load.budget = budget;
+    bllm::residency::Upload::begin(*s.device, index, plan, size, bllm::capability::find_format, {}, max_chunk,
+                                   on_companion_ready, to_userdata(request), parsed);
+}
+
+EMSCRIPTEN_KEEPALIVE void bllm_companion_load_chunk(std::uint32_t request, double file_offset, std::uint32_t length) {
+    CompanionLoad* load = session().companion.get();
+    if (load == nullptr || load->settled || load->upload == nullptr) {
+        bllm_reply(request, failure_json("no companion's load is in progress").c_str());
+        return;
+    }
+    if (!(file_offset >= 0 && file_offset == static_cast<double>(static_cast<std::uint64_t>(file_offset))) ||
+        length > load->chunk.size()) {
+        bllm_reply(request, failure_json("the chunk passed in is not valid").c_str());
+        return;
+    }
+    load->upload->write(static_cast<std::uint64_t>(file_offset), std::span(load->chunk.data(), length),
+                        on_companion_accepted, to_userdata(request));
+}
+
+EMSCRIPTEN_KEEPALIVE void bllm_companion_load_finish(std::uint32_t request) {
+    CompanionLoad* load = session().companion.get();
+    if (load == nullptr || load->settled || load->upload == nullptr) {
+        bllm_reply(request, failure_json("no companion's load is in progress").c_str());
+        return;
+    }
+    load->upload->finish(on_companion_finished, to_userdata(request));
+}
+
+// Starts an image in the vision stage's slot: its grid, or the refusal.
+EMSCRIPTEN_KEEPALIVE void bllm_image_begin(std::uint32_t request, std::uint32_t width, std::uint32_t height) {
+    Session& s = session();
+    bllm::runtime::Vision* vision = s.embedder != nullptr ? s.embedder->vision() : nullptr;
+    if (vision == nullptr) {
+        bllm_reply(request, failure_json("no vision encoder is loaded").c_str());
+        return;
+    }
+    using bllm::media::ImageError;
+    switch (vision->begin(width, height)) {
+        case ImageError::Ok: {
+            const bllm::media::ImageGrid& g = vision->slot().grid;
+            bllm_reply(request, ("{\"ok\":true,\"tokens\":" + std::to_string(g.tokens) + ",\"width\":" +
+                                 std::to_string(g.width) + ",\"height\":" + std::to_string(g.height) + "}")
+                                    .c_str());
+            return;
+        }
+        case ImageError::Empty: bllm_reply(request, failure_json("the image has no pixels").c_str()); return;
+        case ImageError::TooLarge:
+            bllm_reply(request, failure_json("a side of the image is over 16,384 pixels").c_str());
+            return;
+        case ImageError::OverBudget:
+            bllm_reply(request, failure_json("the image is too wide or too tall for the token budget").c_str());
+            return;
+        default: bllm_reply(request, failure_json("the image cannot start").c_str()); return;
+    }
+}
+
+// The next band of the slot's image, `length` RGBA bytes at `pixels`.
+EMSCRIPTEN_KEEPALIVE void bllm_image_rows(std::uint32_t request, std::uint32_t first_row, const std::uint8_t* pixels,
+                                          std::uint32_t length) {
+    Session& s = session();
+    bllm::runtime::Vision* vision = s.embedder != nullptr ? s.embedder->vision() : nullptr;
+    if (vision == nullptr) {
+        bllm_reply(request, failure_json("no vision encoder is loaded").c_str());
+        return;
+    }
+    if (vision->rows(first_row, {pixels, length}) != bllm::media::ImageError::Ok) {
+        bllm_reply(request, failure_json("the band is out of order or not whole rows").c_str());
+        return;
+    }
+    bllm_reply(request, vision->ready_tokens() > 0 ? "{\"ok\":true,\"ready\":true}" : "{\"ok\":true,\"ready\":false}");
 }
 
 #if BLLM_DIAGNOSTICS_ENABLED

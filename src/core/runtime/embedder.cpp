@@ -122,6 +122,8 @@ void Embedder::attach(std::unique_ptr<Vision> vision, ImageTokens tokens, std::u
 
 Vision* Embedder::vision() noexcept { return state_->vision.get(); }
 
+const tokenizer::Tokenizer& Embedder::tokenizer() const noexcept { return *state_->tokenizer; }
+
 EmbedResult Embedder::start(std::string_view text, EmbedCallback done, void* userdata) {
     return start(text, false, done, userdata);
 }
