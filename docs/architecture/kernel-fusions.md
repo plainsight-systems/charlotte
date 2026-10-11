@@ -92,9 +92,9 @@ A prefill step that splits a matmul along K — a product whose tiles are few
 beside its length along K, as an output or down projection's are in a short
 step — adds that product's combine, which adds each output's 32 range sums in
 order and writes them as the product would have
-(`core/kernels/matmul/matmul.h`): in a step of up to 32 tokens, 2 a layer
-for Qwen3, 56 more, and up to 3 a layer for Llama 3.2 and Gemma 3, whose Q, K
-and V split too.
+(`core/kernels/matmul/matmul.h`): in a step of up to 32 tokens, 3 a layer —
+Q, K and V, the output and down projections — 84 more for Qwen3, 48 for
+Llama 3.2, 78 for Gemma 3.
 
 Without these fusions Qwen3's pass would be over 300 launches: a norm, three
 projections, two QK-norms, RoPE, a cache write, attention, a projection and
@@ -147,8 +147,9 @@ Around the layers: the gather, one launch for each piece of the embedding
 table; the per-layer inputs' projection and norm; and after the layers the
 final norm over every row, the mean, the output projection over one row, and
 the scaling to unit length. A step that splits a matmul along K adds its
-combine, as a decoder's prefill does: up to 4 a layer, the output, down and
-per-layer gate and projection, 96 more in a step of up to 32 tokens.
+combine, as a decoder's prefill does: up to 5 a layer, Q, K and V in the
+sliding layers, the output, down and per-layer gate and projection, 116 more
+in a step of up to 32 tokens.
 
 | Model | Layers | Gather | Per-layer inputs | Layers × 12 | Final norm, mean, projection, unit | Launches a step | At 1.5 µs each |
 |---|---|---|---|---|---|---|---|

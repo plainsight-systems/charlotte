@@ -242,7 +242,7 @@ struct GraphResult {
 // words (kernels/topk/topk.h); the draw's 16-byte record, `sampled`
 // (sampler/sampler.h); and `range_sums`, the most any of the model's
 // products split along K needs under kernels::kSplitGate, one row of
-// kernels::range_sum_floats' largest — 16 MiB for Qwen3, 32 for Llama 3.2,
+// kernels::range_sum_floats' largest — 32 MiB for Qwen3 and Llama 3.2,
 // 31.5 for Gemma 3 — or one float when none splits. Every product's launches
 // take that gate and that buffer (kernels/matmul/matmul.h). A decoder keeps a
 // KV cache. Which buffers a graph

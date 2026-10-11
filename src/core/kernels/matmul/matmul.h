@@ -147,44 +147,52 @@ namespace bllm::kernels {
 //     turn, so a product of few tiles runs few workgroups each a long
 //     chain: EmbeddingGemma 2's down projection, 512 outputs of 2,048, is 8
 //     tiles of 64 groups at any step up to 32 tokens, on a GPU of 40 cores,
-//     and took 160 µs at every step from 8 tokens to 128, where its
-//     arithmetic at 128 tokens is 19 µs at the target's peak (costs, below). Split, each of the tiled
-//     form's workgroups becomes kRanges, 32, one a range: workgroup
-//     (tile, r) walks range r's groups alone, exactly as the tiled form
-//     walks them — the same staging, products and guard, its range sum
-//     from zero — and writes each output's range sum to the working buffer
-//     `range_sums`, at [token][output][r], rather than adding it to a total.
-//     Then a combine launch, an invocation an output of each token, adds its
-//     32 range sums to a total from zero, in order, and applies the
-//     epilogue. So each output's order of addition is decode's and the
-//     tiled form's — the same range sums, each from zero, the same 32 adds
-//     in the same order — and its bits are theirs.
+//     and took 162 µs at every step from 21 tokens to 128, where its
+//     arithmetic at 128 tokens is 19 µs at the target's peak (costs, below).
+//     Split, each of the tiled form's workgroups becomes kRanges, 32, one a
+//     range: workgroup (tile, r) walks range r's groups alone, exactly as
+//     the tiled form walks them — the same staging, products and guard, its
+//     range sum from zero — and writes each output's range sum to the
+//     working buffer `range_sums` rather than adding it to a total. Then a
+//     combine launch, an invocation an output of each token, adds its 32
+//     range sums to a total from zero, in order, and applies the epilogue.
+//     So each output's order of addition is decode's and the tiled form's —
+//     the same range sums, each from zero, the same 32 adds in the same
+//     order — and its bits are theirs.
+//     The range sums lie range first: range r of token t's output o at
+//     (r × tokens + t) × rows + o, for the step's tokens and the product's
+//     rows. A split workgroup's 16 lanes write one range's sums for 16
+//     adjacent outputs, 64 contiguous bytes, and a combine's adjacent
+//     invocations, adjacent outputs, read each range contiguously (GPU.2);
+//     laid out output first, at (t × rows + o) × 32 + r, both strided by 128
+//     bytes, and the split ran up to 1.8 times as long at the same shapes.
 //     Which steps split, by the workgroups the tiled form would run, W =
-//     output tiles × token tiles: when W is at most 4/5 of G, its chain long
-//     beside its parallel work, and at most 128, past which the tiled form
-//     has enough workgroups to hide its chain — about three a core on the
-//     target's 40 — and the split's range sums, 32 floats an output a token,
-//     cost more than they save. That is the gate, SplitGate (CDSA.21): two
-//     named values, measured, passed in by the graph, not read from ambient
-//     state, so a test forces either form. Measured in Chrome on the target
-//     over every listed model's product shapes at steps from 8 to 320
-//     tokens (costs, below), the split form was faster at every shape and
-//     step the gate takes but two, which tied within 3%; and slower or tied
-//     at every one it leaves but two — EmbeddingGemma 2's QKV and Qwen3's at
-//     8 tokens, where the tiled form ran 1.6 and 1.35 times as long — which a
-//     gate would take only at W = 2G, where the same products at 21 tokens
-//     lost by a third. The gate depends on
-//     the step only through its token tiles, so for each product it is a
-//     token range: every step up to split_tokens(), a whole number of the
-//     32-token tile, or none; the split and tiled launches each take their
-//     part of every tile width's range, as the launch contract asks.
+//     output tiles × token tiles: when W is at most 2G, its chain long
+//     beside its parallel work, and at most 128, which bounds the range sums
+//     (costs, below). That is the gate, SplitGate (CDSA.21): two named
+//     values, measured, passed in by the graph, not read from ambient state,
+//     so a test forces either form. Measured in Chrome on the target over
+//     every listed model's product shapes at steps of 8 to 256 tokens, 124
+//     points (costs, below), the gate's choices came to 1.2% more time than
+//     the faster form at every point would, against 46% more for the tiled
+//     form alone. It split 87 points, three of them slower than tiled, by 1,
+//     2 and 6%; it left 37, four of them faster split — EmbeddingGemma 2's
+//     global QKV at 8 and 21 tokens by 1.69 and 1.21 times, Llama 3.2's QKV
+//     at 70 by 1.08 and its down at 256 by 1.10 — which a looser ratio
+//     would take only with losses of 14 to 43% elsewhere. Without the cap
+//     the choices were the same to within 0.02%. The gate depends on the
+//     step only through its token tiles, so for each product it is a token
+//     range: every step up to split_tokens(), a whole number of the 32-token
+//     tile, or none; the split and tiled launches each take their part of
+//     every tile width's range, as the launch contract asks.
 //     Its epilogues are Write, QKV and GatedByInput: the output and down
-//     projections, Llama 3.2's and Gemma 3's Q, K and V, and Gemma 4's
-//     per-layer gate and projection. The gated activation is not split: its
-//     combine would need a gate row's total and its up row's, and no listed
-//     model's gate and up — 64 to 256 tiles of pairs over K of 512 to 2,048
-//     — passes the gate, so split_tokens() is none for it by rule rather
-//     than by measurement, and the path is not built (CDSA.21's last).
+//     projections, every listed model's Q, K and V but EmbeddingGemma 2's
+//     global layers', and Gemma 4's per-layer gate and projection. The gated
+//     activation is not split: its combine would need a gate row's total and
+//     its up row's; measured as one product of its rows, it was slower split
+//     at every listed model's shape past 8 tokens, and faster at 8 only for
+//     Qwen3's and EmbeddingGemma 2's, by 1.48 and 1.35 times — not worth a
+//     third combine. split_tokens() is none for it by rule.
 //
 // Epilogues — what a product writes — are variants, override constants:
 //   - write: y to one buffer: the output projection and down projection
@@ -239,8 +247,8 @@ namespace bllm::kernels {
 //     `range_sums`, read-only — its own declaration of binding 3, as u's is
 //     of 5 — and the outputs and u as the product's other entry points do,
 //     and no weights; the module still composes the format's unpack, which
-//     the combine never calls. The split's range sums of token t, output o,
-//     range r lie at (t × rows + o) × 32 + r, o the product's row.
+//     the combine never calls. The split's range sums lie range first, as
+//     the split form above lays them out, o the product's row.
 //
 // What it asks of the other contracts:
 //   - kernels/interface.h: a launch may run in a range of token counts
@@ -341,23 +349,24 @@ namespace bllm::kernels {
 //     combine's launch, an invocation an output a token, 32 adds each, at
 //     about 1.5 µs a launch. The working buffer holds the most any of the
 //     model's split products needs at its last split step, split_tokens()
-//     × its rows × 32 floats (range_sum_floats below): 12 MiB for
-//     EmbeddingGemma 2, its down and global output projections at 192
-//     tokens; 16 MiB for Qwen3, its down at 128; 32 MiB for Llama 3.2, its
-//     down at 128; 31.5 MiB for Gemma 3, its down at 224. Launches: a
-//     split product adds its combine's, in the steps it splits.
+//     × its rows × 32 floats (range_sum_floats below). The cap bounds it:
+//     W ≤ 128 is at most 128 tiles of 64 outputs × 32 tokens, 32 MiB — 32
+//     for EmbeddingGemma 2, Qwen3 and Llama 3.2, 31.5 for Gemma 3. On a
+//     phone's 512 MiB (web/platform_policy.js) that is about 290 of Qwen3's
+//     tokens of context. Launches: a split product adds its combine's, in
+//     the steps it splits.
 //     Measured in Chrome 151 on the target, a page timing each product's
 //     launch alone, 200 back to back in one submission, the median of 5
-//     after a warm-up, on Q4_0 weights at each shape (DIAGNOSTIC: the shapes
-//     alone, not a model's step; the page was in a background window, which
-//     slows its timers, not the GPU's queue) — the tiled form against the
-//     split, at 21 tokens:
-//     EmbeddingGemma 2's down 161 µs against 34, its sliding output 85 and
-//     28, its per-layer projection 50 and 25; Qwen3's down 231 and 61, its
-//     output 159 and 53; Llama 3.2's QKV 175 and 133, its down 690 and 204;
-//     Gemma 3's QKV 97 and 61, its down 511 and 114. Every split output was
-//     bit for bit the tiled form's. A product the gate leaves, at 21 tokens:
-//     EmbeddingGemma 2's QKV 49 µs tiled, 66 split; Qwen3's QKV 95 and 135.
+//     after a warm-up, at each listed model's shapes in its own format —
+//     Q8_0 for EmbeddingGemma 2's, Q4_0 for the others' (DIAGNOSTIC: the
+//     shapes alone, not a model's step; the page was in a background
+//     window, which slows its timers, not the GPU's queue) — the tiled form
+//     against the split, at 21 tokens: EmbeddingGemma 2's down 163 µs
+//     against 28, its sliding output 90 and 22, its per-layer projection 51
+//     and 19, its sliding QKV 52 and 40; Qwen3's down 232 and 49, its output
+//     159 and 38, its QKV 93 and 75; Llama 3.2's QKV 173 and 83, its down
+//     683 and 178; Gemma 3's QKV 95 and 40, its down 504 and 96. Every split
+//     output, at all 144 points, was bit for bit the tiled form's.
 // Optimization (practice): a prefill product of few tiles split along K
 // into 32 workgroups a tile, a range each, its range sums combined in a
 // second launch — split-K, as cuBLAS and CUTLASS split a GEMM whose output
@@ -365,13 +374,14 @@ namespace bllm::kernels {
 // the order of addition already fixes, so the combine adds them as decode
 // does and no output's bits change (GDSA.2), at the cost of writing each
 // range sum out and back (GDSA.6, GDSA.16's caveat: an intermediate the
-// combine must see whole). The gate is measured (CDSA.21, Per.6): for
-// EmbeddingGemma 2 it takes the down, output and per-layer products and
-// leaves QKV and gate and up. Their tiled times above, summed over its 24
-// layers, come to about 8.6 ms of a 21-token encode's 13.9 in Chrome
+// combine must see whole), laid out range first so both passes are
+// coalesced (GPU.2). The gate is measured (CDSA.21, Per.6): for
+// EmbeddingGemma 2 at 21 tokens it takes the down, output, per-layer and
+// sliding QKV products, whose tiled times above, summed over its 24 layers,
+// come to about 9.8 ms of a 21-token encode's 13.9 in Chrome
 // (docs/research/2026-10-11-chrome-encode-benchmark.md), and their split
-// times to about 2.7 — an estimate from launches timed alone on Q4_0, where
-// the model is Q8_0, until the step is measured whole.
+// times to about 2.9 — an estimate from launches timed alone, until the
+// step is measured whole.
 // Optimization (practice): weights decoded in the load path, never
 // expanded (GDSA.18) — llama.cpp's mul_mv and mul_mm do the same.
 // Optimization (practice): Q, K and V as one product and gate and up as
@@ -484,7 +494,7 @@ namespace bllm::kernels {
 //     I.4    Make interfaces precisely and strongly typed — the epilogue is
 //            an enumeration.
 //     ES.45  Avoid magic constants — the micro-tile's 4 × 4 and the tiles'
-//            widths are named, and the gate's 4/5 and 128.
+//            widths are named, and the gate's ratio of 2 and cap of 128.
 //     I.5    State preconditions — split_tokens' and matmul_launches'.
 //     F.8    Prefer pure functions — split_tokens and range_sum_floats, which
 //            the launches and the working set both call, so they cannot
@@ -549,9 +559,10 @@ struct SplitGate {
 };
 
 // Measured in Chrome 151 on the target (M3 Max, Metal), over every listed
-// model's product shapes at steps of 8 to 320 tokens (above): between the
-// crossovers, so an error in either value costs little.
-inline constexpr SplitGate kSplitGate{4, 5, 128};
+// model's product shapes at steps of 8 to 256 tokens (above): 1.2% from the
+// faster form's time summed over them, where a ratio of 1.5 would be 2.0%
+// and a cap of 96 2.0%.
+inline constexpr SplitGate kSplitGate{2, 1, 128};
 
 // The most tokens a step may hold for the product to split — a whole number
 // of 32-token tiles, at most kPrefillBlock — or 1 when it never splits, as a
