@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FIRST_FETCH_BYTES, MAX_INDEX_BYTES, PreflightError, preflight, rangesOfFile } from '../../web/preflight.js';
+import { FIRST_FETCH_BYTES, MAX_INDEX_BYTES, PreflightError, preflight, rangesOfFile, withinFirstRange }
+  from '../../web/preflight.js';
 
 // A file of `totalSize` bytes whose index ends at `indexEnd`, served by a
 // fake fetchRange that records every range asked for, and read by a fake
@@ -77,4 +78,21 @@ test('the verdict says how many of the first bytes the index needed, to be sent 
   const large = await preflight(file);
   assert.equal(large.indexBytes, file.fetched.at(-1)[1]);   // every byte fetched
   assert.ok(large.indexBytes >= 20e6);
+});
+
+test("a companion's index is read from its first range alone, sized as the published file", async () => {
+  // The cached ranges: 60,000 bytes of header, then the vision span.
+  const cached = fakeFile({ totalSize: 226e6, indexEnd: 58_656 });
+  const verdict = await preflight({ fetchRange: withinFirstRange(cached.fetchRange, 60_000, 554_821_024),
+    readIndex: cached.readIndex });
+  assert.equal(verdict.totalSize, 554_821_024);
+  assert.equal(verdict.indexBytes, 60_000);
+  assert.deepEqual(cached.fetched, [[0, 60_000]]);
+});
+
+test('an index past the first range is refused, by name, without fetching past it', async () => {
+  const file = fakeFile({ totalSize: 500e6, indexEnd: 70_000 });
+  await assert.rejects(preflight({ fetchRange: withinFirstRange(file.fetchRange, 60_000, 500e6),
+    readIndex: file.readIndex }), (error) => error instanceof PreflightError && /first range/.test(error.message));
+  assert.deepEqual(file.fetched, [[0, 60_000]]);
 });

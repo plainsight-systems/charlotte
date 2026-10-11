@@ -1,5 +1,5 @@
 {
-  "$comment": "Axis J: the models offered. An entry with a `policy` has been measured and runs with it; one without runs on the defaults and is shown as unmeasured. Each entry: id, name, url, sizeBytes, sha256, and optionally policy: load (cachePrecision, memoryBudget, rollbackReserve, stop — the stop tokens' texts beyond the file's), sampling per mode ({ temperature, topK, topP, minP }), and template variables. A model that embeds also carries prompts: { query, document }, the task prompts its card gives, written before each text (web/task_prompt.js); they are the card's, not a measurement, so they do not make a model measured. Contract 12 in docs/architecture/file-mapping.md; the C++ side is src/core/policy/policy.h.",
+  "$comment": "Axis J: the models offered. An entry with a `policy` has been measured and runs with it; one without runs on the defaults and is shown as unmeasured. Each entry: id, name, url, sizeBytes, sha256, and optionally policy: load (cachePrecision, memoryBudget, rollbackReserve, stop — the stop tokens' texts beyond the file's), sampling per mode ({ temperature, topK, topP, minP }), and template variables. A model that embeds also carries prompts: { query, document }, the task prompts its card gives, written before each text (web/task_prompt.js); they are the card's, not a measurement, so they do not make a model measured. A model whose images are encoded by a companion file carries vision: { url, sizeBytes, ranges, rangesSha256, tokens }, the ranges a load reads and their hash pinned by tools/pin_ranges.py (web/catalog.js). Contract 12 in docs/architecture/file-mapping.md; the C++ side is src/core/policy/policy.h.",
   "models": [
     {
       "id": "qwen3-0.6b-q4_0",
@@ -28,7 +28,14 @@
       "url": "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-Q8_0.gguf",
       "sizeBytes": 309855456,
       "sha256": "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135",
-      "prompts": { "query": "task: search result | query: ", "document": "title: none | text: " }
+      "prompts": { "query": "task: search result | query: ", "document": "title: none | text: " },
+      "vision": {
+        "url": "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/mmproj-embeddinggemma-2-Q8_0.gguf",
+        "sizeBytes": 554821024,
+        "ranges": [[0, 58656], [328492448, 554821024]],
+        "rangesSha256": "b3956354ba5f7e4961e44977a6d441c043e50ccffa00400941ffd6016aa07edc",
+        "tokens": { "least": 70, "most": 280 }
+      }
     }
   ]
 }

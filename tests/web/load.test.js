@@ -80,3 +80,20 @@ test('a begin the runtime refuses reads nothing; a skipped pass streams nothing 
   assert.equal(await streamFile(skipped), null);
   assert.equal(skipped.calls.length, 0);
 });
+
+test("a file stored as ranges is sent at each chunk's published offset, none crossing a gap", async () => {
+  const ranges = [[0, 250], [1000, 1120]];
+  const r = runtime(new Uint8Array(370));
+  assert.equal(await streamFile({ ...r, ranges, chunkBytes: 100 }), 'finished');
+  const moved = r.calls.filter(([kind]) => kind === 'read' || kind === 'send')
+    .map(([kind, offset, n]) => [kind, offset, kind === 'send' ? n.length : n]);
+  assert.deepEqual(moved, [
+    ['read', 0, 100], ['send', 0, 100], ['read', 100, 100], ['send', 100, 100], ['read', 200, 50], ['send', 200, 50],
+    ['read', 250, 100], ['send', 1000, 100], ['read', 350, 20], ['send', 1100, 20]]);
+});
+
+test('ranges that do not add up to the stored file are refused before begin', async () => {
+  const r = runtime(new Uint8Array(100));
+  await assert.rejects(streamFile({ ...r, ranges: [[0, 50], [80, 120]], chunkBytes: 64 }), /hold 90/);
+  assert.deepEqual(r.calls, []);
+});

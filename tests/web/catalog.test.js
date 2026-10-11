@@ -41,3 +41,24 @@ test('pasted URLs that cannot be a model file are refused with a reason', () => 
   assert.throws(() => modelFromUrl('http://example.com/a.gguf'), /https/);
   assert.throws(() => modelFromUrl('https://example.com/a.bin'), /\.gguf/);
 });
+
+test("a vision companion's fields are checked, the entry refused naming the one at fault", () => {
+  const entry = { id: 'e', name: 'E', url: 'https://a/e.gguf', sizeBytes: 1, sha256: '0'.repeat(64) };
+  const vision = { url: 'https://a/m.gguf', sizeBytes: 100, ranges: [[0, 10], [40, 100]],
+    rangesSha256: 'a'.repeat(64), tokens: { least: 70, most: 280 } };
+  const [model] = parseCatalog({ models: [{ ...entry, vision }] });
+  assert.deepEqual(model.vision, vision);
+  const refused = (change, field) => assert.throws(
+    () => parseCatalog({ models: [{ ...entry, vision: { ...vision, ...change } }] }),
+    (error) => error instanceof CatalogError && error.message.includes(`vision.${field}`));
+  refused({ url: 1 }, 'url');
+  refused({ rangesSha256: 'xyz' }, 'rangesSha256');
+  refused({ ranges: [] }, 'ranges');
+  refused({ ranges: [[1, 10]] }, 'ranges');            // the header is not first
+  refused({ ranges: [[0, 10], [5, 20]] }, 'ranges');   // overlapping
+  refused({ ranges: [[0, 10], [20, 20]] }, 'ranges');  // empty
+  refused({ ranges: [[0, 10], [10, 20]] }, 'ranges');  // touching, which one range would be
+  refused({ ranges: [[0, 10], [40, 101]] }, 'ranges'); // past the file
+  refused({ tokens: { least: 300, most: 280 } }, 'tokens');
+  refused({ tokens: undefined }, 'tokens');
+});

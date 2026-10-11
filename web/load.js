@@ -53,23 +53,47 @@
 
 export const LOAD_CHUNK_BYTES = 16 * 2 ** 20;
 
-// Streams a file of `size` bytes through one pass: `begin({ maxChunk })`
-// starts it, and may answer { skipped: true }, when nothing is streamed and
-// this resolves null; `read({ offset, length })` puts that part of the file
-// where the runtime takes it from; `send({ offset, length })` resolves when
-// the runtime has taken it; `finish()` resolves with the pass's answer. A
-// pass the caller aborts is still finished, so the runtime settles it; one
-// the runtime refuses is already settled there.
-export async function streamFile({ size, begin, read, send, finish, onProgress, signal, chunkBytes = LOAD_CHUNK_BYTES }) {
+// The chunks a stored file of `size` bytes is streamed in: { stored,
+// published, length }, where `stored` is the chunk's place in the stored
+// file and `published` its offset in the file it was downloaded from. A file
+// stored whole has none of `ranges`, and the two are equal. A file stored as
+// ranges of the published one ([begin, end) pairs in order, catalog.js's
+// `vision`) holds them back to back: a chunk at place p lies at range r's
+// begin + (p − the bytes of the ranges before r), and never crosses a
+// range's end. Throws when the ranges do not add up to `size`.
+export function* chunksOf({ size, chunkBytes, ranges }) {
+  const spans = ranges ?? [[0, size]];
+  const total = spans.reduce((sum, [begin, end]) => sum + (end - begin), 0);
+  if (total !== size) throw new Error(`the stored file is ${size} bytes, but its ranges hold ${total}`);
+  let stored = 0;
+  for (const [begin, end] of spans) {
+    for (let published = begin; published < end; published += chunkBytes) {
+      const length = Math.min(chunkBytes, end - published);
+      yield { stored, published, length };
+      stored += length;
+    }
+  }
+}
+
+// Streams a stored file of `size` bytes through one pass: `begin({ maxChunk
+// })` starts it, and may answer { skipped: true }, when nothing is streamed
+// and this resolves null; `read({ offset, length })` puts that part of the
+// stored file where the runtime takes it from; `send({ offset, length })`,
+// the offset the chunk's in the published file (chunksOf), resolves when the
+// runtime has taken it; `finish()` resolves with the pass's answer. A pass
+// the caller aborts is still finished, so the runtime settles it; one the
+// runtime refuses is already settled there.
+export async function streamFile({ size, ranges, begin, read, send, finish, onProgress, signal,
+  chunkBytes = LOAD_CHUNK_BYTES }) {
+  const chunks = [...chunksOf({ size, chunkBytes, ranges })];
   const started = await begin({ maxChunk: chunkBytes });
   if (started?.skipped) return null;
   try {
-    for (let offset = 0; offset < size; offset += chunkBytes) {
+    for (const { stored, published, length } of chunks) {
       signal?.throwIfAborted();
-      const length = Math.min(chunkBytes, size - offset);
-      await read({ offset, length });
-      await send({ offset, length });
-      onProgress?.(offset + length, size);
+      await read({ offset: stored, length });
+      await send({ offset: published, length });
+      onProgress?.(stored + length, size);
     }
   } catch (error) {
     if (signal?.aborted) await finish().catch(() => {});

@@ -10,7 +10,7 @@
 // `vision`, for a model whose images are encoded by a companion file
 // (runtime/vision.h), is { url, sizeBytes, ranges, rangesSha256, tokens }:
 // the companion's published file and size; the byte ranges a load reads,
-// [begin, end) pairs in order, the first from 0 holding its header
+// [begin, end) pairs in order, apart, the first from 0 holding its header
 // (residency/file_ranges.h); the SHA-256 of those ranges' bytes in order,
 // which the download checks in place of the whole file's; and the image
 // budget, { least, most } soft tokens, the card's (policy/policy.h). Pinned
@@ -49,8 +49,34 @@ export function parseCatalog(json) {
         }
       }
     }
+    if (entry.vision !== undefined) checkVision(entry.vision, position);
     return { ...entry, measured: entry.policy !== undefined };
   });
+}
+
+const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
+
+// A `vision` entry's fields, each checked, refused naming the one at fault.
+function checkVision(vision, position) {
+  const refuse = (what) => { throw new CatalogError(`model ${position + 1} needs "vision.${what}`); };
+  if (typeof vision?.url !== 'string') refuse('url" as a string');
+  if (!isCount(vision.sizeBytes)) refuse('sizeBytes" as a whole number');
+  if (typeof vision.rangesSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(vision.rangesSha256)) {
+    refuse('rangesSha256" as 64 hex digits');
+  }
+  const { ranges } = vision;
+  if (!Array.isArray(ranges) || ranges.length === 0) refuse('ranges" as a list of [begin, end] pairs');
+  let end = 0;
+  ranges.forEach((range, i) => {
+    const ok = Array.isArray(range) && range.length === 2 && isCount(range[0]) && isCount(range[1]) &&
+      range[0] < range[1] && (i === 0 || range[0] > end) && range[1] <= vision.sizeBytes && (i > 0 || range[0] === 0);
+    if (!ok) refuse(`ranges" in order within the file, the first from 0 (range ${i + 1})`);
+    end = range[1];
+  });
+  const { least, most } = vision.tokens ?? {};
+  if (!isCount(least) || !isCount(most) || least < 1 || least > most) {
+    refuse('tokens" as { least, most }, 1 ≤ least ≤ most');
+  }
 }
 
 // A model from a URL the user pasted. Accepts a Hugging Face page URL

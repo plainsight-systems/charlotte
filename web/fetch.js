@@ -43,6 +43,19 @@ export async function fetchRange(url, start, end, { signal } = {}) {
   return { bytes: await response.arrayBuffer(), totalSize: range.total };
 }
 
+// Streams bytes [start, end) of the file at `url`: resolves once the server
+// has answered with that range, with the file's total size and the bytes as
+// an async iterable of chunks, as openDownload does for the whole file.
+export async function openRange(url, start, end, { signal } = {}) {
+  const response = await request(url, { headers: { Range: `bytes=${start}-${end - 1}` }, signal });
+  if (response.status !== 206) throw new FetchError('no-range-support', `status ${response.status}`);
+  const range = parseContentRange(response.headers.get('Content-Range'));
+  if (range === null || range.start !== start || range.end !== end - 1) {
+    throw new FetchError('http', 'the server answered with a different range');
+  }
+  return { totalSize: range.total, chunks: chunksOf(response.body) };
+}
+
 // Streams the whole file at `url`. Resolves once the server has answered,
 // with the file's size (null if the server did not say) and its bytes as an
 // async iterable of chunks.

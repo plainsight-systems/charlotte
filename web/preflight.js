@@ -57,6 +57,17 @@ export async function preflight({ fetchRange, readIndex }) {
 export const rangesOfFile = (file) => async (start, end) =>
   ({ bytes: await file.slice(start, end).arrayBuffer(), totalSize: file.size });
 
+// A range source over a file read in part: only its first range, [0, end),
+// which holds its header (catalog.js's `vision`), answering with the
+// published file's size `totalSize`, so the reader validates the index as
+// for the whole file. `fetchRange` is the network's or the cached ranges'
+// own, whose first bytes are the first range's.
+export const withinFirstRange = (fetchRange, end, totalSize) => async (start, stop) => {
+  if (start >= end) throw new PreflightError("the file's index runs past its first range");
+  const piece = await fetchRange(start, Math.min(stop, end));
+  return { bytes: piece.bytes, totalSize };
+};
+
 function concat(a, b) {
   const joined = new Uint8Array(a.length + b.length);
   joined.set(a);
