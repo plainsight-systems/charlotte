@@ -43,7 +43,11 @@ namespace bllm::kernels {
 //     H_kv) × d / 8 invocations a row — 512 for Qwen3, 384 for Llama 3.2,
 //     192 for Gemma 3. Workgroups of 64, so 512 / d heads a workgroup, and a
 //     row is a whole number of workgroups — 8, 6 and 3 — so every invocation
-//     of a workgroup works on one token. Head dimensions 64, 128, 256 and
+//     of a workgroup works on one token. Where 64 would straddle a row — a
+//     vision layer's 36 heads of 64 are 288 invocations — the workgroup is
+//     the largest power of two from 64 down to a head's d / 8 that divides
+//     both a row and its rotating heads: 32 there, so a workgroup still
+//     holds one token's heads, all rotating or all value heads. Head dimensions 64, 128, 256 and
 //     512 — the listed models', and EmbeddingGemma 2's global layers, whose
 //     head is one whole workgroup: d / 8 must divide the workgroup, and the
 //     frequencies fill at most the constants below.
@@ -130,6 +134,19 @@ namespace bllm::kernels {
 //     written, 8 d (H_q + 2 H_kv) — 16 KiB for EmbeddingGemma 2's sliding
 //     layers, 24 KiB for its global ones; a 512-token step of its 24 layers
 //     moves 208 MiB, about 0.55 ms at 400 GB/s.
+//   - Axial, override `axial` (model_description.h's RotaryPairing::Axial),
+//     a vision encoder's (graph/vision.h): each half of a head is rotated as
+//     a head of d / 2 by its own position — the first by the patch's column
+//     x = row mod columns, the second by its row y = row / columns, the
+//     step's `columns` (kernels/interface.h) — NEOX pairs k and k + d / 4
+//     within the half, θ_k = base^(−2k / (d / 2)) for k < d / 4, the
+//     constants holding those d / 4 turns. Invocation i of a head holds,
+//     within half h = i / (d / 16), vec4 j = i mod (d / 16) of the half and
+//     the vec4 a quarter head after it, so each pair is still in one
+//     invocation's registers; the angle table holds the column's d / 4 pairs
+//     then the row's, d / 2 entries as the 1-D form's. llama.cpp's gemma4v
+//     graph: two ggml_rope_ext of d / 2 dimensions, NEOX, the second offset
+//     by d / 2. The decoder's form never takes it.
 //
 // What it asks of the launch contract (kernels/interface.h, program.h): a
 // launch names the format whose pack it composes, beside the one whose

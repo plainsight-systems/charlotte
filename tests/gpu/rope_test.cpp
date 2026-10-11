@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -484,4 +485,119 @@ TEST_CASE("the encode form is its own source, binds six buffers and sizes its ta
     CHECK(std::find(l.overrides.begin(), l.overrides.end(), kernels::Override{"pairs_per_head", 256}) !=
           l.overrides.end());
     CHECK(std::find(l.overrides.begin(), l.overrides.end(), kernels::Override{"value_norm", 1}) != l.overrides.end());
+}
+
+namespace {
+
+constexpr Shape kVision{"vision", 12, 12, 64, model::RotaryPairing::Axial, true, false, 100.0f};
+
+// One head axial in f64: normalized with its gain, then each half rotated as
+// a head of d / 2 — NEOX pairs k and k + d / 4 within it — by the patch's
+// column for the first half and its row for the second.
+Head reference_axial(std::span<const float> x, std::span<const float> gain, std::span<const float> turns,
+                     std::uint32_t column, std::uint32_t row) {
+    const std::uint32_t d = kVision.d;
+    Head h{std::vector<double>(x.begin(), x.end()), {}, std::vector<double>(d / 2), 0};
+    double squares = 0;
+    for (const double e : h.values) squares += e * e;
+    const double r = 1.0 / std::sqrt(squares / d + static_cast<double>(kEpsilon));
+    for (std::uint32_t j = 0; j < d; ++j) h.values[j] = h.values[j] * r * gain[j];
+    for (const double e : h.values) h.largest = std::max(h.largest, std::abs(e));
+    h.normalized = h.values;
+    std::vector<double> out(h.values);
+    for (std::uint32_t half = 0; half < 2; ++half) {
+        const std::uint32_t p = half == 0 ? column : row;
+        for (std::uint32_t k = 0; k < d / 4; ++k) {
+            const double t = static_cast<double>(p) * turns[k];
+            h.t_of_pair[half * (d / 4) + k] = t;
+            const double angle = 2 * std::numbers::pi * (t - std::round(t));
+            const std::uint32_t i = half * (d / 2) + k;
+            const std::uint32_t j = i + d / 4;
+            out[i] = h.values[i] * std::cos(angle) - h.values[j] * std::sin(angle);
+            out[j] = h.values[i] * std::sin(angle) + h.values[j] * std::cos(angle);
+        }
+    }
+    h.values = out;
+    return h;
+}
+
+// rope.h's bound for a value of an axial head: its pair within its half.
+double bound_axial(const Head& h, std::uint32_t i) {
+    const std::uint32_t d = kVision.d;
+    const std::uint32_t within = i % (d / 2);
+    const std::uint32_t mate = within < d / 4 ? i + d / 4 : i - d / 4;
+    const std::uint32_t pair = (i / (d / 2)) * (d / 4) + within % (d / 4);
+    const double sum = std::abs(h.normalized[i]) + std::abs(h.normalized[mate]);
+    return sum * (std::ldexp(1.0, -11) + 2 * std::numbers::pi * std::ldexp(1.0, -24) * std::abs(h.t_of_pair[pair])) +
+           h.largest * std::ldexp(1.0, -17);
+}
+
+}  // namespace
+
+TEST_CASE("rope's axial form turns each head's halves by the patch's column and row") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_rows(instance.get(), *device);
+    const Shape& s = kVision;
+    const kernels::Launch launch = encode_launch_for(u, s, true);
+    CHECK(std::find(launch.overrides.begin(), launch.overrides.end(), kernels::Override{"axial", 1}) !=
+          launch.overrides.end());
+    CHECK(std::find(launch.overrides.begin(), launch.overrides.end(), kernels::Override{"halves", 0}) !=
+          launch.overrides.end());
+    // Each half's d / 4 frequencies, base^(−2k / (d / 2)).
+    const auto turns = turns_of(launch, s.d);
+    for (std::uint32_t k = 0; k < s.d / 4; ++k) {
+        CHECK(turns[k] == static_cast<float>(std::pow(100.0, -2.0 * k / (s.d / 2)) / (2 * std::numbers::pi)));
+    }
+    const auto q = u.floats("q_vision"), k = u.floats("k_vision"), v = u.floats("v_vision");
+    const auto qn = u.floats("qn_vision"), kn = u.floats("kn_vision");
+    for (const std::uint32_t columns : {1u, 2u, 3u, 4u}) {
+        CAPTURE(columns);
+        std::vector<kernels::Launch> launches;
+        launches.push_back(copy_launch(u.view("q_vision"), u.query, s.query_heads * s.d, 0));
+        launches.push_back(copy_launch(u.view("k_vision"), u.key, s.key_value_heads * s.d, 0));
+        launches.push_back(copy_launch(u.view("v_vision"), u.value, s.key_value_heads * s.d, 0));
+        launches.push_back(launch);
+        const auto program = build_program(instance.get(), *u.upload, std::move(launches));
+        kernels::Step step{};
+        step.tokens = kRows;
+        step.columns = columns;
+        const StepOutcome ran = try_step(instance.get(), *program, step);
+        REQUIRE_MESSAGE(ran.error == kernels::ProgramError::Ok, ran.message);
+        const auto read = [&](const residency::BufferRange& r, std::uint32_t width) {
+            return read_floats(instance.get(), *device, u.upload->buffer(r.buffer), 0, kRows * width);
+        };
+        const auto got_q = read(u.query, s.query_heads * s.d);
+        const auto got_k = read(u.key, s.key_value_heads * s.d);
+        const auto got_v = read(u.value, s.key_value_heads * s.d);
+        for (std::uint32_t t = 0; t < kRows; ++t) {
+            CAPTURE(t);
+            for (const auto& [from, gain, got, what] :
+                 {std::tuple{&q, &qn, &got_q, "query"}, std::tuple{&k, &kn, &got_k, "key"}}) {
+                for (std::uint32_t h = 0; h < s.query_heads; ++h) {
+                    const std::size_t at = (std::size_t{t} * s.query_heads + h) * s.d;
+                    const Head want =
+                        reference_axial(std::span(*from).subspan(at, s.d), *gain, turns, t % columns, t / columns);
+                    for (std::uint32_t i = 0; i < s.d; ++i) {
+                        const double error = std::abs((*got)[at + i] - want.values[i]);
+                        if (!(error <= bound_axial(want, i))) {
+                            FAIL_CHECK(what << " head " << h << " value " << i << " off by " << error);
+                            break;
+                        }
+                    }
+                }
+            }
+            // Values: normalized without a gain, not rotated.
+            for (std::uint32_t h = 0; h < s.key_value_heads; ++h) {
+                const std::size_t at = (std::size_t{t} * s.key_value_heads + h) * s.d;
+                double squares = 0, largest = 0;
+                for (std::uint32_t i = 0; i < s.d; ++i) squares += double{v[at + i]} * v[at + i];
+                const double r = 1.0 / std::sqrt(squares / s.d + static_cast<double>(kEpsilon));
+                for (std::uint32_t i = 0; i < s.d; ++i) largest = std::max(largest, std::abs(v[at + i] * r));
+                for (std::uint32_t i = 0; i < s.d; ++i) {
+                    CHECK(std::abs(got_v[at + i] - v[at + i] * r) <= largest * std::ldexp(1.0, -17));
+                }
+            }
+        }
+    }
 }

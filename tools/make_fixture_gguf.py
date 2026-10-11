@@ -372,9 +372,11 @@ def rope_rows(rows=4, seed=0x1B873593):
 
     tensors = []
     # EmbeddingGemma 2's sliding and global layers follow, after the listed
-    # models', so theirs keep the values they had.
+    # models', so theirs keep the values they had; then its vision encoder's
+    # layer, 12 heads of 64, last for the same reason.
     for name, query_heads, kv_heads, d in (("qwen", 16, 8, 128), ("llama", 32, 8, 64), ("gemma", 4, 1, 256),
-                                           ("eg_sliding", 4, 2, 256), ("eg_global", 4, 1, 512)):
+                                           ("eg_sliding", 4, 2, 256), ("eg_global", 4, 1, 512),
+                                           ("vision", 12, 12, 64)):
         for role, heads in (("q", query_heads), ("k", kv_heads), ("v", kv_heads)):
             width = heads * d
             tensors.append((f"{role}_{name}".encode(), [width, rows], T_F32,

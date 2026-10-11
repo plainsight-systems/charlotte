@@ -14,19 +14,24 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     }
     let at = head_of(group.x, local, token.row);
     if (token.rotates) {
-        angles(token.p, local);
+        if (axial) {
+            angles_axial(token.row, local);
+        } else {
+            angles(token.p, local);
+        }
     }
+    let held = holds(at.lane);
     var a: vec4<f32>;
     var b: vec4<f32>;
     if (at.is_query) {
-        a = query[at.base + at.lane];
-        b = query[at.base + at.lane + lanes];
+        a = query[at.base + held.x];
+        b = query[at.base + held.y];
     } else if (at.is_value) {
-        a = value[at.base + at.lane];
-        b = value[at.base + at.lane + lanes];
+        a = value[at.base + held.x];
+        b = value[at.base + held.y];
     } else {
-        a = key[at.base + at.lane];
-        b = key[at.base + at.lane + lanes];
+        a = key[at.base + held.x];
+        b = key[at.base + held.y];
     }
 
     // Uniform across the workgroup: its heads either all rotate or are all
@@ -41,11 +46,11 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
             }
         } else if (qk_norm) {
             if (at.is_query) {
-                a = (a * r) * query_gain[at.lane];
-                b = (b * r) * query_gain[at.lane + lanes];
+                a = (a * r) * query_gain[held.x];
+                b = (b * r) * query_gain[held.y];
             } else {
-                a = (a * r) * key_gain[at.lane];
-                b = (b * r) * key_gain[at.lane + lanes];
+                a = (a * r) * key_gain[held.x];
+                b = (b * r) * key_gain[held.y];
             }
         }
     } else if (token.rotates) {
@@ -59,13 +64,13 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     }
 
     if (at.is_query) {
-        query[at.base + at.lane] = a;
-        query[at.base + at.lane + lanes] = b;
+        query[at.base + held.x] = a;
+        query[at.base + held.y] = b;
     } else if (at.is_value) {
-        value[at.base + at.lane] = a;
-        value[at.base + at.lane + lanes] = b;
+        value[at.base + held.x] = a;
+        value[at.base + held.y] = b;
     } else {
-        key[at.base + at.lane] = a;
-        key[at.base + at.lane + lanes] = b;
+        key[at.base + held.x] = a;
+        key[at.base + held.y] = b;
     }
 }

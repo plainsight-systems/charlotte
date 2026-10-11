@@ -9,7 +9,7 @@
 //   RoPE      pair k turns by p × θ_k:  x' = x cos − y sin,  y' = x sin + y cos
 //
 // Invocation i of a head holds its vec4s i and i + d / 8; a workgroup is
-// 512 / d heads of one token.
+// workgroup_size / (d / 8) heads of one token.
 //
 // inverseSqrt, dot, round, cos, sin and workgroupBarrier are WGSL built-ins;
 // reduce_head, angles and rotate are below.
@@ -32,6 +32,10 @@ override halves: bool = true;
 override qk_norm: bool = true;
 override factors: bool = false;
 override value_norm: bool = false;
+// Gemma 4's vision encoder: each half of a head NEOX-paired within itself,
+// the first turned by the patch's column and the second by its row (rope.h).
+// The encode form's alone.
+override axial: bool = false;
 // d / 2, the pairs a head has, which size the workgroup's angle tables. Set
 // on every launch, as WebKit requires of an override sizing a workgroup
 // array (docs/research/2026-10-09-webkit-shader-compiler.md).
@@ -141,12 +145,44 @@ fn angles(p: u32, local: u32) {
     }
 }
 
+// The vec4s of its head invocation `lane` holds: lane and lane + d / 8 — a
+// pair's two dimensions under Halves — or, axial, within half h = lane /
+// (d / 16), vec4 j = lane mod (d / 16) of the half and the vec4 a quarter of
+// the head after it: the half's NEOX pairs.
+fn holds(lane: u32) -> vec2<u32> {
+    let lanes = head_dimension / 8u;
+    if (axial) {
+        let per_half = lanes / 2u;
+        let first = (lane / per_half) * lanes + lane % per_half;
+        return vec2<u32>(first, first + per_half);
+    }
+    return vec2<u32>(lane, lane + lanes);
+}
+
+// Axial: the token's angles by its patch's column, for the first half's
+// d / 4 pairs, then by its row, for the second's — x = row mod columns, y =
+// row / columns — each half's frequencies the same d / 4 turns.
+fn angles_axial(row: u32, local: u32) {
+    let quarter = head_dimension / 4u;
+    let x = row % step.columns;
+    let y = row / step.columns;
+    for (var k = local; k < head_dimension / 2u; k += workgroup_size) {
+        let p = select(x, y, k >= quarter);
+        let t = f32(p) * turn(k % quarter);
+        let angle = kTau * (t - round(t));      // in [−π, π]
+        cosines[k] = cos(angle);
+        sines[k] = sin(angle);
+    }
+}
+
 // Each pair of a query or key head turned by its angle. Under Halves, a and
-// b hold four whole pairs (4i + c, 4i + c + d / 2); under Adjacent, each
+// b hold four whole pairs (4i + c, 4i + c + d / 2); axial, four of a half's
+// pairs, angles from the half's quarter of the table; under Adjacent, each
 // holds two (2k, 2k + 1).
 fn rotate(a: vec4<f32>, b: vec4<f32>, lane: u32) -> array<vec4<f32>, 2> {
-    if (halves) {
-        let k = 4u * lane;
+    if (halves || axial) {
+        let per_half = head_dimension / 16u;
+        let k = select(4u * lane, (lane / per_half) * (head_dimension / 4u) + 4u * (lane % per_half), axial);
         let c = vec4<f32>(cosines[k], cosines[k + 1u], cosines[k + 2u], cosines[k + 3u]);
         let s = vec4<f32>(sines[k], sines[k + 1u], sines[k + 2u], sines[k + 3u]);
         return array<vec4<f32>, 2>(a * c - b * s, a * s + b * c);
