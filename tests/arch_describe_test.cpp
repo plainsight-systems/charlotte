@@ -1,10 +1,12 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
 
 #include "core/arch/architecture.h"
+#include "core/arch/describe.h"
 #include "core/capability/capability.h"
 #include "core/gguf/reader.h"
 #include "core/preflight/preflight.h"
@@ -230,4 +232,61 @@ TEST_CASE("a describe failure reaches preflight with its subject named") {
                            "missing (blk.1.ffn_up.weight)";
     });
     CHECK(named);
+}
+
+namespace {
+
+// tiny_qwen3's attention roles, as qwen3.cpp names them.
+constexpr std::array kAttentionRoles{
+    arch::RoleName{Role::AttentionNorm, "attn_norm.weight"}, arch::RoleName{Role::Query, "attn_q.weight"},
+    arch::RoleName{Role::Key, "attn_k.weight"},             arch::RoleName{Role::Value, "attn_v.weight"},
+    arch::RoleName{Role::AttentionOutput, "attn_output.weight"},
+};
+
+struct Read {
+    std::vector<std::byte> bytes;
+    gguf::TensorIndex index;
+    arch::Hyperparameters hp;
+};
+
+Read read_tiny_qwen3() {
+    Read r{testing::load_gguf_fixture("tiny_qwen3"), {}, {}};
+    gguf::MemoryByteSource source{r.bytes};
+    REQUIRE(gguf::read_index(source, r.index).error == gguf::ReadError::Ok);
+    REQUIRE(arch::read_hyperparameters(r.index, "qwen3", r.hp).ok());
+    return r;
+}
+
+}  // namespace
+
+TEST_CASE("each layer's weights are checked against its own heads, where an architecture gives them") {
+    const Read r = read_tiny_qwen3();
+    const arch::Conventions conventions{model::RotaryPairing::Halves, model::FeedForwardActivation::SiLU};
+    const std::size_t layers = r.hp.block_count;
+    // The file's own heads, given a layer at a time: described as without.
+    std::vector<arch::LayerHeads> same(layers, arch::LayerHeads{r.hp.head_count_kv, r.hp.head_dimension});
+    model::ModelDescription m;
+    REQUIRE(arch::describe_layers(r.index, r.hp, kAttentionRoles, conventions, m, same).ok());
+    CHECK(m.layers.size() == layers);
+    CHECK(m.layers[0].key_value_heads == r.hp.head_count_kv);
+    CHECK(m.layers[0].head_dimension == r.hp.head_dimension);
+    // A head dimension the layer's weights do not have: refused, naming one.
+    std::vector<arch::LayerHeads> wrong = same;
+    wrong.back().head_dimension *= 2;
+    const auto refused = arch::describe_layers(r.index, r.hp, kAttentionRoles, conventions, m, wrong);
+    CHECK(refused.error == DescribeError::ShapeMismatch);
+    CHECK(refused.subject.starts_with("blk." + std::to_string(layers - 1) + "."));
+    // As many heads as layers, or none.
+    const std::vector<arch::LayerHeads> short_list(layers - 1, same.front());
+    CHECK(arch::describe_layers(r.index, r.hp, kAttentionRoles, conventions, m, short_list).error ==
+          DescribeError::InvalidValue);
+}
+
+TEST_CASE("an architecture whose output.weight is no vocabulary head leaves it to read itself") {
+    const Read r = read_tiny_qwen3();
+    arch::Conventions conventions{model::RotaryPairing::Halves, model::FeedForwardActivation::SiLU};
+    conventions.vocabulary_head = false;
+    model::ModelDescription m;
+    REQUIRE(arch::describe_layers(r.index, r.hp, kAttentionRoles, conventions, m).ok());
+    CHECK(!m.output_head.has_value());
 }

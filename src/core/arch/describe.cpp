@@ -45,10 +45,10 @@ struct Shape {
     std::array<std::uint64_t, 2> dimensions;
 };
 
-Shape shape_of(model::Role role, const Hyperparameters& hp) {
+Shape shape_of(model::Role role, const Hyperparameters& hp, const LayerHeads& heads) {
     const std::uint64_t e = hp.embedding_length;
-    const std::uint64_t q = std::uint64_t{hp.head_count} * hp.head_dimension;
-    const std::uint64_t kv = std::uint64_t{hp.head_count_kv} * hp.head_dimension;
+    const std::uint64_t q = std::uint64_t{hp.head_count} * heads.head_dimension;
+    const std::uint64_t kv = std::uint64_t{heads.key_value_heads} * heads.head_dimension;
     const std::uint64_t f = hp.feed_forward_length;
     using model::Role;
     switch (role) {
@@ -57,9 +57,12 @@ Shape shape_of(model::Role role, const Hyperparameters& hp) {
         case Role::AttentionOutput: return {2, {q, e}};
         case Role::Gate: case Role::Up: return {2, {e, f}};
         case Role::Down: return {2, {f, e}};
-        case Role::QueryNorm: case Role::KeyNorm: return {1, {hp.head_dimension, 0}};
+        case Role::QueryNorm: case Role::KeyNorm: return {1, {heads.head_dimension, 0}};
         case Role::AttentionNorm: case Role::PostAttentionNorm:
-        case Role::FeedForwardNorm: case Role::PostFeedForwardNorm: return {1, {e, 0}};
+        case Role::FeedForwardNorm: case Role::PostFeedForwardNorm: case Role::PerLayerPostNorm: return {1, {e, 0}};
+        // The per-layer block's shapes are its architecture's, which checks
+        // them with its own widths (arch/embedding_gemma2).
+        case Role::PerLayerGate: case Role::PerLayerProjection: case Role::OutputScale:
         case Role::Count: break;
     }
     return {0, {0, 0}};
@@ -71,7 +74,8 @@ bool is_gain(model::Role role) {
     using model::Role;
     switch (role) {
         case Role::AttentionNorm: case Role::QueryNorm: case Role::KeyNorm: case Role::PostAttentionNorm:
-        case Role::FeedForwardNorm: case Role::PostFeedForwardNorm: return true;
+        case Role::FeedForwardNorm: case Role::PostFeedForwardNorm: case Role::PerLayerPostNorm:
+        case Role::OutputScale: return true;
         default: return false;
     }
 }
@@ -138,10 +142,27 @@ DescribeResult read_hyperparameters(const gguf::TensorIndex& index, std::string_
              Required{"embedding_length", &out.embedding_length},
              Required{"feed_forward_length", &out.feed_forward_length},
              Required{"attention.head_count", &out.head_count},
-             Required{"attention.head_count_kv", &out.head_count_kv},
          }) {
         if (auto result = read_u32(index, arch, r.key, *r.value); !result.ok()) return result;
         if (*r.value == 0) return failure(DescribeError::InvalidValue, key_of(arch, r.key));
+    }
+    // Key-value heads: one number, or one a layer (llama.cpp's
+    // get_key_or_arr).
+    const std::string kv_key = key_of(arch, "attention.head_count_kv");
+    out.head_count_kv_per_layer.clear();
+    if (const auto e = index.read_u32(kv_key, out.head_count_kv); e == gguf::MetadataError::WrongType) {
+        if (auto r = index.read_u32_array(kv_key, out.head_count_kv_per_layer); r != gguf::MetadataError::Ok) {
+            return from_metadata(r, kv_key);
+        }
+        if (out.head_count_kv_per_layer.size() != out.block_count) return failure(DescribeError::InvalidValue, kv_key);
+        for (const std::uint32_t kv : out.head_count_kv_per_layer) {
+            if (kv == 0 || out.head_count % kv != 0) return failure(DescribeError::InvalidValue, kv_key);
+        }
+        out.head_count_kv = out.head_count_kv_per_layer.front();
+    } else if (e != gguf::MetadataError::Ok) {
+        return from_metadata(e, kv_key);
+    } else if (out.head_count_kv == 0) {
+        return failure(DescribeError::InvalidValue, kv_key);
     }
     if (auto r = read_f32(index, arch, "attention.layer_norm_rms_epsilon", out.norm_epsilon); !r.ok()) return r;
     if (auto r = read_f32(index, arch, "rope.freq_base", out.rope_base); !r.ok()) return r;
@@ -203,7 +224,7 @@ DescribeResult read_hyperparameters(const gguf::TensorIndex& index, std::string_
 
 DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparameters& hp,
                                std::span<const RoleName> roles, Conventions conventions,
-                               model::ModelDescription& out) {
+                               model::ModelDescription& out, std::span<const LayerHeads> heads) {
     gguf::ArrayLocation tokens{};
     if (const auto e = index.read_array("tokenizer.ggml.tokens", tokens); e != gguf::MetadataError::Ok) {
         return from_metadata(e, "tokenizer.ggml.tokens");
@@ -221,8 +242,12 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
     if (auto r = find_tensor(index, "output_norm.weight", 1, e, 0, true, found); !r.ok()) return r;
     if (auto r = require_f32(index, found, "output_norm.weight"); !r.ok()) return r;
     out.output_norm = *found;
-    // Absent when the output head reads the token embedding.
-    if (auto r = find_tensor(index, "output.weight", 2, e, vocab, false, out.output_head); !r.ok()) return r;
+    // Absent when the output head reads the token embedding. An
+    // architecture whose output.weight is no vocabulary head reads it itself.
+    out.output_head.reset();
+    if (conventions.vocabulary_head) {
+        if (auto r = find_tensor(index, "output.weight", 2, e, vocab, false, out.output_head); !r.ok()) return r;
+    }
 
     out.rotary_pairing = conventions.pairing;
     out.activation = conventions.activation;
@@ -235,13 +260,20 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
     }
     if (auto r = require_f32(index, out.rotary_factors, "rope_freqs.weight"); !r.ok()) return r;
 
-    out.layers.assign(hp.block_count, model::LayerDescription{
-        hp.head_count, hp.head_count_kv, hp.head_dimension, hp.feed_forward_length,
-        hp.context_length, hp.rope_base, {}});
+    if (!heads.empty() && heads.size() != hp.block_count) return failure(DescribeError::InvalidValue, "layer heads");
+    out.layers.clear();
     for (std::uint32_t layer = 0; layer < hp.block_count; ++layer) {
+        LayerHeads h{hp.head_count_kv, hp.head_dimension};
+        if (!heads.empty()) {
+            h = heads[layer];
+        } else if (!hp.head_count_kv_per_layer.empty()) {
+            h.key_value_heads = hp.head_count_kv_per_layer[layer];
+        }
+        out.layers.push_back(model::LayerDescription{hp.head_count, h.key_value_heads, h.head_dimension,
+                                                     hp.feed_forward_length, hp.context_length, hp.rope_base, {}});
         const std::string prefix = "blk." + std::to_string(layer) + ".";
         for (const RoleName& rn : roles) {
-            const Shape shape = shape_of(rn.role, hp);
+            const Shape shape = shape_of(rn.role, hp, h);
             auto& slot = out.layers[layer].tensors[static_cast<std::size_t>(rn.role)];
             const std::string name = prefix + std::string(rn.suffix);
             if (auto r = find_tensor(index, name, shape.dimension_count, shape.dimensions[0], shape.dimensions[1],
