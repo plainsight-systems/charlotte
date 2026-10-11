@@ -89,6 +89,19 @@ residency::WorkingSet encoder_working_set(const model::ModelDescription& model) 
     }
     const model::EncoderDescription& e = *model.encoder;
     const std::uint64_t per_layer = std::uint64_t{e.per_layer_width} * model.layers.size();
+    // The range sums of a product split along K (kernels/matmul/matmul.h):
+    // the most any needs — a decoder layer's, the per-layer inputs'
+    // projection, and each layer's per-layer gate and projection.
+    using kernels::Epilogue;
+    const auto need = [](Epilogue epilogue, std::uint64_t rows, std::uint64_t columns) {
+        return kernels::range_sum_floats(epilogue, rows, columns, kernels::kSplitGate);
+    };
+    std::uint64_t range_sums = std::max({std::uint64_t{1}, need(Epilogue::Write, per_layer, model.embedding_width),
+                                         need(Epilogue::GatedByInput, e.per_layer_width, model.embedding_width),
+                                         need(Epilogue::Write, model.embedding_width, e.per_layer_width)});
+    for (const model::LayerDescription& l : model.layers) {
+        range_sums = std::max(range_sums, layer_range_sums(l, model.embedding_width));
+    }
     // The gate's output, the per-layer width, shares `activation` with the
     // feed-forward block's: neither is live when the other is written.
     feed_forward = std::max<std::uint64_t>(feed_forward, e.per_layer_width);
@@ -113,6 +126,9 @@ residency::WorkingSet encoder_working_set(const model::ModelDescription& model) 
                 {"pooled", kPrefillBlock, model.embedding_width},
                 {"projected", 1, e.embedding_length},
                 {"embedding", 1, e.embedding_length},
+                // The range sums of a product split along K, the most any of
+                // the products needs (kernels/matmul/matmul.h).
+                {"range_sums", 1, range_sums},
             },
             false,
             0};
@@ -130,7 +146,8 @@ EncoderBuilder::EncoderBuilder(const model::ModelDescription& model, const resid
                 scratch(plan, "key"),           scratch(plan, "value"),      scratch(plan, "attention"),
                 scratch(plan, "output"),        scratch(plan, "activation"), scratch(plan, "per_layer_raw"),
                 scratch(plan, "per_layer"),     scratch(plan, "scores"),     scratch(plan, "score_maxima"),
-                scratch(plan, "pooled"),        scratch(plan, "projected"),  scratch(plan, "embedding")};
+                scratch(plan, "pooled"),        scratch(plan, "projected"),  scratch(plan, "embedding"),
+                scratch(plan, "range_sums")};
 }
 
 const residency::WeightView& EncoderBuilder::view(gguf::TensorId tensor) const {
@@ -164,7 +181,8 @@ void EncoderBuilder::product(const residency::WeightView& weight, const residenc
                                             {output, {}, {}},
                                             kernels::Epilogue::Write,
                                             model_->activation,
-                                            rows}));
+                                            rows},
+                                           kernels::kSplitGate, buffers_.range_sums));
 }
 
 kernels::Launch EncoderBuilder::norm(const residency::WeightView& gain, bool normalize) {
@@ -229,7 +247,8 @@ GraphResult EncoderBuilder::attention(std::uint32_t layer) {
                                                 {b.query, b.key, b.value},
                                                 kernels::Epilogue::QKV,
                                                 model_->activation,
-                                                kernels::Rows::EveryToken}));
+                                                kernels::Rows::EveryToken},
+                                               kernels::kSplitGate, b.range_sums));
         named(*out_, at, "attention.qkv", layer);
     } else {
         product(*role(layer, Role::Query), b.normed, b.query, kernels::Rows::EveryToken);
@@ -281,7 +300,8 @@ GraphResult EncoderBuilder::gated_feed_forward(std::uint32_t layer) {
                                             {b.activation, {}, {}},
                                             kernels::Epilogue::GatedActivation,
                                             model_->activation,
-                                            kernels::Rows::EveryToken}));
+                                            kernels::Rows::EveryToken},
+                                           kernels::kSplitGate, b.range_sums));
     named(*out_, at, "ffn.gate_up", layer);
     at = out_->size();
     product(*role(layer, Role::Down), b.activation, b.output, kernels::Rows::EveryToken);
@@ -319,7 +339,7 @@ GraphResult EncoderBuilder::per_layer_block(std::uint32_t layer) {
     m.gate_input = b.per_layer;
     m.gate_input_stride = e.per_layer_width * static_cast<std::uint32_t>(model_->layers.size());
     m.gate_input_column = e.per_layer_width * layer;
-    append(*out_, kernels::matmul_launches(m));
+    append(*out_, kernels::matmul_launches(m, kernels::kSplitGate, b.range_sums));
     named(*out_, at, "per_layer.gate", layer);
 
     // 3. Back to the hidden width; its post-norm and the layer's scale

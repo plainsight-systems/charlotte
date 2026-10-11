@@ -240,12 +240,12 @@ struct GraphResult {
 // one row of `logits`, the vocabulary; selection's `partials_a` and
 // `partials_b` and the `candidates` it keeps, (logit, token) pairs of two
 // words (kernels/topk/topk.h); the draw's 16-byte record, `sampled`
-// (sampler/sampler.h); and `range_sums`, the most any of the model's
-// products split along K needs under kernels::kSplitGate, one row of
-// kernels::range_sum_floats' largest — 32 MiB for Qwen3 and Llama 3.2,
-// 31.5 for Gemma 3 — or one float when none splits. Every product's launches
-// take that gate and that buffer (kernels/matmul/matmul.h). A decoder keeps a
-// KV cache. Which buffers a graph
+// (sampler/sampler.h); and `range_sums`, one row of the most
+// kernels::range_sum_floats any of its products needs under
+// kernels::kSplitGate — Q, K and V, fused or each alone, the output and down
+// projections — at least one float: 32 MiB for Qwen3 and Llama 3.2, 31.5
+// for Gemma 3. Every product's launches take that gate and that buffer
+// (kernels/matmul/matmul.h). A decoder keeps a KV cache. Which buffers a graph
 // binds is the graph's to say, and where they lie the planner's
 // (docs/architecture/change-axes.md).
 //
@@ -263,6 +263,10 @@ struct GraphResult {
 // one of 1,024 or fewer none writes `partials_a`; each is still planned,
 // 512 bytes at least, so every plan holds the same working buffers.
 [[nodiscard]] residency::WorkingSet decoder_working_set(const model::ModelDescription& model);
+
+// The most range sums any of a decoder layer's products needs split along K,
+// in floats, under kernels::kSplitGate; an encoder's layer runs the same.
+[[nodiscard]] std::uint64_t layer_range_sums(const model::LayerDescription& layer, std::uint64_t width);
 
 // Appends a step's launches to `out`, block by block, in the order an
 // architecture's graph calls them. It holds what `output` holds between
@@ -291,7 +295,7 @@ private:
     // The plan's working buffers, by what they hold.
     struct Buffers {
         residency::BufferRange hidden, normed, query, key, value, attention, partials, partial_stats, output,
-            activation, logits, partials_a, partials_b, candidates, sampled;
+            activation, logits, partials_a, partials_b, candidates, sampled, range_sums;
     };
 
     [[nodiscard]] const residency::WeightView& view(gguf::TensorId tensor) const;

@@ -450,9 +450,16 @@ TEST_CASE("each layer's Q, K and V and its gate and up are fused groups, in outp
 
 TEST_CASE("groups stay whole under buffers barely larger than the working buffers") {
     const auto p = describe("tiny_qwen3");
-    // Many small buffers; the listed models' test below is the one whose
-    // groups would straddle a buffer without the plan's reservation.
-    for (const std::uint64_t buffer : {std::uint64_t{131072}, std::uint64_t{150000}, std::uint64_t{180000}}) {
+    // Many small buffers: the largest working buffer exactly, and a little
+    // past it — the range sums, 512 KiB at this width (graph.h); the listed
+    // models' test below is the one whose groups would straddle a buffer
+    // without the plan's reservation.
+    std::uint64_t largest = 0;
+    for (const residency::ScratchNeed& n : graph::decoder_working_set(p.model).needs) {
+        largest = std::max(largest, n.rows * n.width * 4);
+    }
+    REQUIRE(largest == 512 * 1024);
+    for (const std::uint64_t buffer : {largest, largest + 18928, largest + 48928}) {
         CAPTURE(buffer);
         const residency::DeviceLimits limits{buffer, buffer, 256};
         ResidencyPlan plan;

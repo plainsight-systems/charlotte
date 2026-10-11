@@ -79,16 +79,32 @@ void named(std::vector<kernels::Launch>& out, std::size_t from, std::string_view
 
 }  // namespace
 
+// The most range sums any of a decoder layer's products needs split along K
+// (kernels/matmul/matmul.h): Q, K and V fused or each alone, the output and
+// down projections; gate and up never split.
+std::uint64_t layer_range_sums(const model::LayerDescription& l, std::uint64_t width) {
+    using kernels::Epilogue;
+    const std::uint64_t query = std::uint64_t{l.query_heads} * l.head_dimension;
+    const std::uint64_t key_value = std::uint64_t{l.key_value_heads} * l.head_dimension;
+    const auto need = [](Epilogue e, std::uint64_t rows, std::uint64_t columns) {
+        return kernels::range_sum_floats(e, rows, columns, kernels::kSplitGate);
+    };
+    return std::max({need(Epilogue::QKV, query + 2 * key_value, width), need(Epilogue::Write, query, width),
+                     need(Epilogue::Write, key_value, width), need(Epilogue::Write, width, query),
+                     need(Epilogue::Write, width, l.feed_forward_width)});
+}
+
 residency::WorkingSet decoder_working_set(const model::ModelDescription& model) {
     using residency::kCandidates;
     using residency::kPrefillBlock;
     using residency::kSelectionTile;
-    std::uint64_t query = 0, key_value = 0, feed_forward = 0, query_heads = 0;
+    std::uint64_t query = 0, key_value = 0, feed_forward = 0, query_heads = 0, range_sums = 1;
     for (const model::LayerDescription& l : model.layers) {
         query = std::max<std::uint64_t>(query, std::uint64_t{l.query_heads} * l.head_dimension);
         query_heads = std::max<std::uint64_t>(query_heads, l.query_heads);
         key_value = std::max<std::uint64_t>(key_value, std::uint64_t{l.key_value_heads} * l.head_dimension);
         feed_forward = std::max<std::uint64_t>(feed_forward, l.feed_forward_width);
+        range_sums = std::max(range_sums, layer_range_sums(l, model.embedding_width));
     }
     // Selection's first pass writes kCandidates for each tile of the
     // vocabulary, its second kCandidates for each tile of those.
@@ -121,6 +137,9 @@ residency::WorkingSet decoder_working_set(const model::ModelDescription& model) 
                 {"partials_b", 1, 2ull * kCandidates * second_tiles},
                 {"candidates", 1, 2ull * kCandidates},
                 {"sampled", 1, 4},
+                // The range sums of a product split along K, the most any
+                // of the products needs (kernels/matmul/matmul.h).
+                {"range_sums", 1, range_sums},
             },
             true,
             partial_rows};
@@ -138,7 +157,8 @@ Builder::Builder(const model::ModelDescription& model, const residency::Residenc
                 scratch(plan, "key"),      scratch(plan, "value"),         scratch(plan, "attention"),
                 scratch(plan, "partials"), scratch(plan, "partial_stats"), scratch(plan, "output"),
                 scratch(plan, "activation"), scratch(plan, "logits"), scratch(plan, "partials_a"),
-                scratch(plan, "partials_b"), scratch(plan, "candidates"), scratch(plan, "sampled")};
+                scratch(plan, "partials_b"), scratch(plan, "candidates"), scratch(plan, "sampled"),
+                scratch(plan, "range_sums")};
 }
 
 const residency::WeightView& Builder::view(gguf::TensorId tensor) const {
@@ -171,7 +191,8 @@ void Builder::product(const residency::WeightView& weight, const residency::Buff
                                             {output, {}, {}},
                                             kernels::Epilogue::Write,
                                             model_->activation,
-                                            rows}));
+                                            rows},
+                                           kernels::kSplitGate, buffers_.range_sums));
 }
 
 void Builder::embed(float scale) {
@@ -201,7 +222,8 @@ GraphResult Builder::attention(std::uint32_t layer) {
                                                 {b.query, b.key, b.value},
                                                 kernels::Epilogue::QKV,
                                                 model_->activation,
-                                                kernels::Rows::EveryToken}));
+                                                kernels::Rows::EveryToken},
+                                               kernels::kSplitGate, b.range_sums));
         named(*out_, at, "attention.qkv", layer);
     } else {
         product(*role(layer, Role::Query), b.normed, b.query, kernels::Rows::EveryToken);
@@ -257,7 +279,8 @@ GraphResult Builder::gated_feed_forward(std::uint32_t layer) {
                                             {b.activation, {}, {}},
                                             kernels::Epilogue::GatedActivation,
                                             model_->activation,
-                                            kernels::Rows::EveryToken}));
+                                            kernels::Rows::EveryToken},
+                                           kernels::kSplitGate, b.range_sums));
     named(*out_, at, "ffn.gate_up", layer);
     at = out_->size();
     product(*role(layer, Role::Down), b.activation, b.output, kernels::Rows::EveryToken);

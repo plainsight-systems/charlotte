@@ -240,14 +240,15 @@ namespace bllm::kernels {
 //   - Bindings: 2 the weights (`weights`, unpack's): one piece, or the range
 //     spanning a fused group's members; 3 the input; then the outputs,
 //     written — one, or query, key and value; then, for GatedByInput, its
-//     input u, read-only. Five at most. The split form's entry points,
-//     split_write, split_qkv and split_gated_input, bind the weights, the
-//     input and, at 4, `range_sums`, written; the combine's,
-//     combine_write, combine_qkv and combine_gated_input, bind at 3
-//     `range_sums`, read-only — its own declaration of binding 3, as u's is
-//     of 5 — and the outputs and u as the product's other entry points do,
-//     and no weights; the module still composes the format's unpack, which
-//     the combine never calls. The split's range sums lie range first, as
+//     input u, read-only. Five at most. The split form's one entry point,
+//     split_ranges — it writes range sums alone, so every epilogue it takes
+//     shares it — binds the weights, the input and, at 4, `range_sums`,
+//     written; the combine's,
+//     combine_write, combine_qkv and combine_gated_input, read no weights,
+//     so their bindings, each its own declaration, start at 2: `range_sums`,
+//     read-only; then the outputs from 3, one or query, key and value; and
+//     for GatedByInput u at 4, read-only. The module still composes the
+//     format's unpack, which the combine never calls. The split's range sums lie range first, as
 //     the split form above lays them out, o the product's row.
 //
 // What it asks of the other contracts:
@@ -275,11 +276,9 @@ namespace bllm::kernels {
 //     refuses attention and final logit softcapping, which no kernel
 //     applies, rather than run a file that declares them without it.
 //   - graph/graph.h and graph/encoder.h: the gate, passed to every product's
-//     launches, and the working buffer `range_sums`, range_sum_floats over
-//     the graph's products under the same gate, in each working set; a
-//     model none of whose products splits plans it at one float, as
-//     selection's unused partials are planned (graph.h), so every plan
-//     holds the same working buffers.
+//     launches, and the working buffer `range_sums`, the most range_sum_floats
+//     of their products under the same gate, at least one float, in each
+//     working set.
 //   - residency/plan.h: nothing; a working buffer as any other, its bytes
 //     counted against the budget.
 //   - kernels/interface.h: nothing; the split launch tiles its rows as the
@@ -347,13 +346,14 @@ namespace bllm::kernels {
 //     way an output a token: 1.4 MB each way for EmbeddingGemma 2's down
 //     projection at 21 tokens, from the GPU's caches at best; and the
 //     combine's launch, an invocation an output a token, 32 adds each, at
-//     about 1.5 µs a launch. The working buffer holds the most any of the
-//     model's split products needs at its last split step, split_tokens()
-//     × its rows × 32 floats (range_sum_floats below). The cap bounds it:
-//     W ≤ 128 is at most 128 tiles of 64 outputs × 32 tokens, 32 MiB — 32
-//     for EmbeddingGemma 2, Qwen3 and Llama 3.2, 31.5 for Gemma 3. On a
-//     phone's 512 MiB (web/platform_policy.js) that is about 290 of Qwen3's
-//     tokens of context. Launches: a split product adds its combine's, in
+//     about 1.5 µs a launch. A product needs split_tokens() × its rows × 32
+//     floats at its last split step (range_sum_floats below), and the cap
+//     bounds that: W ≤ 128 is at most 128 tiles of 64 outputs × 32 tokens,
+//     32 MiB. The working buffer is the most the model's products need — 32
+//     MiB for EmbeddingGemma 2, Qwen3 and Llama 3.2, 31.5 for Gemma 3; a few
+//     KiB for a test's model of width 64. On a phone's 512 MiB
+//     (web/platform_policy.js) Qwen3's 32 is about 290 of its tokens of
+//     context. Launches: a split product adds its combine's, in
 //     the steps it splits.
 //     Measured in Chrome 151 on the target, a page timing each product's
 //     launch alone, 200 back to back in one submission, the median of 5
@@ -476,15 +476,15 @@ namespace bllm::kernels {
 // whose ranges are one group, several, and of unequal sizes (Gemma 3's
 // 1,152 and 6,912). The split form: each of its epilogues, Write, QKV and
 // GatedByInput, at steps of 2, 21, 32 and 33 tokens, each output's bits the
-// tiled form's and decode's, at a width whose ranges are one group, several,
-// unequal, and none — K of 512, 16 groups, half the ranges empty — and a
-// piece. On the CPU: each launch's geometry, token range, bindings and
+// tiled form's, at each listed format and at widths whose ranges are one
+// group, several, unequal, and mostly none — K of 64, 2 groups, 30 ranges
+// empty — and a weight in pieces, each piece split. On the CPU: each launch's geometry, token range, bindings and
 // variant, and the range boundaries; the gate at both sides and on its
 // boundary — a gate that never splits and one that always does give the same
 // launches' ranges, complementary, covering every step from 2 to
-// kPrefillBlock once — and split_tokens and range_sum_floats at each listed
-// model's products, as above; and the graphs' working sets holding
-// `range_sums` at that size.
+// kPrefillBlock once — and split_tokens at each listed model's products, as
+// above; a step whose range sums would not fit the buffer left tiled; and the
+// graphs' working sets holding `range_sums` at their products' most.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -496,9 +496,8 @@ namespace bllm::kernels {
 //     ES.45  Avoid magic constants — the micro-tile's 4 × 4 and the tiles'
 //            widths are named, and the gate's ratio of 2 and cap of 128.
 //     I.5    State preconditions — split_tokens' and matmul_launches'.
-//     F.8    Prefer pure functions — split_tokens and range_sum_floats, which
-//            the launches and the working set both call, so they cannot
-//            disagree on a buffer's size.
+//     F.8    Prefer pure functions — split_tokens and range_sum_floats, so
+//            the launches and the working set cannot disagree on a size.
 //     Per.6  Don't make claims about performance without measurements — the
 //            gate's two values and the split's gains, measured.
 //   C++ performance guidelines
@@ -566,26 +565,29 @@ inline constexpr SplitGate kSplitGate{2, 1, 128};
 
 // The most tokens a step may hold for the product to split — a whole number
 // of 32-token tiles, at most kPrefillBlock — or 1 when it never splits, as a
-// gated activation never does. Precondition: columns is a whole number of
-// 32-weight groups; rows > 0.
+// gated activation never does. Preconditions: columns is a whole number of
+// 32-weight groups; rows > 0; gate.denominator > 0.
 [[nodiscard]] std::uint32_t split_tokens(Epilogue epilogue, std::uint64_t rows, std::uint64_t columns,
                                          SplitGate gate) noexcept;
 
-// The floats `range_sums` must hold for the product: split_tokens × rows ×
-// 32, or 0 when it never splits.
+// The floats `range_sums` must hold for the product to split every step the
+// gate takes: split_tokens × rows × 32, or 0 when it never splits. A graph
+// plans the most of its products'. Preconditions: split_tokens'.
 [[nodiscard]] std::uint64_t range_sum_floats(Epilogue epilogue, std::uint64_t rows, std::uint64_t columns,
                                              SplitGate gate) noexcept;
 
 // The product's launches: for each piece of the weight, a decode launch,
-// and a prefill launch for each tile width, each in its token range; or for the
-// head, the decode form alone, in every step. Preconditions: K is a whole number of 32-weight groups;
-// a fused group's members lie in one buffer within a binding's span, and
-// their rows are the epilogue's.
-// The split form adds two parameters: the gate, and `range_sums`, the
-// working buffer of that name, holding range_sum_floats; and for each tile
-// width, beside the tiled launch, a split launch where the gate splits the
-// product, each in its part of the width's token range, and the split's
-// combine.
-[[nodiscard]] std::vector<Launch> matmul_launches(const MatmulLaunch& matmul);
+// and for each tile width a tiled launch and, where `gate` splits the
+// product, a split launch, each in its part of the width's token range, and
+// the split's combine; or for the head, the decode form alone, in every
+// step. `range_sums` is the working buffer of that name, bound when the
+// product splits: a step splits only while its range sums fit it, so a
+// weight in pieces, whose pieces' fewer rows the gate may split further than
+// the graph planned for, runs those steps tiled, the same bits. Preconditions:
+// K is a whole number of 32-weight groups; a fused group's members lie in
+// one buffer within a binding's span, and their rows are the epilogue's;
+// gate.denominator > 0.
+[[nodiscard]] std::vector<Launch> matmul_launches(const MatmulLaunch& matmul, SplitGate gate,
+                                                  residency::BufferRange range_sums);
 
 }  // namespace bllm::kernels

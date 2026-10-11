@@ -9,7 +9,9 @@
 //
 // Entry points, one a form and epilogue, each binding only what it writes:
 //   decode_write, decode_qkv, decode_gated, decode_gated_input,
-//   prefill_write, prefill_qkv, prefill_gated, prefill_gated_input.
+//   prefill_write, prefill_qkv, prefill_gated, prefill_gated_input;
+//   split_ranges, the split form's for every epilogue it takes, and its
+//   combine's: combine_write, combine_qkv, combine_gated_input.
 //
 // A product's rows are its members' rows in order — a weight piece, or a
 // fused group's Q, K, V or gate, up — each member read from its own first
@@ -304,14 +306,12 @@ fn slot_row(out_tile: u32, slot: u32, gated: bool) -> vec3<u32> {
     return locate(out_tile * kTileRows + slot);
 }
 
-// The tile's totals for invocation t's 4 tokens × 4 outputs, a vec4 a token
-// over its outputs: each output's ranges summed from zero, along K in order,
-// and added to its total in order, exactly as decode adds them; fma on a
-// vec4 is the scalar fma a component.
-fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<vec4<f32>, 4> {
-    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
-    let token_tile = wg % token_tiles;
-    let out_tile = wg / token_tiles;
+// Invocation t's sums of range r for its 4 tokens × 4 outputs of the tile at
+// (token_tile, out_tile), a vec4 a token over its outputs: the range's groups
+// along K in order, each from zero, exactly as decode sums a range; fma on a
+// vec4 is the scalar fma a component. Every invocation calls it alike, so its
+// barriers are reached in uniform control flow.
+fn tile_range(token_tile: u32, out_tile: u32, t: u32, gated: bool, r: u32) -> array<vec4<f32>, 4> {
     let tq = t / kOutputLanes;
     let lane = t % kOutputLanes;
     // A quad wholly past the step stages and passes the barriers, and skips
@@ -328,71 +328,77 @@ fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<vec4<f32>, 4> {
     var s1 = vec4<f32>(0.0);
     var s2 = vec4<f32>(0.0);
     var s3 = vec4<f32>(0.0);
+    for (var g = range_lo(r); g < range_lo(r + 1u); g++) {
+        workgroupBarrier();   // the last step's tiles are read
+        // The tile's rows' groups, decoded.
+        if (slot0 < kTileRows) {
+            stage_row(slot0, mine0, g);
+        }
+        if (slot1 < kTileRows) {
+            stage_row(slot1, mine1, g);
+        }
+        // The step's input floats, a vec4 at a time along K.
+        for (var q = t; q < 8u * tile_tokens; q += workgroup_size) {
+            let token = token_tile * tile_tokens + q / 8u;
+            var x = vec4<f32>(0.0);
+            if (token < step.tokens) {
+                x = input[token * (columns / 4u) + g * 8u + q % 8u];
+            }
+            x_tile[q] = x;
+        }
+        workgroupBarrier();
+        // Each k-quad: the 4 outputs' weights, transposed in registers so
+        // w[c] is their 4 weights at k = 4v + c, and the 4 tokens' inputs;
+        // 8 vec4 reads, then 64 multiply-adds, k in order.
+        if (live) {
+            for (var v = 0u; v < 8u; v++) {
+                let w = transpose(mat4x4<f32>(w_tile[lane * kSlotStride + v],
+                                              w_tile[(lane + 16u) * kSlotStride + v],
+                                              w_tile[(lane + 32u) * kSlotStride + v],
+                                              w_tile[(lane + 48u) * kSlotStride + v]));
+                let x0 = x_tile[x_at + v];
+                let x1 = x_tile[x_at + 8u + v];
+                let x2 = x_tile[x_at + 16u + v];
+                let x3 = x_tile[x_at + 24u + v];
+                s0 = fma(w[0], vec4<f32>(x0.x), s0);
+                s1 = fma(w[0], vec4<f32>(x1.x), s1);
+                s2 = fma(w[0], vec4<f32>(x2.x), s2);
+                s3 = fma(w[0], vec4<f32>(x3.x), s3);
+                s0 = fma(w[1], vec4<f32>(x0.y), s0);
+                s1 = fma(w[1], vec4<f32>(x1.y), s1);
+                s2 = fma(w[1], vec4<f32>(x2.y), s2);
+                s3 = fma(w[1], vec4<f32>(x3.y), s3);
+                s0 = fma(w[2], vec4<f32>(x0.z), s0);
+                s1 = fma(w[2], vec4<f32>(x1.z), s1);
+                s2 = fma(w[2], vec4<f32>(x2.z), s2);
+                s3 = fma(w[2], vec4<f32>(x3.z), s3);
+                s0 = fma(w[3], vec4<f32>(x0.w), s0);
+                s1 = fma(w[3], vec4<f32>(x1.w), s1);
+                s2 = fma(w[3], vec4<f32>(x2.w), s2);
+                s3 = fma(w[3], vec4<f32>(x3.w), s3);
+            }
+        }
+    }
+    return array<vec4<f32>, 4>(s0, s1, s2, s3);
+}
+
+// The tile's totals for invocation t's 4 tokens × 4 outputs: each range's
+// sums added to its total in order, a total from zero, exactly as decode adds
+// them.
+fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<vec4<f32>, 4> {
+    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
+    let token_tile = wg % token_tiles;
+    let out_tile = wg / token_tiles;
     var y0 = vec4<f32>(0.0);
     var y1 = vec4<f32>(0.0);
     var y2 = vec4<f32>(0.0);
     var y3 = vec4<f32>(0.0);
     for (var r = 0u; r < kRanges; r++) {
-        for (var g = range_lo(r); g < range_lo(r + 1u); g++) {
-            workgroupBarrier();   // the last step's tiles are read
-            // The tile's rows' groups, decoded.
-            if (slot0 < kTileRows) {
-                stage_row(slot0, mine0, g);
-            }
-            if (slot1 < kTileRows) {
-                stage_row(slot1, mine1, g);
-            }
-            // The step's input floats, a vec4 at a time along K.
-            for (var q = t; q < 8u * tile_tokens; q += workgroup_size) {
-                let token = token_tile * tile_tokens + q / 8u;
-                var x = vec4<f32>(0.0);
-                if (token < step.tokens) {
-                    x = input[token * (columns / 4u) + g * 8u + q % 8u];
-                }
-                x_tile[q] = x;
-            }
-            workgroupBarrier();
-            // Each k-quad: the 4 outputs' weights, transposed in registers so
-            // w[c] is their 4 weights at k = 4v + c, and the 4 tokens' inputs;
-            // 8 vec4 reads, then 64 multiply-adds, k in order.
-            if (live) {
-                for (var v = 0u; v < 8u; v++) {
-                    let w = transpose(mat4x4<f32>(w_tile[lane * kSlotStride + v],
-                                                  w_tile[(lane + 16u) * kSlotStride + v],
-                                                  w_tile[(lane + 32u) * kSlotStride + v],
-                                                  w_tile[(lane + 48u) * kSlotStride + v]));
-                    let x0 = x_tile[x_at + v];
-                    let x1 = x_tile[x_at + 8u + v];
-                    let x2 = x_tile[x_at + 16u + v];
-                    let x3 = x_tile[x_at + 24u + v];
-                    s0 = fma(w[0], vec4<f32>(x0.x), s0);
-                    s1 = fma(w[0], vec4<f32>(x1.x), s1);
-                    s2 = fma(w[0], vec4<f32>(x2.x), s2);
-                    s3 = fma(w[0], vec4<f32>(x3.x), s3);
-                    s0 = fma(w[1], vec4<f32>(x0.y), s0);
-                    s1 = fma(w[1], vec4<f32>(x1.y), s1);
-                    s2 = fma(w[1], vec4<f32>(x2.y), s2);
-                    s3 = fma(w[1], vec4<f32>(x3.y), s3);
-                    s0 = fma(w[2], vec4<f32>(x0.z), s0);
-                    s1 = fma(w[2], vec4<f32>(x1.z), s1);
-                    s2 = fma(w[2], vec4<f32>(x2.z), s2);
-                    s3 = fma(w[2], vec4<f32>(x3.z), s3);
-                    s0 = fma(w[3], vec4<f32>(x0.w), s0);
-                    s1 = fma(w[3], vec4<f32>(x1.w), s1);
-                    s2 = fma(w[3], vec4<f32>(x2.w), s2);
-                    s3 = fma(w[3], vec4<f32>(x3.w), s3);
-                }
-            }
-        }
-        // Range r done: into the totals, in order, and the next from zero.
-        y0 = y0 + s0;
-        y1 = y1 + s1;
-        y2 = y2 + s2;
-        y3 = y3 + s3;
-        s0 = vec4<f32>(0.0);
-        s1 = vec4<f32>(0.0);
-        s2 = vec4<f32>(0.0);
-        s3 = vec4<f32>(0.0);
+        let s = tile_range(token_tile, out_tile, t, gated, r);
+        y0 = y0 + s[0];
+        y1 = y1 + s[1];
+        y2 = y2 + s[2];
+        y3 = y3 + s[3];
     }
     return array<vec4<f32>, 4>(y0, y1, y2, y3);
 }
@@ -489,4 +495,109 @@ fn prefill_gated_input(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invo
             }
         }
     }
+}
+
+// ---- Prefill split along K ---------------------------------------------------
+
+// The product's rows: its members' together.
+fn product_rows() -> u32 {
+    return matmul.members[0].w + matmul.members[1].w + matmul.members[2].w;
+}
+
+// Where range r's sum of the product's row p for `token` lies in
+// `range_sums`: range first, so a range's sums for adjacent rows are adjacent.
+fn range_sum_at(r: u32, token: u32, p: u32) -> u32 {
+    return (r * step.tokens + token) * product_rows() + p;
+}
+
+// The tiled form's workgroup (token tile, output tile) for range r alone,
+// numbered token tile first, then output tile, then range: the range sums of
+// its 4 tokens × 4 outputs a lane written to `range_sums`, bound as out0.
+@compute @workgroup_size(workgroup_size)
+fn split_ranges(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
+    let rows = product_rows();
+    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
+    let out_tiles = (rows + kTileRows - 1u) / kTileRows;
+    let token_tile = wg.x % token_tiles;
+    let out_tile = (wg.x / token_tiles) % out_tiles;
+    let r = wg.x / (token_tiles * out_tiles);
+    let sums = tile_range(token_tile, out_tile, t, false, r);
+    let first = token_tile * tile_tokens + (t / kOutputLanes) * kMicro;
+    for (var j = 0u; j < kMicro; j++) {
+        let p = out_tile * kTileRows + t % kOutputLanes + kOutputLanes * j;
+        for (var i = 0u; i < kMicro; i++) {
+            let token = first + i;
+            if (token < step.tokens && p < rows) {
+                out0[range_sum_at(r, token, p)] = sums[i][j];
+            }
+        }
+    }
+}
+
+// The combine's bindings, its own declarations, since it reads no weights:
+// 2 `range_sums`, read-only; 3 its first output; 4 its second, or
+// GatedByInput's u, read-only; 5 its third. No entry point uses both of two
+// declarations of one binding.
+@group(0) @binding(2) var<storage, read> range_sums: array<f32>;
+@group(0) @binding(3) var<storage, read_write> combined0: array<f32>;
+@group(0) @binding(4) var<storage, read_write> combined1: array<f32>;
+@group(0) @binding(4) var<storage, read> combined_u: array<f32>;
+@group(0) @binding(5) var<storage, read_write> combined2: array<f32>;
+
+// The total of the product's row p for `token`: its 32 range sums added to a
+// total from zero, in order, as decode's slot_total and the tiled form add
+// them.
+fn combined(token: u32, p: u32) -> f32 {
+    var total = 0.0;
+    for (var r = 0u; r < kRanges; r++) {
+        total = total + range_sums[range_sum_at(r, token, p)];
+    }
+    return total;
+}
+
+@compute @workgroup_size(workgroup_size)
+fn combine_write(@builtin(global_invocation_id) id: vec3<u32>) {
+    let rows = product_rows();
+    if (id.x >= step.tokens * rows) {
+        return;
+    }
+    let token = id.x / rows;
+    let p = id.x % rows;
+    let at = locate(p);
+    combined0[token * out_width + matmul.members[at.x].z + at.y] = combined(token, p);
+}
+
+@compute @workgroup_size(workgroup_size)
+fn combine_qkv(@builtin(global_invocation_id) id: vec3<u32>) {
+    let rows = product_rows();
+    if (id.x >= step.tokens * rows) {
+        return;
+    }
+    let token = id.x / rows;
+    let p = id.x % rows;
+    let at = locate(p);
+    let width = matmul.members[at.x].w;
+    let value = combined(token, p);
+    if (at.x == 0u) {
+        combined0[token * width + at.y] = value;
+    } else if (at.x == 1u) {
+        combined1[token * width + at.y] = value;
+    } else {
+        combined2[token * width + at.y] = value;
+    }
+}
+
+// As gated_by_input, with u read through the combine's own binding.
+@compute @workgroup_size(workgroup_size)
+fn combine_gated_input(@builtin(global_invocation_id) id: vec3<u32>) {
+    let rows = product_rows();
+    if (id.x >= step.tokens * rows) {
+        return;
+    }
+    let token = id.x / rows;
+    let p = id.x % rows;
+    let at = locate(p);
+    let o = matmul.members[at.x].z + at.y;
+    let u = combined_u[token * matmul.gate_input.x + matmul.gate_input.y + o];
+    combined0[token * out_width + o] = activate(combined(token, p)) * u;
 }

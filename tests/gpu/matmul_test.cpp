@@ -38,6 +38,10 @@ namespace {
 constexpr std::uint32_t kTokens = 64;
 constexpr std::uint64_t kWidest = 3072;
 constexpr std::uint64_t kMostRows = 4096;   // w_set4's
+// A gate that never splits, so a test of the tiled form sees it alone; one
+// that splits every product the fixture holds at every step it runs.
+constexpr kernels::SplitGate kNever{0, 1, 0};
+constexpr kernels::SplitGate kAlways{1024, 1, 1024};
 
 // Test-only: copies rows first .. first + tokens of the source rows into
 // the input buffer, so a step's rows are any of the source's.
@@ -63,7 +67,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 struct Uploaded {
     Model model;
     std::unique_ptr<residency::Upload> upload;
-    residency::BufferRange source{}, input{}, out[3]{};
+    residency::BufferRange source{}, input{}, out[3]{}, range_sums{};
 
     [[nodiscard]] const residency::WeightView& view(const std::string& name) const {
         for (const auto& t : model.plan.tensors) {
@@ -124,6 +128,8 @@ Uploaded upload_weights(WGPUInstance instance, const gpu::Device& device, bool s
     u.source = alone(kTokens * kWidest * 4);
     u.input = alone(kTokens * kWidest * 4);
     for (auto& o : u.out) o = alone(kTokens * kMostRows * 4);
+    // The range sums of a split step of every token the fixture's rows hold.
+    u.range_sums = alone(kTokens * kMostRows * 32 * 4);
     Ready ready;
     residency::Upload::begin(device, u.model.index, plan, u.model.bytes.size(), capability::find_format, {}, kChunk,
                              on_ready, &ready);
@@ -220,7 +226,7 @@ TEST_CASE("each format's product is within its bound, decoded and prefilled, and
         const auto rows = static_cast<std::uint32_t>(w.shape().dimensions[1]);
         // Source rows of this width: the fill covers the widest; a row of
         // `columns` floats starts every `columns` floats.
-        const auto launches = kernels::matmul_launches(single(u, w, kernels::Rows::EveryToken));
+        const auto launches = kernels::matmul_launches(single(u, w, kernels::Rows::EveryToken), kNever, u.range_sums);
         REQUIRE(launches.size() == 4);
         const auto weights = decoded(u, name);
         // Prefill steps of 2 and 8 rows, in the 8-token tile, 9 and 16, in
@@ -262,9 +268,9 @@ TEST_CASE("a weight in pieces is four launches a piece, each writing its rows") 
     const auto device = acquire(instance.get());
     const Uploaded whole = upload_weights(instance.get(), *device);
     const Uploaded split = upload_weights(instance.get(), *device, true);
-    const auto pieces = kernels::matmul_launches(single(split, split.view("w_q4_0"), kernels::Rows::EveryToken));
+    const auto pieces = kernels::matmul_launches(single(split, split.view("w_q4_0"), kernels::Rows::EveryToken), kNever, split.range_sums);
     REQUIRE(pieces.size() == 8);
-    const auto one = kernels::matmul_launches(single(whole, whole.view("w_q4_0"), kernels::Rows::EveryToken));
+    const auto one = kernels::matmul_launches(single(whole, whole.view("w_q4_0"), kernels::Rows::EveryToken), kNever, whole.range_sums);
     // Every row's products in the same order whichever piece holds it.
     for (const std::uint32_t tokens : {1u, 33u}) {
         CAPTURE(tokens);
@@ -279,7 +285,7 @@ TEST_CASE("the head covers the step's last token alone, in a prefill step too") 
     const auto device = acquire(instance.get());
     const Uploaded u = upload_weights(instance.get(), *device);
     const residency::WeightView& w = u.view("w_q6_k");
-    const auto launches = kernels::matmul_launches(single(u, w, kernels::Rows::LastToken));
+    const auto launches = kernels::matmul_launches(single(u, w, kernels::Rows::LastToken), kNever, u.range_sums);
     REQUIRE(launches.size() == 1);
     const auto last = run(instance.get(), *device, u, 1024, launches, 5, 0, {40});
     const auto alone = run(instance.get(), *device, u, 1024, launches, 1, 4, {40});
@@ -298,7 +304,7 @@ TEST_CASE("Q, K and V as one product land in their three buffers, the same bits 
                                   kernels::Epilogue::QKV,
                                   model::FeedForwardActivation::SiLU,
                                   kernels::Rows::EveryToken};
-    const auto launches = kernels::matmul_launches(m);
+    const auto launches = kernels::matmul_launches(m, kNever, u.range_sums);
     REQUIRE(launches.size() == 4);
     const std::vector<std::uint32_t> widths{64, 32, 32};
     const char* names[] = {"qkv_q", "qkv_k", "qkv_v"};
@@ -347,7 +353,7 @@ TEST_CASE("gate and up as one product write activation(gate) x up, for SiLU and 
                                       kernels::Epilogue::GatedActivation,
                                       activation,
                                       kernels::Rows::EveryToken};
-        const auto launches = kernels::matmul_launches(m);
+        const auto launches = kernels::matmul_launches(m, kNever, u.range_sums);
         const auto prefilled = run(instance.get(), *device, u, 1024, launches, 33, 0, {72});
         for (std::uint32_t t = 0; t < 33; ++t) {
             for (std::uint32_t r = 0; r < 72; ++r) {
@@ -395,7 +401,7 @@ TEST_CASE("a product gated by an input writes activation(W x) times the input at
     m.gate_input = u.source;
     m.gate_input_stride = kStride;
     m.gate_input_column = kColumn;
-    const auto launches = kernels::matmul_launches(m);
+    const auto launches = kernels::matmul_launches(m, kNever, u.range_sums);
     const std::uint32_t rows = static_cast<std::uint32_t>(u.entry("ffn_gate").dimensions[1]);
     const auto prefilled = run(instance.get(), *device, u, 1024, launches, 33, 0, {rows});
     for (std::uint32_t t = 0; t < 33; ++t) {
@@ -419,5 +425,84 @@ TEST_CASE("a product gated by an input writes activation(W x) times the input at
         // compare against a prefill whose token 0 is row t.
         const auto shifted = run(instance.get(), *device, u, 1024, launches, 2, t, {rows});
         CHECK(std::equal(alone[0].begin(), alone[0].end(), shifted[0].begin()));
+    }
+}
+
+TEST_CASE("split along K, every epilogue it takes writes the tiled form's bits, whole or in pieces") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_weights(instance.get(), *device);
+    const auto splits = [](const std::vector<kernels::Launch>& launches) {
+        return std::count_if(launches.begin(), launches.end(),
+                             [](const kernels::Launch& l) { return l.entry_point == "split_ranges"; });
+    };
+    // Steps in the 8-token tile, the 32-token tile, its edge, and past it.
+    const std::vector<std::uint32_t> steps{2, 21, 32, 33};
+    const auto same_bits = [&](const std::vector<kernels::Launch>& tiled, const std::vector<kernels::Launch>& split,
+                               std::uint32_t columns, const std::vector<std::uint32_t>& widths) {
+        REQUIRE(splits(tiled) == 0);
+        REQUIRE(splits(split) > 0);
+        for (const std::uint32_t tokens : steps) {
+            CAPTURE(tokens);
+            const auto want = run(instance.get(), *device, u, columns, tiled, tokens, 0, widths);
+            const auto got = run(instance.get(), *device, u, columns, split, tokens, 0, widths);
+            for (std::size_t o = 0; o < widths.size(); ++o) {
+                CAPTURE(o);
+                CHECK(std::equal(got[o].begin(), got[o].end(), want[o].begin()));
+            }
+        }
+    };
+
+    SUBCASE("Write, each format; widths whose ranges are one group, several, unequal, and mostly none") {
+        // w_set2's 64 columns are 2 groups: 30 of its 32 ranges are empty.
+        for (const char* name : {"w_q4_0", "w_q4_1_1152", "w_q4_1_3072", "w_q8_0", "w_q6_k", "w_set2"}) {
+            CAPTURE(name);
+            const residency::WeightView& w = u.view(name);
+            const auto columns = static_cast<std::uint32_t>(w.shape().dimensions[0]);
+            const auto rows = static_cast<std::uint32_t>(w.shape().dimensions[1]);
+            same_bits(kernels::matmul_launches(single(u, w, kernels::Rows::EveryToken), kNever, u.range_sums),
+                      kernels::matmul_launches(single(u, w, kernels::Rows::EveryToken), kAlways, u.range_sums),
+                      columns, {rows});
+        }
+    }
+    SUBCASE("QKV, into its three buffers") {
+        const kernels::MatmulLaunch m{{&u.view("qkv_q"), &u.view("qkv_k"), &u.view("qkv_v")},
+                                      3,
+                                      u.input,
+                                      {u.out[0], u.out[1], u.out[2]},
+                                      kernels::Epilogue::QKV,
+                                      model::FeedForwardActivation::SiLU,
+                                      kernels::Rows::EveryToken};
+        same_bits(kernels::matmul_launches(m, kNever, u.range_sums), kernels::matmul_launches(m, kAlways, u.range_sums),
+                  1024, {64, 32, 32});
+    }
+    SUBCASE("gated by an input") {
+        kernels::MatmulLaunch m{{&u.view("ffn_gate"), nullptr, nullptr},
+                                1,
+                                u.input,
+                                {u.out[0], u.out[1], u.out[2]},
+                                kernels::Epilogue::GatedByInput,
+                                model::FeedForwardActivation::GeluTanh,
+                                kernels::Rows::EveryToken};
+        m.gate_input = u.source;
+        m.gate_input_stride = 1024;
+        m.gate_input_column = 100;
+        same_bits(kernels::matmul_launches(m, kNever, u.range_sums), kernels::matmul_launches(m, kAlways, u.range_sums),
+                  1024, {72});
+    }
+    SUBCASE("a weight in pieces, each piece split") {
+        const Uploaded pieced = upload_weights(instance.get(), *device, true);
+        const auto split =
+            kernels::matmul_launches(single(pieced, pieced.view("w_q4_0"), kernels::Rows::EveryToken), kAlways,
+                                     pieced.range_sums);
+        CHECK(splits(split) == 2 * 3);   // a split launch a tile width, each piece
+        const auto whole = kernels::matmul_launches(single(u, u.view("w_q4_0"), kernels::Rows::EveryToken), kNever,
+                                                    u.range_sums);
+        for (const std::uint32_t tokens : steps) {
+            CAPTURE(tokens);
+            const auto got = run(instance.get(), *device, pieced, 1024, split, tokens, 0, {140});
+            const auto want = run(instance.get(), *device, u, 1024, whole, tokens, 0, {140});
+            CHECK(std::equal(got[0].begin(), got[0].end(), want[0].begin()));
+        }
     }
 }

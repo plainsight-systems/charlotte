@@ -98,7 +98,7 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
     const auto hidden = buffer("hidden"), normed = buffer("normed"), query = buffer("query"), key = buffer("key"),
                value = buffer("value"), attention = buffer("attention"), partials = buffer("partials"),
                stats = buffer("partial_stats"), output = buffer("output"), activation = buffer("activation"),
-               logits = buffer("logits");
+               logits = buffer("logits"), range_sums = buffer("range_sums");
     const auto grouped = [&](std::initializer_list<const residency::WeightView*> members) {
         return std::any_of(p.groups.begin(), p.groups.end(), [&](const residency::PlannedGroup& g) {
             if (g.count != members.size()) return false;
@@ -116,7 +116,8 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
     const auto write = [&](const residency::WeightView* w, residency::BufferRange in, residency::BufferRange to,
                            kernels::Rows rows) {
         add(kernels::matmul_launches({{w, nullptr, nullptr}, 1, in, {to, {}, {}}, kernels::Epilogue::Write,
-                                      m.activation, rows}));
+                                      m.activation, rows},
+                                     kernels::kSplitGate, range_sums));
     };
 
     add(kernels::gather_launches(view(m.token_embedding), hidden, buffer("sampled"), scale));
@@ -128,7 +129,8 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
         const auto *q = at(i, Role::Query), *k = at(i, Role::Key), *v = at(i, Role::Value);
         if (grouped({q, k, v})) {
             add(kernels::matmul_launches({{q, k, v}, 3, normed, {query, key, value}, kernels::Epilogue::QKV,
-                                          m.activation, kernels::Rows::EveryToken}));
+                                          m.activation, kernels::Rows::EveryToken},
+                                         kernels::kSplitGate, range_sums));
         } else {
             write(q, normed, query, kernels::Rows::EveryToken);
             write(k, normed, key, kernels::Rows::EveryToken);
@@ -146,7 +148,8 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
                                             output, hidden, normed, m.norm_epsilon, kernels::Rows::EveryToken}));
         add(kernels::matmul_launches({{at(i, Role::Gate), at(i, Role::Up), nullptr}, 2, normed,
                                       {activation, {}, {}}, kernels::Epilogue::GatedActivation, m.activation,
-                                      kernels::Rows::EveryToken}));
+                                      kernels::Rows::EveryToken},
+                                     kernels::kSplitGate, range_sums));
         write(at(i, Role::Down), activation, output, kernels::Rows::EveryToken);
         carried = at(i, Role::PostFeedForwardNorm);
     }
@@ -194,13 +197,22 @@ TEST_CASE("every listed architecture supplies its describe and its graph") {
     }
 }
 
-TEST_CASE("Qwen3's graph is the stated order, 595 launches, 231 dispatched a step") {
+TEST_CASE("Qwen3's graph is the stated order, 763 launches, 231 dispatched a step and a combine more for each split") {
     const Loaded l = load("qwen3-0.6b-q4_0");
     const auto launches = graph_of(l);
     check_stated_order(launches, stated_order(l.model, l.plan, 1.0f));
-    CHECK(launches.size() == 595);
+    // A layer's QKV, output and down projections split along K at short
+    // steps (kernels/matmul/matmul.h): each a split launch and a combine
+    // beside its decode and three tiled launches, 6 more a layer.
+    CHECK(launches.size() == 763);
     CHECK(dispatched(launches, 0, 1, true) == 231);
     CHECK(dispatched(launches, 0, 512, true) == 231);
+    // At 21 tokens all three split, each adding its combine; from 33 to 256
+    // the output and down projections alone — at 100 tokens beside each
+    // layer's attention combine, its keys spanning two chunks.
+    CHECK(dispatched(launches, 0, 21, true) == 231 + 3 * 28);
+    CHECK(dispatched(launches, 0, 100, true) == 231 + 28 + 2 * 28);
+    CHECK(dispatched(launches, 0, 257, true) == 231);
     // A prefill step that does not end the prompt: no final norm, head,
     // selection or draw.
     CHECK(dispatched(launches, 0, 512, false) == 225);
@@ -210,7 +222,7 @@ TEST_CASE("Qwen3's graph is the stated order, 595 launches, 231 dispatched a ste
     CHECK(count_override(launches, "post_norm", 1.0) == 0);
 }
 
-TEST_CASE("each step's schedule holds every launch the step dispatches, and walks 253 to 259") {
+TEST_CASE("each step's schedule holds every launch the step dispatches, and walks 253 to 259 and its combines") {
     const auto launches = graph_of(load("qwen3-0.6b-q4_0"));
     std::vector<kernels::Geometry> geometries;
     for (const kernels::Launch& l : launches) {
@@ -220,7 +232,10 @@ TEST_CASE("each step's schedule holds every launch the step dispatches, and walk
     for (std::uint32_t tokens = 1; tokens <= residency::kPrefillBlock; ++tokens) {
         for (const bool logits : {false, true}) {
             const auto list = schedules.of(tokens, logits);
-            CHECK(list.size() == (logits ? 259u : 253u));
+            // A combine for each product split: QKV, output and down up to
+            // 32 tokens; output and down to 256 (kernels/matmul/matmul.h).
+            const std::uint32_t combines = tokens >= 2 && tokens <= 32 ? 84 : tokens >= 2 && tokens <= 256 ? 56 : 0;
+            CHECK(list.size() == (logits ? 259u : 253u) + combines);
             for (const std::uint32_t position : {0u, 255u, 300u, 4095u, 40000u}) {
                 std::vector<std::uint32_t> runs, listed;
                 for (std::uint32_t i = 0; i < geometries.size(); ++i) {
@@ -283,8 +298,9 @@ TEST_CASE("Q, K and V the plan did not group are three products, each into its o
     std::erase_if(l.plan.groups, [](const residency::PlannedGroup& g) { return g.count == 3; });
     const auto launches = graph_of(l);
     check_stated_order(launches, stated_order(l.model, l.plan, 1.0f));
-    // 3 products of 4 launches where one was: 8 more a layer.
-    CHECK(launches.size() == 595 + 8 * l.model.layers.size());
+    // 3 products of 6 launches, each split at short steps, where one of 6
+    // was: 12 more a layer.
+    CHECK(launches.size() == 763 + 12 * l.model.layers.size());
     CHECK(std::none_of(launches.begin(), launches.end(),
                        [](const kernels::Launch& x) { return x.entry_point == "decode_qkv"; }));
 }
@@ -372,14 +388,18 @@ TEST_CASE("every launch is named by its role and layer, as graph.h lists them") 
           std::vector<std::string_view>{"attention.q", "attention.k", "attention.v"});
 }
 
-TEST_CASE("a decoder's working set: its 15 buffers in order, a cache, and the partial rows of its context") {
+TEST_CASE("a decoder's working set: its 16 buffers in order, a cache, and the partial rows of its context") {
     const Loaded l = load("qwen3-0.6b-q4_0");
     const residency::WorkingSet w = graph::decoder_working_set(l.model);
     std::vector<std::string_view> purposes;
     for (const residency::ScratchNeed& n : w.needs) purposes.push_back(n.purpose);
     CHECK(purposes == std::vector<std::string_view>{"hidden", "normed", "query", "key", "value", "attention",
                                                     "partials", "partial_stats", "output", "activation", "logits",
-                                                    "partials_a", "partials_b", "candidates", "sampled"});
+                                                    "partials_a", "partials_b", "candidates", "sampled",
+                                                    "range_sums"});
+    // The most any product's range sums need: Qwen3's down and output at
+    // 256 tokens, 1,024 rows, 32 ranges (kernels/matmul/matmul.h).
+    CHECK(w.needs.back().rows * w.needs.back().width == 256ull * 1024 * 32);
     CHECK(w.cache);
     CHECK(w.partial_rows == residency::partial_rows_for(l.model.trained_context));
     // The plan places exactly these, in this order.

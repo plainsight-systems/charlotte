@@ -144,9 +144,11 @@ namespace bllm::graph {
 // L × P, 12,288 wide, 24 MiB each; `scores`, the widest layer's query heads
 // × kPrefillBlock rows of kPrefillBlock, 4 MiB, and `score_maxima`, a float
 // a chunk of each, 64 KiB (block_attention.h); `pooled`, W wide;
-// `projected` and `embedding`, one row of D; and `range_sums`, the most any
-// product split along K needs under kernels::kSplitGate — 32 MiB, the down
-// and global output projections' at 512 tokens (kernels/matmul/matmul.h).
+// `projected` and `embedding`, one row of D; and `range_sums`, one row of the
+// most kernels::range_sum_floats any of its products needs under
+// kernels::kSplitGate — a decoder's, and the per-layer inputs' projection
+// and each layer's per-layer gate and projection — 32 MiB, the down and
+// global output projections' at 512 tokens (kernels/matmul/matmul.h).
 // Every product's launches take that gate and that buffer. No KV cache: the
 // plan offers the smaller of kPrefillBlock and the trained context. About
 // 102 MiB for EmbeddingGemma 2, beside its 294 MB of weights: 401 MB, under
@@ -255,7 +257,7 @@ private:
 
     struct Buffers {
         residency::BufferRange hidden, normed, query, key, value, attention, output, activation, per_layer_raw,
-            per_layer, scores, score_maxima, pooled, projected, embedding;
+            per_layer, scores, score_maxima, pooled, projected, embedding, range_sums;
     };
 
     [[nodiscard]] const residency::WeightView& view(gguf::TensorId tensor) const;

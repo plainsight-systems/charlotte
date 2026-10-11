@@ -48,18 +48,25 @@ struct Constants {
 };
 static_assert(sizeof(Constants) == 64);
 
+// The split form's one entry point, for every epilogue it takes: it writes
+// range sums alone (matmul.h, split along K).
+constexpr std::string_view kSplitEntry = "split_ranges";
+// The split form's workgroups a tiled one's: a range each.
+constexpr std::uint32_t kRanges = 32;
+
 struct Entry {
-    std::string_view decode, prefill;
+    std::string_view decode, prefill, combine;
 };
 
+// GatedActivation has no combine: it never splits (split_tokens).
 Entry entry_of(Epilogue e) {
     switch (e) {
-        case Epilogue::Write: return {"decode_write", "prefill_write"};
-        case Epilogue::QKV: return {"decode_qkv", "prefill_qkv"};
-        case Epilogue::GatedActivation: return {"decode_gated", "prefill_gated"};
-        case Epilogue::GatedByInput: return {"decode_gated_input", "prefill_gated_input"};
+        case Epilogue::Write: return {"decode_write", "prefill_write", "combine_write"};
+        case Epilogue::QKV: return {"decode_qkv", "prefill_qkv", "combine_qkv"};
+        case Epilogue::GatedActivation: return {"decode_gated", "prefill_gated", {}};
+        case Epilogue::GatedByInput: return {"decode_gated_input", "prefill_gated_input", "combine_gated_input"};
     }
-    return {"decode_write", "prefill_write"};
+    return {"decode_write", "prefill_write", "combine_write"};
 }
 
 std::uint32_t ceil_div(std::uint64_t a, std::uint32_t b) { return static_cast<std::uint32_t>((a + b - 1) / b); }
@@ -73,10 +80,11 @@ std::uint32_t set_rows_for(std::uint64_t rows) {
     return 1;
 }
 
-// The product over one binding: its members, the launch pair (or the head's
-// one launch) that reads them.
+// The product over one binding: its members, the launches that read them —
+// decode, and each tile width's tiled and split launches with the split's
+// combine — or the head's one launch.
 void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants& members, std::uint64_t rows,
-                  std::vector<Launch>& out) {
+                  SplitGate gate, const residency::BufferRange& range_sums, std::vector<Launch>& out) {
     const residency::WeightView& head = *m.weights[0];
     const std::uint64_t columns = head.shape().dimensions[0];
     const bool gated = m.epilogue == Epilogue::GatedActivation;
@@ -119,32 +127,94 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     decode.tokens = tokens_of(Regime::Decode);
     out.push_back(std::move(decode));
 
-    // Prefill: a launch a tile width, each workgroup a token tile an output
-    // tile, of a micro-tile an invocation.
+    // Prefill: for each tile width, a tiled launch, each workgroup a token
+    // tile an output tile, of a micro-tile an invocation; and where the gate
+    // splits the product, a split launch of kRanges workgroups a tiled one's,
+    // each launch in its part of the width's steps (matmul.h, split along K).
+    // The gate's steps, held to those whose range sums fit the buffer.
+    const std::uint64_t fits = range_sums.length / 4 / (rows * kRanges);
+    const std::uint32_t split = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(split_tokens(m.epilogue, rows, columns, gate), fits));
     const std::uint32_t out_tiles = gated ? ceil_div(rows / 2, kTilePairs) : ceil_div(rows, kTileOutputs);
     for (const auto [tile, steps] : kTiles) {
         std::vector<Override> with_tile = overrides;
         with_tile.push_back({"tile_tokens", static_cast<double>(tile)});
         with_tile.push_back({"x_tile_vec4s", static_cast<double>(8 * tile)});   // matmul.wgsl's x_tile
         const std::uint32_t invocations = (tile / kMicro) * (kTileOutputs / kMicro);
-        Launch prefill{shaders::matmul,
-                       format,
-                       std::vector<std::byte>(bytes.begin(), bytes.end()),
-                       bindings,
-                       out_tiles * invocations / tile,
-                       invocations,
-                       Rows::EveryToken,
-                       std::move(with_tile)};
-        prefill.entry_point = entry.prefill;
-        prefill.rows_per_tile = tile;
-        prefill.tokens = steps;
-        out.push_back(std::move(prefill));
+        const TokenRange tiled_steps{std::max(steps.least, split + 1), steps.most};
+        if (tiled_steps.least <= tiled_steps.most) {
+            Launch prefill{shaders::matmul,
+                           format,
+                           std::vector<std::byte>(bytes.begin(), bytes.end()),
+                           bindings,
+                           out_tiles * invocations / tile,
+                           invocations,
+                           Rows::EveryToken,
+                           with_tile};
+            prefill.entry_point = entry.prefill;
+            prefill.rows_per_tile = tile;
+            prefill.tokens = tiled_steps;
+            out.push_back(std::move(prefill));
+        }
+        const TokenRange split_steps{steps.least, std::min(steps.most, split)};
+        if (split_steps.least <= split_steps.most) {
+            Launch ranges{shaders::matmul,
+                          format,
+                          std::vector<std::byte>(bytes.begin(), bytes.end()),
+                          {weights, bindings[1], {range_sums.buffer, range_sums.offset, range_sums.length}},
+                          out_tiles * kRanges * invocations / tile,
+                          invocations,
+                          Rows::EveryToken,
+                          std::move(with_tile)};
+            ranges.entry_point = kSplitEntry;
+            ranges.rows_per_tile = tile;
+            ranges.tokens = split_steps;
+            out.push_back(std::move(ranges));
+        }
     }
+    if (split < 2) return;
+
+    // The combine: an invocation an output of each token, in every step the
+    // product splits; its bindings start at range_sums (matmul.wgsl).
+    std::vector<Binding> combine_bindings{{range_sums.buffer, range_sums.offset, range_sums.length}};
+    for (std::size_t b = 2; b < bindings.size(); ++b) combine_bindings.push_back(bindings[b]);
+    std::vector<Override> combine_overrides = overrides;
+    combine_overrides.push_back({"x_tile_vec4s", static_cast<double>(8 * kTiles.back().tokens)});
+    Launch combine{shaders::matmul,
+                   format,
+                   std::vector<std::byte>(bytes.begin(), bytes.end()),
+                   std::move(combine_bindings),
+                   static_cast<std::uint32_t>(rows),
+                   kWorkgroupSize,
+                   Rows::EveryToken,
+                   std::move(combine_overrides)};
+    combine.entry_point = entry.combine;
+    combine.tokens = {2, split};
+    out.push_back(std::move(combine));
 }
 
 }  // namespace
 
-std::vector<Launch> matmul_launches(const MatmulLaunch& m) {
+std::uint32_t split_tokens(Epilogue epilogue, std::uint64_t rows, std::uint64_t columns, SplitGate gate) noexcept {
+    if (epilogue == Epilogue::GatedActivation) return 1;
+    // W, the tiled form's workgroups, is its output tiles × token tiles; the
+    // gate takes W × denominator ≤ G × numerator and W ≤ max_workgroups.
+    const std::uint64_t groups = columns / 32;
+    const std::uint64_t out_tiles = (rows + kTileOutputs - 1) / kTileOutputs;
+    const std::uint64_t by_ratio = groups * gate.numerator / (std::uint64_t{gate.denominator} * out_tiles);
+    const std::uint64_t by_cap = gate.max_workgroups / out_tiles;
+    const std::uint64_t token_tiles = std::min(by_ratio, by_cap);
+    if (token_tiles == 0) return 1;
+    return static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(token_tiles * kTiles.back().tokens, residency::kPrefillBlock));
+}
+
+std::uint64_t range_sum_floats(Epilogue epilogue, std::uint64_t rows, std::uint64_t columns, SplitGate gate) noexcept {
+    const std::uint32_t split = split_tokens(epilogue, rows, columns, gate);
+    return split < 2 ? 0 : std::uint64_t{split} * rows * kRanges;
+}
+
+std::vector<Launch> matmul_launches(const MatmulLaunch& m, SplitGate gate, residency::BufferRange range_sums) {
     const residency::WeightView& head = *m.weights[0];
     const std::uint64_t columns = head.shape().dimensions[0];
     const std::uint64_t block = gguf::format_layout(head.format())->block_elements;
@@ -158,7 +228,7 @@ std::vector<Launch> matmul_launches(const MatmulLaunch& m) {
                                             static_cast<std::uint32_t>(p.row_count)},
                                      Member{}, Member{}},
                                     {m.gate_input_stride, m.gate_input_column, 0, 0}};
-            add_launches(m, {p.buffer, p.offset, p.length}, members, p.row_count, out);
+            add_launches(m, {p.buffer, p.offset, p.length}, members, p.row_count, gate, range_sums, out);
         }
         return out;
     }
@@ -180,7 +250,7 @@ std::vector<Launch> matmul_launches(const MatmulLaunch& m) {
                       static_cast<std::uint32_t>(p.row_count)};
         rows += p.row_count;
     }
-    add_launches(m, {head.pieces().front().buffer, begin, end - begin}, members, rows, out);
+    add_launches(m, {head.pieces().front().buffer, begin, end - begin}, members, rows, gate, range_sums, out);
     return out;
 }
 

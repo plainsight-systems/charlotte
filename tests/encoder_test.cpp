@@ -5,6 +5,9 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
+#include <utility>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -116,7 +119,11 @@ TEST_CASE("an encoder's plan keeps no cache, offers one step's 512 tokens, and f
     for (const auto& s : l.plan.scratch) purposes.push_back(s.purpose);
     CHECK(purposes == std::vector<std::string_view>{"hidden", "normed", "query", "key", "value", "attention",
                                                     "output", "activation", "per_layer_raw", "per_layer", "scores",
-                                                    "score_maxima", "pooled", "projected", "embedding"});
+                                                    "score_maxima", "pooled", "projected", "embedding",
+                                                    "range_sums"});
+    // The most any product's range sums need: the down and global output
+    // projections at 512 tokens, 512 rows, 32 ranges, 32 MiB.
+    CHECK(l.plan.scratch.back().range.length == 512ull * 512 * 32 * 4);
     // A phone's budget holds it too (web/platform_policy.js): 512 MiB.
     policy::LoadPolicy phone{};
     phone.memory_budget = 512ull << 20;
@@ -126,26 +133,35 @@ TEST_CASE("an encoder's plan keeps no cache, offers one step's 512 tokens, and f
               .ok());
 }
 
-TEST_CASE("an encoder's step dispatches 296 launches, 12 a layer, at every step size") {
+TEST_CASE("an encoder's step dispatches 296 launches, 12 a layer, and a combine for each product split") {
     const Loaded l = load();
     std::vector<kernels::Launch> launches;
     const auto built = arch::encoder_graph(*l.architecture)(l.model, l.plan, launches);
     REQUIRE_MESSAGE(built.ok(), built.subject);
-    for (const std::uint32_t tokens : {2u, 16u, 33u, 512u}) {
+    // The combines (kernels/matmul/matmul.h): to 32 tokens a sliding layer's
+    // Q, K and V, output, down, per-layer gate and projection, 5, and a global
+    // layer's 4; to 128 the per-layer pair and the outputs and downs; to 256
+    // the sliding outputs and every down; to 512 the global outputs and every
+    // down. 20 sliding layers, 4 global.
+    const std::array<std::pair<std::uint32_t, std::size_t>, 4> steps{
+        {{2, 296 + 20 * 5 + 4 * 4}, {16, 296 + 20 * 5 + 4 * 4}, {33, 296 + 24 * 4}, {512, 296 + 24 + 4}}};
+    for (const auto& [tokens, want] : steps) {
         CAPTURE(tokens);
-        CHECK(dispatched(launches, tokens) == 296);
+        CHECK(dispatched(launches, tokens) == want);
         // No dispatch past WebGPU's 65,535 workgroups.
         for (const kernels::Launch& launch : launches) CHECK(workgroups(launch, tokens) <= 65535);
     }
-    // The roles a layer's 12 dispatches carry, in order, at 512 tokens.
+    // The roles a layer's dispatches carry, in order, at 512 tokens: its 12,
+    // and the down projection's combine beside it, the sliding output's
+    // range past it.
     std::vector<std::string_view> layer0;
     for (const kernels::Launch& launch : launches) {
         if (launch.layer == 0 && workgroups(launch, 512) > 0) layer0.push_back(launch.role);
     }
     CHECK(layer0 == std::vector<std::string_view>{"attention.norm", "attention.qkv", "attention.rope",
                                                   "attention.scores", "attention.weigh", "attention.output",
-                                                  "ffn.norm", "ffn.gate_up", "ffn.down", "per_layer.add",
-                                                  "per_layer.gate", "per_layer.project"});
+                                                  "ffn.norm", "ffn.gate_up", "ffn.down", "ffn.down",
+                                                  "per_layer.add", "per_layer.gate", "per_layer.project"});
     std::vector<std::string_view> outside;
     for (const kernels::Launch& launch : launches) {
         if (launch.layer == kernels::kNoLayer && workgroups(launch, 512) > 0) outside.push_back(launch.role);
