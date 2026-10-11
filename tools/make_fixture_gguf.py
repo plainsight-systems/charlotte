@@ -186,7 +186,7 @@ def embedding(ggml_type, rows=7, width=256, seed=0x2545F491):
     return build([(b"token_embd.weight", [width, rows], ggml_type, data)])
 
 
-def norm_rows(widths=(1024, 1152, 2048, 512), rows=4, seed=0x6C8E9CF5):
+def norm_rows(widths=(1024, 1152, 2048, 512, 1536), rows=4, seed=0x6C8E9CF5):
     """For each width a listed model has — Qwen3 0.6B's, Gemma 3 1B's, Llama
     3.2 1B's, then EmbeddingGemma 2's, after them so theirs keep the values
     they had — a norm's gain and a post-norm's gain, and rows of a hidden

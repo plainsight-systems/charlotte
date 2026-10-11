@@ -14,13 +14,19 @@
 // Gemma 4's layer output scale, x is multiplied by a scalar after the add.
 // Without `normalize`, the launch adds and writes x, and nothing else. A
 // launch may cover several rows a token, rows_per_token, each normalized on
-// its own.
+// its own. An audio encoder's (norm.h): the post-normed y times post_scale
+// before the add; with `renorm`, x replaced by its own norm with the re-norm
+// gain once the add is done, and written back so; with `unit_gain`, normed
+// without a gain.
 //
 // inverseSqrt, dot, select and workgroupBarrier are WGSL built-ins; reduce is
 // below.
 
 struct Norm {
     epsilon: f32,
+    // What the post-normed y is multiplied by before the add: 1 but for a
+    // half-step feed-forward's 0.5. A multiply by 1 is exact.
+    post_scale: f32,
 }
 
 // The program sets workgroup_size from the launcher (norm.cpp, 256); the
@@ -31,6 +37,8 @@ override add: bool = false;
 override post_norm: bool = false;
 override scaled: bool = false;
 override normalize: bool = true;
+override renorm: bool = false;
+override unit_gain: bool = false;
 override rows_per_token: u32 = 1u;
 // The row's width, set by the program from the launcher; with no default, a
 // pipeline that is not given it fails to build.
@@ -43,6 +51,7 @@ override width: u32;
 @group(0) @binding(5) var<storage, read_write> hidden: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read_write> normed: array<vec4<f32>>;
 @group(0) @binding(7) var<storage, read> scale: array<f32>;
+@group(0) @binding(8) var<storage, read> renorm_gain: array<vec4<f32>>;
 
 // Rows up to 4,096 wide: at most 4 vec4s an invocation of 256.
 const kMaxVec4s = 4u;
@@ -118,7 +127,7 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
             for (var k = 0u; k < per_invocation; k++) {
                 let i = index + k * workgroup_size;
                 if (i < vec4s) {
-                    y[k] = (y[k] * r) * post_gain[i];
+                    y[k] = ((y[k] * r) * post_gain[i]) * norm.post_scale;
                 }
             }
         }
@@ -134,7 +143,28 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
                 if (scaled) {
                     x[k] = x[k] * s;
                 }
-                hidden[base + i] = x[k];
+                if (!renorm) {
+                    hidden[base + i] = x[k];
+                }
+            }
+        }
+        // A Conformer layer's closing norm: x replaced by (x × r_x) × the
+        // re-norm gain, written back as the hidden row.
+        if (renorm) {
+            var squares = 0.0;
+            for (var k = 0u; k < per_invocation; k++) {
+                if (index + k * workgroup_size < vec4s) {
+                    squares = squares + dot(x[k], x[k]);
+                }
+            }
+            let r = inverseSqrt(reduce(index, squares) / n + norm.epsilon);
+            workgroupBarrier();   // partial[0] read before Step 3 reduces again
+            for (var k = 0u; k < per_invocation; k++) {
+                let i = index + k * workgroup_size;
+                if (i < vec4s) {
+                    x[k] = (x[k] * r) * renorm_gain[i];
+                    hidden[base + i] = x[k];
+                }
             }
         }
     }
@@ -159,7 +189,11 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     for (var k = 0u; k < per_invocation; k++) {
         let i = index + k * workgroup_size;
         if (i < vec4s) {
-            normed[base + i] = (x[k] * r) * gain[i];
+            if (unit_gain) {
+                normed[base + i] = x[k] * r;
+            } else {
+                normed[base + i] = (x[k] * r) * gain[i];
+            }
         }
     }
 }

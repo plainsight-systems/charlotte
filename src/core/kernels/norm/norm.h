@@ -92,9 +92,10 @@ namespace bllm::kernels {
 //         1,536, which no other norm here has; the width's override covers
 //         it, two vec4s an invocation, the second guarded.
 //     Every binding is declared in every variant, so a launch that does not
-//     add still binds the output buffer and, without a post-norm or a scale,
-//     binds its gain in their places: all read-only, so none aliases a
-//     buffer the kernel writes.
+//     add still binds the output buffer and, without a post-norm, a scale or
+//     a re-norm, binds its gain in their places — with a unit gain, the
+//     output buffer in the gain's: all read-only, so none aliases a buffer
+//     the kernel writes.
 //   - Constants (binding 1), as WGSL lays them out:
 //       struct Norm { epsilon: f32, post_scale: f32 }
 //     Bindings: 2 the gain, 3 the post-norm's gain, 4 the block's output y,
@@ -186,7 +187,7 @@ namespace bllm::kernels {
 
 // One norm of the graph.
 struct NormLaunch {
-    const residency::WeightView* gain;            // never null; F32, one row's width
+    const residency::WeightView* gain;            // F32, one row's width; null for a unit gain
     const residency::WeightView* post_gain;       // Gemma 3's post-norm of y, or null
     bool add;                                     // add y into X first; required by a post-norm
     residency::BufferRange output;                // y: the block's output
@@ -201,6 +202,15 @@ struct NormLaunch {
     bool normalize = true;
     // Rows a token, each normalized on its own: the per-layer inputs' 24.
     std::uint32_t rows_per_token = 1;
+    // What the post-normed y is multiplied by before the add: an audio
+    // encoder's half-step 0.5, else 1.
+    float post_scale = 1.0f;
+    // A Conformer layer's closing norm's gain: X replaced by its norm with it
+    // after the add, or null. Requires `add`.
+    const residency::WeightView* renorm_gain = nullptr;
+    // A unit gain's row width, where `gain` is null; the block's output is
+    // then bound in the gain's place, so it must not be X or normed.
+    std::uint32_t width = 0;
 };
 
 // The launch for one norm. Preconditions: the gains are F32 views of one

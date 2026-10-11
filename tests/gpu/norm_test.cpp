@@ -331,12 +331,12 @@ namespace {
 // after copying x into hidden and y into output, over `tokens` tokens of
 // `rows` rows in all; returns hidden and normed, `rows` rows each.
 Result run_launch(WGPUInstance instance, const gpu::Device& device, const Uploaded& u, kernels::Launch norm,
-                  std::uint32_t tokens, std::uint32_t rows) {
-    const std::uint32_t width = 512;
+                  std::uint32_t tokens, std::uint32_t rows, std::uint32_t width = 512) {
+    const std::string w = std::to_string(width);
     std::vector<kernels::Launch> launches;
     // The copies cover `tokens` rows of the step; copy every row the norm reads.
-    kernels::Launch x = copy_launch(u.view("x_512"), u.hidden, width * (rows / tokens));
-    kernels::Launch y = copy_launch(u.view("y_512"), u.output, width * (rows / tokens));
+    kernels::Launch x = copy_launch(u.view("x_" + w), u.hidden, width * (rows / tokens));
+    kernels::Launch y = copy_launch(u.view("y_" + w), u.output, width * (rows / tokens));
     launches.push_back(std::move(x));
     launches.push_back(std::move(y));
     launches.push_back(std::move(norm));
@@ -417,5 +417,69 @@ TEST_CASE("a norm of several rows a token normalizes each row on its own, with i
         CAPTURE(row);
         const std::vector<double> r(x.begin() + row * 512, x.begin() + (row + 1) * 512);
         check_row(std::span(got.normed).subspan(row * 512, 512), normalized(r, g, epsilon));
+    }
+}
+
+TEST_CASE("an audio encoder's norms: a post-norm at half weight, a re-norm then a norm, a unit gain") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_rows(instance.get(), *device);
+    const auto x = u.floats("x_512"), y = u.floats("y_512"), g = u.floats("gain_512"), pg = u.floats("post_512");
+    const auto added = [&](std::uint32_t row) {
+        const std::vector<double> yr = normalized(
+            std::vector<double>(y.begin() + row * 512, y.begin() + (row + 1) * 512), pg, kEpsilon);
+        std::vector<double> hidden;
+        for (std::uint32_t i = 0; i < 512; ++i) hidden.push_back(x[row * 512 + i] + 0.5 * yr[i]);
+        return hidden;
+    };
+
+    SUBCASE("the post-normed output added at half weight, X then normalized") {
+        kernels::NormLaunch n{&u.view("gain_512"), &u.view("post_512"), true, u.output, u.hidden,
+                              u.normed, kEpsilon, kernels::Rows::EveryToken};
+        n.post_scale = 0.5f;
+        const Result got = run_launch(instance.get(), *device, u, kernels::norm_launch(n), kRows, kRows);
+        for (std::uint32_t row = 0; row < kRows; ++row) {
+            CAPTURE(row);
+            const std::vector<double> hidden = added(row);
+            check_row(std::span(got.hidden).subspan(row * 512, 512), hidden);
+            check_row(std::span(got.normed).subspan(row * 512, 512), normalized(hidden, g, kEpsilon));
+        }
+    }
+
+    SUBCASE("a re-norm: X replaced by its norm with the re-norm gain, then normalized again, or not") {
+        for (const bool normalize : {false, true}) {
+            CAPTURE(normalize);
+            // The re-norm takes post_512 as the layer's closing gain, gain_512
+            // as the next norm's.
+            kernels::NormLaunch n{&u.view("gain_512"), &u.view("post_512"), true, u.output, u.hidden,
+                                  u.normed, kEpsilon, kernels::Rows::EveryToken};
+            n.post_scale = 0.5f;
+            n.renorm_gain = &u.view("post_512");
+            n.normalize = normalize;
+            const Result got = run_launch(instance.get(), *device, u, kernels::norm_launch(n), kRows, kRows);
+            for (std::uint32_t row = 0; row < kRows; ++row) {
+                CAPTURE(row);
+                const std::vector<double> closed = normalized(added(row), pg, kEpsilon);
+                check_row(std::span(got.hidden).subspan(row * 512, 512), closed);
+                if (normalize) check_row(std::span(got.normed).subspan(row * 512, 512), normalized(closed, g, kEpsilon));
+            }
+            if (!normalize) {
+                CHECK(std::all_of(got.normed.begin(), got.normed.end(), [](float f) { return f == 0.0f; }));
+            }
+        }
+    }
+
+    SUBCASE("a unit gain at 1,536 wide, two vec4s an invocation, the second guarded") {
+        const auto x1536 = u.floats("x_1536");
+        kernels::NormLaunch n{nullptr, nullptr, false, u.output, u.hidden, u.normed, kEpsilon,
+                              kernels::Rows::EveryToken};
+        n.width = 1536;
+        const Result got = run_launch(instance.get(), *device, u, kernels::norm_launch(n), kRows, kRows, 1536);
+        const std::vector<float> ones(1536, 1.0f);
+        for (std::uint32_t row = 0; row < kRows; ++row) {
+            CAPTURE(row);
+            const std::vector<double> xr(x1536.begin() + row * 1536, x1536.begin() + (row + 1) * 1536);
+            check_row(std::span(got.normed).subspan(row * 1536, 1536), normalized(xr, ones, kEpsilon));
+        }
     }
 }
