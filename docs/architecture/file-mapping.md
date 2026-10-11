@@ -46,7 +46,8 @@ module's own header, and contract 11 in the two boundary files.
 | `web/chat.js` | H | the conversation panel: renders each turn through the template, streams the reply, stops it |
 | `web/conversation.js` | H | messages as the template sees them, and the conversation shortened to fit the context |
 | `web/thinking_stream.js` | H | a streaming reply split into reasoning and answer, each piece read once |
-| `web/search.js` | H | the search panel, for a model that embeds: a document's passages embedded one at a time, a query embedded and the passages ranked against it |
+| `web/search.js` | H | the search panel, for a model that embeds: a document's passages and any photos embedded one at a time into one index, a query embedded and both ranked against it |
+| `web/photos.js` | H | the photos chosen for the search panel: added or dropped, each checked by decoding it, shown as thumbnails |
 | `web/passages.js` | H | a document cut into passages, and a passage the runtime refused cut into pieces that fit |
 | `web/search_index.js` | H | the passages' vectors, and a query ranked against them by dot product |
 | `web/companion.js` | H | a loaded model's companion file: checked, its ranges downloaded and verified, loaded, the first time the page needs it |
@@ -54,9 +55,9 @@ module's own header, and contract 11 in the two boundary files.
 | `web/fetch.js` | L | range and streaming fetch, with progress |
 | `web/preflight.js` | L | fetching the front of a file until the reader has its whole index |
 | `web/opfs.js` | L | the model file cache; a file is listed only once complete and verified |
-| `web/download.js` | L | streaming a model into the cache, verifying size and SHA-256 as it arrives |
+| `web/download.js` | L | streaming a model, or a companion's ranges, into the cache, verifying size and SHA-256 as it arrives |
 | `web/sha256.js` | L | SHA-256 over a stream |
-| `web/load.js` | L | handing a cached file to the runtime in chunks, one at a time |
+| `web/load.js` | L | handing a cached file to the runtime in chunks, one at a time, each at its offset in the published file |
 | `web/duplicates.js` | L | confirming candidate duplicates by comparing their bytes in the cached file |
 | `web/worker.js` | boundary | owns the WASM module; the JavaScript side of every crossing |
 | `web/protocol.js` | boundary | the message kinds both sides of the worker use |
@@ -133,7 +134,7 @@ and production never materialises a dequantized weight.
 | **Encode** | `core/runtime/embedder` M · `core/arch/<arch>` A · `core/graph/encoder` A · `core/kernels/*` E · `core/kernels/program` D | yes |
 | **Pool** | `core/kernels/pool` E · `core/kernels/matmul` E | no |
 | **Read back** | `core/kernels/program` D · the boundary | yes |
-| **Image**, decoded | `web/image_input.js` N | no |
+| **Image**, decoded | `web/photos.js` H · `web/image_input.js` N | no |
 | **Prepare** | `core/media` N | no |
 | **Vision step** | `core/runtime/vision` M · `core/arch/<projector>` A · `core/graph/vision` A · `core/kernels/*` E · `core/kernels/program` D | yes |
 | **Place** | `core/runtime/vision` M · `core/kernels/program` D, its link · `core/kernels/gather` E | yes |

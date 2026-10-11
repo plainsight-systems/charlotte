@@ -28,6 +28,7 @@
 <g class="gray"><rect x="448" y="156" width="180" height="44" rx="4"/><text class="th" x="538" y="175" text-anchor="middle">task_prompt.js</text><text class="ts" x="538" y="191" text-anchor="middle">H · an embedding's task prompt</text></g>
 <g class="gray"><rect x="52" y="208" width="180" height="44" rx="4"/><text class="th" x="142" y="227" text-anchor="middle">companion.js</text><text class="ts" x="142" y="243" text-anchor="middle">H · companion, on first use</text></g>
 <g class="gray"><rect x="250" y="208" width="180" height="44" rx="4"/><text class="th" x="340" y="227" text-anchor="middle">image_input.js</text><text class="ts" x="340" y="243" text-anchor="middle">N · decode, bands of rows</text></g>
+<g class="gray"><rect x="448" y="208" width="180" height="44" rx="4"/><text class="th" x="538" y="227" text-anchor="middle">photos.js</text><text class="ts" x="538" y="243" text-anchor="middle">H · photos for the search</text></g>
 <line class="arr" x1="340" y1="262" x2="340" y2="282" marker-end="url(#a)"/>
 <g class="coral"><rect x="40" y="284" width="600" height="52" rx="4"/><text class="th" x="340" y="303" text-anchor="middle">The boundary: worker.js ⇄ bindings.cpp</text><text class="ts" x="340" y="319" text-anchor="middle">preflight · load: begin, chunk, finish · generate · cancel · embed · companion · image bands</text></g>
 <line class="arr" x1="340" y1="336" x2="340" y2="356" marker-end="url(#a)"/>
