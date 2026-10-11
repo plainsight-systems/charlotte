@@ -13,11 +13,23 @@ Binding whole(const residency::BufferRange& range) { return {range.buffer, range
 
 // One workgroup a step: a launch over the last token, one row's
 // invocations (interface.h); its constants, the row's vec4s.
+// Binding 1, as pool.wgsl's Pool lays it out; mean and unit read vec4s
+// alone.
+struct Constants {
+    std::uint32_t vec4s;
+    std::uint32_t pooling = 0;
+    float epsilon = 0;
+};
+
+std::vector<std::byte> bytes_of(const Constants& c) {
+    std::vector<std::byte> out(sizeof c);
+    std::memcpy(out.data(), &c, sizeof c);
+    return out;
+}
+
 Launch one_workgroup(std::string_view entry_point, const residency::BufferRange& in,
                      const residency::BufferRange& out, std::uint32_t width) {
-    const std::uint32_t vec4s = width / 4;
-    std::vector<std::byte> constants(sizeof vec4s);
-    std::memcpy(constants.data(), &vec4s, sizeof vec4s);
+    std::vector<std::byte> constants = bytes_of({width / 4});
     Launch launch{shaders::pool,
                   nullptr,
                   std::move(constants),
@@ -39,6 +51,21 @@ Launch mean_launch(const residency::BufferRange& normed, const residency::Buffer
 Launch unit_launch(const residency::BufferRange& projected, const residency::BufferRange& embedding,
                    std::uint32_t dimensions) {
     return one_workgroup("unit", projected, embedding, dimensions);
+}
+
+Launch grid_launch(const residency::BufferRange& patches, const residency::BufferRange& pooled, std::uint32_t width,
+                   std::uint32_t pooling, float epsilon) {
+    Launch launch{shaders::pool,
+                  nullptr,
+                  bytes_of({width / 4, pooling, epsilon}),
+                  {whole(patches), whole(pooled)},
+                  kWorkgroupSize,
+                  kWorkgroupSize,
+                  Rows::EveryToken,
+                  {}};
+    launch.entry_point = "grid";
+    launch.row_divisor = pooling * pooling;
+    return launch;
 }
 
 }  // namespace bllm::kernels

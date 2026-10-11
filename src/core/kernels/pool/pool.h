@@ -35,9 +35,21 @@ namespace bllm::kernels {
 //     workgroup memory, 8 levels, as kernels/norm/norm.h reduces a row; the
 //     inverse square root once; each invocation scales the vec4s it read.
 //
-//   - Constants (binding 1): struct Pool { vec4s: u32 }, the row's width over
-//     4 — a loop bound, not a workgroup array's size, so a uniform serves
-//     and one pipeline each for any width.
+//   - Constants (binding 1): struct Pool { vec4s: u32, pooling: u32,
+//     epsilon: f32 }, the row's width over 4 — a loop bound, not a
+//     workgroup array's size, so a uniform serves and one pipeline each for
+//     any width — then grid's k and ε, which mean and unit leave unread.
+//   - `grid`, a vision encoder's (graph/vision.h): soft token r, at column
+//     u and row v of the pooled grid of C / k columns, the step's `columns`
+//     C, is the mean of its k × k patches of the input, dy then dx in order,
+//     each vec4 summed then divided by k², as ggml's average pool; then the
+//     row RMS-normalized without a gain — x × inverseSqrt(mean of x² + ε),
+//     unit's tree for the sum — at ε the file's over W, llama.cpp's √W scale
+//     before that norm folded in, so no pass multiplies by it. One workgroup
+//     of 256 a pooled row, its rows the step's patches over k² (row_divisor,
+//     kernels/interface.h): a launch over every row, not the last. Bindings 2
+//     the patches, read-only, and 3 the pooled rows, written. For W = 768,
+//     192 working invocations, 9 reads of a vec4 and one write each.
 //   - Both are launches over the last token (interface.h): one row's
 //     workgroups, one, in a step that asks for logits, as an encoder's
 //     one step does.
@@ -94,6 +106,17 @@ namespace bllm::kernels {
 // limit at every width allowed.
 [[nodiscard]] Launch mean_launch(const residency::BufferRange& normed, const residency::BufferRange& pooled,
                                  std::uint32_t width);
+// A vision step's soft tokens' rows: each of its patches' pooled grid's
+// rows, the mean of its k × k patches of `patches`, W floats each,
+// RMS-normalized without a gain at `epsilon` — the file's ε over W, the √W
+// scale llama.cpp applies before that norm folded in (graph/vision.h) —
+// into `pooled`. One workgroup of 256 a pooled row, the step's patches
+// over k² rows (row_divisor k²). Preconditions: W at most 4,096 and a
+// multiple of 4; the step's `columns` a multiple of k, and its patches of
+// k² × the pooled rows.
+[[nodiscard]] Launch grid_launch(const residency::BufferRange& patches, const residency::BufferRange& pooled,
+                                 std::uint32_t width, std::uint32_t pooling, float epsilon);
+
 [[nodiscard]] Launch unit_launch(const residency::BufferRange& projected, const residency::BufferRange& embedding,
                                  std::uint32_t dimensions);
 

@@ -137,8 +137,70 @@ TEST_CASE("pooling's launches: one workgroup a step, over the last token, each i
         CHECK(l.rows == kernels::Rows::LastToken);
         CHECK(l.invocations_per_row == l.workgroup_size);
         CHECK(l.bindings.size() == 2);
-        REQUIRE(l.constants.size() == 4);
+        REQUIRE(l.constants.size() == 12);   // vec4s, then grid's k and ε, unread here
     }
     CHECK(kernels::mean_launch(r, r, 512).entry_point == "mean");
     CHECK(kernels::unit_launch(r, r, 768).entry_point == "unit");
+}
+
+TEST_CASE("a vision step's patches pool k x k into soft tokens, each normalized without a gain") {
+    // A grid of C × R patches of W = 512 (the buffers' width), pooled 3 × 3:
+    // each soft token the mean of its nine patches, then RMS-normalized at
+    // ε / W, against f64 from the same patches.
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_buffers(instance.get(), *device);
+    constexpr std::uint32_t kPooling = 3;
+    const float epsilon = 1e-6f / kWidth;
+    for (const auto [columns, rows] : {std::pair{3u, 3u}, std::pair{6u, 9u}, std::pair{21u, 24u}}) {
+        CAPTURE(columns);
+        CAPTURE(rows);
+        const std::uint32_t patches = columns * rows;
+        REQUIRE(patches <= kMaxTokens);
+        run_step(instance.get(), *build_program(instance.get(), *u.upload, {fill_launch(u.normed, 11, 2.0f, false)}),
+                 1);
+        const auto in = read_floats(instance.get(), *device, u.upload->buffer(u.normed.buffer), 0,
+                                    std::size_t{patches} * kWidth);
+        const auto program = build_program(instance.get(), *u.upload,
+                                            {kernels::grid_launch(u.normed, u.pooled, kWidth, kPooling, epsilon)});
+        kernels::Step step{};
+        step.tokens = patches;
+        step.columns = columns;
+        const StepOutcome ran = try_step(instance.get(), *program, step);
+        REQUIRE_MESSAGE(ran.error == kernels::ProgramError::Ok, ran.message);
+        const std::uint32_t pooled_columns = columns / kPooling;
+        const std::uint32_t tokens = patches / (kPooling * kPooling);
+        const auto got = read_floats(instance.get(), *device, u.upload->buffer(u.pooled.buffer), 0,
+                                     std::size_t{tokens} * kWidth);
+        for (std::uint32_t r = 0; r < tokens; ++r) {
+            const std::uint32_t pu = r % pooled_columns, pv = r / pooled_columns;
+            std::vector<double> mean(kWidth, 0.0);
+            for (std::uint32_t dy = 0; dy < kPooling; ++dy) {
+                for (std::uint32_t dx = 0; dx < kPooling; ++dx) {
+                    const std::uint32_t patch = (kPooling * pv + dy) * columns + kPooling * pu + dx;
+                    for (std::uint32_t i = 0; i < kWidth; ++i) mean[i] += in[std::size_t{patch} * kWidth + i];
+                }
+            }
+            double squares = 0, largest = 0;
+            for (double& m : mean) {
+                m /= kPooling * kPooling;
+                squares += m * m;
+            }
+            const double scale = 1.0 / std::sqrt(squares / kWidth + epsilon);
+            for (const double m : mean) largest = std::max(largest, std::abs(m * scale));
+            for (std::uint32_t i = 0; i < kWidth; ++i) {
+                // The norm's margin against the row's largest, and the mean's
+                // nine adds and division.
+                const double error = std::abs(got[std::size_t{r} * kWidth + i] - mean[i] * scale);
+                if (!(error <= largest * std::ldexp(1.0, -17) + std::abs(mean[i] * scale) * gamma(10))) {
+                    FAIL_CHECK("soft token " << r << " value " << i << " off by " << error);
+                    break;
+                }
+            }
+        }
+        // Rows past the soft tokens' are not written.
+        const auto past = read_floats(instance.get(), *device, u.upload->buffer(u.pooled.buffer),
+                                      std::size_t{tokens} * kWidth * 4, kWidth);
+        CHECK(std::all_of(past.begin(), past.end(), [](float f) { return f == 0.0f; }));
+    }
 }
