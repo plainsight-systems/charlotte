@@ -20,6 +20,15 @@ test('an entry missing a field is rejected, naming the field', () => {
     (error) => error instanceof CatalogError && /sha256/.test(error.message));
 });
 
+test("an embedder's prompts are both strings, or the entry is refused naming the one at fault", () => {
+  const entry = { id: 'e', name: 'E', url: 'https://a/e.gguf', sizeBytes: 1, sha256: '0'.repeat(64) };
+  const [model] = parseCatalog({ models: [{ ...entry, prompts: { query: 'q: ', document: 'd: ' } }] });
+  assert.deepEqual(model.prompts, { query: 'q: ', document: 'd: ' });
+  assert.equal(model.measured, false);
+  assert.throws(() => parseCatalog({ models: [{ ...entry, prompts: { query: 'q: ' } }] }),
+    (error) => error instanceof CatalogError && /prompts\.document/.test(error.message));
+});
+
 test('a Hugging Face page URL becomes its download URL', () => {
   const model = modelFromUrl('https://huggingface.co/org/repo/blob/main/Some-Model-Q4_0.gguf');
   assert.equal(model.url, 'https://huggingface.co/org/repo/resolve/main/Some-Model-Q4_0.gguf');

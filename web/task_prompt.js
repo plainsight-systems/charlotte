@@ -18,3 +18,10 @@
 // Verification: tests/web/task_prompt.test.js — each task's prompt before
 // the text, the text unchanged; null prompts give the text as written; an
 // unknown task is refused, naming it.
+
+const TASKS = ['query', 'document'];
+
+export function taskPrompt(prompts, task, text) {
+  if (!TASKS.includes(task)) throw new Error(`"${task}" is not a task; the tasks are ${TASKS.join(' and ')}`);
+  return prompts === null ? text : prompts[task] + text;
+}

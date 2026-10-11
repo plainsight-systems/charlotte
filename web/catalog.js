@@ -30,6 +30,13 @@ export function parseCatalog(json) {
         throw new CatalogError(`model ${position + 1} needs "${field}" as a ${type}`);
       }
     }
+    if (entry.prompts !== undefined) {
+      for (const task of ['query', 'document']) {
+        if (typeof entry.prompts?.[task] !== 'string') {
+          throw new CatalogError(`model ${position + 1} needs "prompts.${task}" as a string`);
+        }
+      }
+    }
     return { ...entry, measured: entry.policy !== undefined };
   });
 }

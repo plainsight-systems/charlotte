@@ -20,3 +20,40 @@
 // Verification: tests/web/search_index.test.js — a ranking over hand-made
 // unit vectors, best first, its scores their dot products; ties in document
 // order; k past P gives P; a vector of another length refused by name.
+
+export function createIndex(dimensions) {
+  const passages = [];
+  const vectors = [];
+
+  return {
+    size: () => passages.length,
+
+    add(passage, vector) {
+      if (vector.length !== dimensions) {
+        throw new Error(`a vector of ${vector.length} numbers cannot join an index of ${dimensions}`);
+      }
+      passages.push(passage);
+      vectors.push(vector);
+    },
+
+    rank(query, k) {
+      if (query.length !== dimensions) {
+        throw new Error(`a query of ${query.length} numbers cannot rank an index of ${dimensions}`);
+      }
+      // The best so far, best first; a later passage enters only by beating
+      // one, so an equal score keeps document order.
+      const best = [];
+      for (let p = 0; p < vectors.length; p++) {
+        const vector = vectors[p];
+        let score = 0;
+        for (let i = 0; i < dimensions; i++) score += vector[i] * query[i];
+        if (best.length === k && score <= best[k - 1].score) continue;
+        let at = best.length;
+        while (at > 0 && best[at - 1].score < score) at--;
+        best.splice(at, 0, { passage: passages[p], score });
+        if (best.length > k) best.pop();
+      }
+      return best;
+    },
+  };
+}

@@ -26,3 +26,54 @@
 // sentence ends, then spaces, then anywhere, a surrogate pair kept whole;
 // the pieces, joined, are the passage less the whitespace at the cuts; a
 // passage of one code point gives null.
+
+export function passagesOf(document) {
+  return document.split(/\r?\n\s*\r?\n/).map((paragraph) => paragraph.trim()).filter((p) => p !== '');
+}
+
+// A sentence's end: a stop, any closing quotes or brackets, then a space —
+// or a full-width stop, which needs none.
+const SENTENCE_END = /[.!?]["'”’)\]]*(?=\s)|[。！？]/g;
+
+export function piecesOf(passage, { textTokens, contextTokens }) {
+  const text = passage.trim();
+  const codePoints = [...text].length;
+  if (codePoints <= 1) return null;
+  const target = Math.max(1, Math.floor((contextTokens * 3) / 4));
+  const count = Math.min(codePoints, Math.max(2, Math.ceil(textTokens / target)));
+
+  const sentenceEnds = [...text.matchAll(SENTENCE_END)].map((m) => m.index + m[0].length);
+  const spaces = [...text.matchAll(/\s/g)].map((m) => m.index);
+  // A cut moves no further than half a piece, so the cuts stay in order.
+  const reach = text.length / (2 * count);
+
+  const cuts = [0];
+  for (let i = 1; i < count; i++) {
+    const ideal = Math.round((i * text.length) / count);
+    const cut = nearest(sentenceEnds, ideal, reach) ?? nearest(spaces, ideal, reach) ?? wholeCodePoint(text, ideal);
+    if (cut > cuts.at(-1) && cut < text.length) cuts.push(cut);
+  }
+  cuts.push(text.length);
+  const pieces = [];
+  for (let i = 1; i < cuts.length; i++) {
+    const piece = text.slice(cuts[i - 1], cuts[i]).trim();
+    if (piece !== '') pieces.push(piece);
+  }
+  return pieces;
+}
+
+// The position in `positions` nearest `ideal` within `reach`, or null.
+function nearest(positions, ideal, reach) {
+  let best = null;
+  for (const position of positions) {
+    if (Math.abs(position - ideal) > reach) continue;
+    if (best === null || Math.abs(position - ideal) < Math.abs(best - ideal)) best = position;
+  }
+  return best;
+}
+
+// `at`, or one past it where it falls inside a surrogate pair.
+function wholeCodePoint(text, at) {
+  const before = text.charCodeAt(at - 1);
+  return before >= 0xd800 && before <= 0xdbff ? at + 1 : at;
+}
