@@ -112,7 +112,7 @@ test("a companion's ranges are fetched in order into one file, committed under t
   const cache = recordingCache();
   const server = servingRanges(COMPANION);
   const progress = [];
-  await downloadRanges({ name: 'E images', vision: VISION, openRange: server.open, cache,
+  await downloadRanges({ name: 'E images', entry: VISION, openRange: server.open, cache,
     onProgress: (received, total) => progress.push([received, total]) });
   assert.deepEqual(server.asked, [[VISION.url, 0, 600], [VISION.url, 3_000, 5_000]]);
   assert.equal(cache.record.key, rangesCacheKey(VISION));
@@ -127,7 +127,7 @@ test('ranges whose bytes do not match their hash are discarded, never committed'
   const cache = recordingCache();
   const changed = Buffer.from(COMPANION);
   changed[3_100] ^= 1;
-  await assert.rejects(downloadRanges({ name: 'E', vision: VISION, openRange: servingRanges(changed).open, cache }),
+  await assert.rejects(downloadRanges({ name: 'E', entry: VISION, openRange: servingRanges(changed).open, cache }),
     (error) => error instanceof DownloadError && /SHA-256/.test(error.message));
   assert.equal(cache.record.committed, null);
   assert.equal(cache.record.discarded, true);
@@ -137,7 +137,7 @@ test('a range that ends early, or a server whose file differs in size, is discar
   for (const [server, pattern] of [[servingRanges(COMPANION, { short: 1 }), /range ended/],
     [servingRanges(COMPANION, { totalSize: 4_999 }), /model list says/]]) {
     const cache = recordingCache();
-    await assert.rejects(downloadRanges({ name: 'E', vision: VISION, openRange: server.open, cache }), pattern);
+    await assert.rejects(downloadRanges({ name: 'E', entry: VISION, openRange: server.open, cache }), pattern);
     assert.equal(cache.record.committed, null);
     assert.equal(cache.record.discarded, true);
   }

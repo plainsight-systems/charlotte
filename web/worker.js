@@ -57,13 +57,13 @@ const handlers = {
   [Request.GENERATE]: (runtime, { id, prompt, sampling, seed, maxTokens }, { token }) =>
     runtime.generate({ id, prompt, sampling, seed, maxTokens, onText: token }),
   [Request.EMBED]: (runtime, { text, image }) => runtime.embed(text, image === true),
-  [Request.PREFLIGHT_COMPANION]: (runtime, { bytes, totalSize, vision, memoryBudget }) =>
-    runtime.companionPreflight(bytes, totalSize, vision, memoryBudget),
-  [Request.LOAD_COMPANION]: async (runtime, { id, name, vision, memoryBudget, maxChunk }, { progress }) => {
+  [Request.PREFLIGHT_COMPANION]: (runtime, { media, bytes, totalSize, entry, memoryBudget }) =>
+    runtime.companionPreflight(media, bytes, totalSize, entry, memoryBudget),
+  [Request.LOAD_COMPANION]: async (runtime, { id, media, name, entry, memoryBudget, maxChunk }, { progress }) => {
     const controller = new AbortController();
     loads.set(id, controller);
     try {
-      return await runtime.loadCompanion({ name, vision, memoryBudget, maxChunk, onProgress: progress,
+      return await runtime.loadCompanion({ kind: media, name, entry, memoryBudget, maxChunk, onProgress: progress,
         signal: controller.signal });
     } finally {
       loads.delete(id);

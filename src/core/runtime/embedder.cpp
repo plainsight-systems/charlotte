@@ -1,6 +1,7 @@
 #include "core/runtime/embedder.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -8,6 +9,15 @@
 #include <vector>
 
 namespace bllm::runtime {
+
+namespace {
+
+constexpr std::size_t kMediaKinds = 2;
+
+constexpr std::size_t index_of(arch::MediaKind kind) noexcept { return static_cast<std::size_t>(kind); }
+static_assert(index_of(arch::MediaKind::Image) < kMediaKinds && index_of(arch::MediaKind::Audio) < kMediaKinds);
+
+}  // namespace
 
 struct Embedder::State {
     std::unique_ptr<tokenizer::Tokenizer> tokenizer;
@@ -20,14 +30,15 @@ struct Embedder::State {
     kernels::Step step{};
     bool lost = false;   // a step reported the device lost
 
-    // The vision encoder, once attached (runtime/vision.h).
-    std::unique_ptr<Vision> vision;
-    ImageTokens image_tokens{};
+    // A stage a kind, once attached (runtime/media_stage.h), indexed by
+    // MediaKind, and each kind's tokens.
+    std::array<std::unique_ptr<MediaStage>, kMediaKinds> stages;
+    std::array<MediaTokens, kMediaKinds> media_tokens{};
     std::uint32_t width = 0;
-    // The running encode's vision step, where it has one: its failure,
+    // The running encode's media step, where it has one: its failure,
     // reported in the text step's place.
-    kernels::ProgramError vision_error = kernels::ProgramError::Ok;
-    std::string vision_message;
+    kernels::ProgramError media_error = kernels::ProgramError::Ok;
+    std::string media_message;
 
     // The running encode.
     EmbedCallback done = nullptr;
@@ -56,11 +67,11 @@ void on_step(kernels::ProgramError error, std::string_view message, std::span<co
     result.tokens = s.encoded;
     result.context = s.context;
     std::span<const float> vector;
-    // The vision step ran before this one and failed: its failure is the
+    // The media step ran before this one and failed: its failure is the
     // encode's.
-    if (s.vision_error != kernels::ProgramError::Ok) {
-        error = s.vision_error;
-        message = s.vision_message;
+    if (s.media_error != kernels::ProgramError::Ok) {
+        error = s.media_error;
+        message = s.media_message;
     }
     if (error != kernels::ProgramError::Ok) {
         if (error == kernels::ProgramError::DeviceLost) s.lost = true;
@@ -82,13 +93,13 @@ void on_step(kernels::ProgramError error, std::string_view message, std::span<co
     s.done(result, vector, s.userdata);
 }
 
-// The vision step's report: nothing to deliver, a failure kept for the text
+// The media step's report: nothing to deliver, a failure kept for the text
 // step's report, which follows it in queue order.
-void on_vision(kernels::ProgramError error, std::string_view message, std::span<const std::byte>, void* userdata) {
+void on_media(kernels::ProgramError error, std::string_view message, std::span<const std::byte>, void* userdata) {
     Embedder::State& s = *static_cast<Embedder::State*>(userdata);
-    if (error != kernels::ProgramError::Ok && s.vision_error == kernels::ProgramError::Ok) {
-        s.vision_error = error;
-        s.vision_message.assign(message);
+    if (error != kernels::ProgramError::Ok && s.media_error == kernels::ProgramError::Ok) {
+        s.media_error = error;
+        s.media_message.assign(message);
     }
 }
 
@@ -110,25 +121,27 @@ Embedder::Embedder(std::unique_ptr<tokenizer::Tokenizer> tokenizer, std::unique_
 Embedder::~Embedder() {
     // An encode running finishes Cancelled: the programs, destroyed, report
     // their steps so, and this state lives until its callback has run.
-    state_->vision.reset();
+    for (auto& stage : state_->stages) stage.reset();
     state_->program.reset();
 }
 
-void Embedder::attach(std::unique_ptr<Vision> vision, ImageTokens tokens, std::uint32_t width) {
-    state_->vision = std::move(vision);
-    state_->image_tokens = tokens;
+void Embedder::attach(arch::MediaKind kind, std::unique_ptr<MediaStage> stage, MediaTokens tokens,
+                      std::uint32_t width) {
+    state_->stages[index_of(kind)] = std::move(stage);
+    state_->media_tokens[index_of(kind)] = tokens;
     state_->width = width;
 }
 
-Vision* Embedder::vision() noexcept { return state_->vision.get(); }
+MediaStage* Embedder::stage(arch::MediaKind kind) noexcept { return state_->stages[index_of(kind)].get(); }
 
 const tokenizer::Tokenizer& Embedder::tokenizer() const noexcept { return *state_->tokenizer; }
 
 EmbedResult Embedder::start(std::string_view text, EmbedCallback done, void* userdata) {
-    return start(text, false, done, userdata);
+    return start(text, std::nullopt, done, userdata);
 }
 
-EmbedResult Embedder::start(std::string_view text, bool image, EmbedCallback done, void* userdata) {
+EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind> media, EmbedCallback done,
+                            void* userdata) {
     State& s = *state_;
     EmbedResult result;
     result.context = s.context;
@@ -140,14 +153,15 @@ EmbedResult Embedder::start(std::string_view text, bool image, EmbedCallback don
         result.error = EmbedError::DeviceLost;
         return result;
     }
-    // The image's rows: its soft tokens and the two tokens around them, in
-    // the placeholder's place, so the text may make M + 1 fewer.
-    const std::uint32_t rows = image && s.vision != nullptr ? s.vision->ready_tokens() : 0;
-    if (image && rows == 0) {
-        result.error = EmbedError::ImageNotReady;
+    // The medium's rows and the two tokens around them, in the placeholder's
+    // place, so the text may make M + 1 fewer.
+    MediaStage* const stage = media ? s.stages[index_of(*media)].get() : nullptr;
+    const std::uint32_t rows = stage != nullptr ? stage->ready_rows() : 0;
+    if (media && rows == 0) {
+        result.error = EmbedError::MediaNotReady;
         return result;
     }
-    const std::uint32_t ends = (s.ends.bos ? 1 : 0) + (s.ends.eos ? 1 : 0) + (image ? rows + 1 : 0);
+    const std::uint32_t ends = (s.ends.bos ? 1 : 0) + (s.ends.eos ? 1 : 0) + (media ? rows + 1 : 0);
     const std::uint32_t limit = s.context > ends ? s.context - ends : 0;
     s.tokens.clear();
     if (s.ends.bos) s.tokens.push_back(*s.ends.bos);
@@ -165,27 +179,31 @@ EmbedResult Embedder::start(std::string_view text, bool image, EmbedCallback don
         return result;
     }
     if (s.ends.eos) s.tokens.push_back(*s.ends.eos);
-    // The placeholder: once with an image, never without.
+    // Each placeholder of an attached kind, or the encode's: the encode's
+    // kind's once, every other's never.
     std::size_t placeholder = s.tokens.size();
-    std::size_t placeholders = 0;
-    if (s.vision != nullptr || image) {
+    for (std::size_t k = 0; k < kMediaKinds; ++k) {
+        const bool carried = media && index_of(*media) == k;
+        if (s.stages[k] == nullptr && !carried) continue;
+        std::size_t placeholders = 0;
         for (std::size_t i = 0; i < s.tokens.size(); ++i) {
-            if (s.tokens[i] == s.image_tokens.placeholder) {
-                placeholder = i;
+            if (s.tokens[i] == s.media_tokens[k].placeholder) {
+                if (carried) placeholder = i;
                 ++placeholders;
             }
         }
+        if (placeholders != (carried ? 1u : 0u)) {
+            result.error = EmbedError::Placeholder;
+            return result;
+        }
     }
-    if (placeholders != (image ? 1u : 0u)) {
-        result.error = EmbedError::Placeholder;
-        return result;
-    }
-    // Replaced by the image's opening token, its rows and its closing token;
+    // Replaced by the kind's opening token, its rows and its closing token;
     // a row's identifier is never read, the copy fills it (gather.h).
-    if (image) {
-        s.tokens[placeholder] = s.image_tokens.begin;
+    if (media) {
+        const MediaTokens& tokens = s.media_tokens[index_of(*media)];
+        s.tokens[placeholder] = tokens.begin;
         s.tokens.insert(s.tokens.begin() + static_cast<std::ptrdiff_t>(placeholder) + 1, rows + 1, tokenizer::TokenId{0});
-        s.tokens[placeholder + 1 + rows] = s.image_tokens.end;
+        s.tokens[placeholder + 1 + rows] = tokens.end;
     }
     // The least count admission takes is a lower bound: counted again, ends
     // included, before the step is written, which holds kPrefillBlock
@@ -210,21 +228,21 @@ EmbedResult Embedder::start(std::string_view text, bool image, EmbedCallback don
     s.userdata = userdata;
     s.encoded = s.tokens.size();
     s.in_flight = state_;
-    s.vision_error = kernels::ProgramError::Ok;
-    s.vision_message.clear();
-    if (!image) {
+    s.media_error = kernels::ProgramError::Ok;
+    s.media_message.clear();
+    if (!media) {
         s.program->run(s.step, on_step, &s);
         result.tokens = s.encoded;
         return result;
     }
-    // The vision step, then the text step with the image's rows copied into
+    // The media step, then the text step with the medium's rows copied into
     // its hidden rows before its pass: two submits, in queue order, with no
     // wait between them (GPU.6).
     s.step.media_first = static_cast<std::uint32_t>(placeholder + 1);
     s.step.media_rows = rows;
-    s.vision->run(on_vision, &s);
+    stage->run(on_media, &s);
     const std::uint64_t row_bytes = std::uint64_t{s.width} * sizeof(float);
-    const kernels::RunCopy copy{&s.vision->link(), 0, s.step.media_first * row_bytes, rows * row_bytes};
+    const kernels::RunCopy copy{&stage->link(), 0, s.step.media_first * row_bytes, rows * row_bytes};
     s.program->run(s.step, {}, std::span(&copy, 1), on_step, &s);
     result.tokens = s.encoded;
     return result;

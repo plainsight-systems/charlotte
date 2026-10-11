@@ -177,18 +177,18 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
     },
 
     // A companion's verdict beside the loaded model, from its header.
-    companionPreflight: async (bytes, totalSize, vision, memoryBudget) => {
+    companionPreflight: async (kind, bytes, totalSize, entry, memoryBudget) => {
       const limits = await deviceLimits;
       return withBytesInModule(module, bytes, (pointer, length) =>
-        withRanges(module, vision.ranges, (ranges, count) => callModule((call) =>
-          module._bllm_companion_preflight(call, pointer, length, totalSize, ranges, count,
-            vision.tokens.least, vision.tokens.most, limits?.maxBufferSize ?? 0,
+        withRanges(module, entry.ranges, (ranges, count) => callModule((call) =>
+          module._bllm_companion_preflight(call, kindIndex(kind), pointer, length, totalSize, ranges, count,
+            entry.tokens?.least ?? 0, entry.tokens?.most ?? 0, limits?.maxBufferSize ?? 0,
             limits?.maxStorageBufferBindingSize ?? 0, limits?.minStorageBufferOffsetAlignment ?? 0,
             memoryBudget ?? NaN))));
     },
 
     // Loads the cached ranges of a companion beside the loaded model.
-    loadCompanion: async ({ name, vision, memoryBudget, maxChunk, onProgress, signal }) => {
+    loadCompanion: async ({ kind, name, entry, memoryBudget, maxChunk, onProgress, signal }) => {
       const root = await navigator.storage.getDirectory();
       const handle = await (await root.getFileHandle(name)).createSyncAccessHandle();
       try {
@@ -196,17 +196,18 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
           const read = handle.read(module.HEAPU8.subarray(pointer, pointer + length), { at: offset });
           if (read !== length) throw new Error(`the cached file ended early, at byte ${offset + read}`);
         };
-        const headerBytes = vision.ranges[0][1];
+        const headerBytes = entry.ranges[0][1];
         let chunkPointer = 0;
         return await streamFile({
-          size: handle.getSize(), ranges: vision.ranges, chunkBytes: maxChunk, signal,
+          size: handle.getSize(), ranges: entry.ranges, chunkBytes: maxChunk, signal,
           begin: async ({ maxChunk: chunkBytes }) => {
             const prefix = module._malloc(headerBytes);
             try {
               readInto(prefix, 0, headerBytes);
-              chunkPointer = settled(await withRanges(module, vision.ranges, (ranges, count) =>
-                callModule((call) => module._bllm_companion_load_begin(call, prefix, headerBytes, vision.sizeBytes,
-                  ranges, count, chunkBytes, vision.tokens.least, vision.tokens.most, memoryBudget ?? NaN))))
+              chunkPointer = settled(await withRanges(module, entry.ranges, (ranges, count) =>
+                callModule((call) => module._bllm_companion_load_begin(call, kindIndex(kind), prefix, headerBytes,
+                  entry.sizeBytes, ranges, count, chunkBytes, entry.tokens?.least ?? 0, entry.tokens?.most ?? 0,
+                  memoryBudget ?? NaN))))
                 .chunkPointer;
             } finally {
               module._free(prefix);
@@ -216,8 +217,8 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
           send: async ({ offset, length }) =>
             settled(await callModule((call) => module._bllm_companion_load_chunk(call, offset, length))),
           finish: async () => {
-            const { imageTokens } = settled(await callModule((call) => module._bllm_companion_load_finish(call)));
-            return { imageTokens };
+            const { ok, ...answer } = settled(await callModule((call) => module._bllm_companion_load_finish(call)));
+            return answer;
           },
           onProgress: (done, total) => onProgress?.({ phase: 'load', done, total }),
         });
@@ -397,6 +398,13 @@ function u32s(values) {
   const words = new DataView(new ArrayBuffer(Math.max(4, values.length * 4)));
   values.forEach((v, i) => words.setUint32(i * 4, v, true));
   return words.buffer;
+}
+
+// A companion's kind as the module reads it (src/wasm/bindings.cpp).
+function kindIndex(kind) {
+  const index = ['image', 'audio'].indexOf(kind);
+  if (index === -1) throw new Error(`no companion of kind "${kind}"`);
+  return index;
 }
 
 // A list of [begin, end) ranges as pairs of doubles in the module's memory,

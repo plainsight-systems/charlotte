@@ -105,10 +105,19 @@ export class CompanionError extends Error {
   }
 }
 
+// Each kind's catalog field, what its cache entry is listed as, and what the
+// state calls its encoder.
+const KINDS = {
+  image: { field: 'vision', listed: 'images', encoder: 'image encoder' },
+  audio: { field: 'audio', listed: 'audio', encoder: 'audio encoder' },
+};
+
 export function createCompanion({
-  client, cache, onChange, onCacheChanged, loadPolicyOf = (model) => model.policy?.load,
+  kind, client, cache, onChange, onCacheChanged, loadPolicyOf = (model) => model.policy?.load,
   fetchRange = fetchRangeOf, openRange = openRangeOf,
 }) {
+  const named = KINDS[kind];
+  if (named === undefined) throw new Error(`no companion of kind "${kind}"`);
   let state = null;
   let step = null;
   let loaded = null;    // the model whose companion is loaded, by id
@@ -120,17 +129,17 @@ export function createCompanion({
   };
 
   async function run(model, signal) {
-    const { vision } = model;
-    const key = rangesCacheKey(vision);
+    const entry = model[named.field];
+    const key = rangesCacheKey(entry);
     const memoryBudget = loadPolicyOf(model)?.memoryBudget;
     show({ phase: 'checking' });
     const file = await cache.file(key);
-    const source = file !== null ? rangesOfFile(file) : (start, end) => fetchRange(vision.url, start, end, { signal });
+    const source = file !== null ? rangesOfFile(file) : (start, end) => fetchRange(entry.url, start, end, { signal });
     const verdict = await preflight({
-      fetchRange: withinFirstRange(source, vision.ranges[0][1], vision.sizeBytes),
+      fetchRange: withinFirstRange(source, entry.ranges[0][1], entry.sizeBytes),
       readIndex: (bytes, totalSize) => {
         const copy = bytes.slice().buffer;
-        return client.request(Request.PREFLIGHT_COMPANION, { bytes: copy, totalSize, vision, memoryBudget },
+        return client.request(Request.PREFLIGHT_COMPANION, { media: kind, bytes: copy, totalSize, entry, memoryBudget },
           { transfer: [copy] });
       },
     });
@@ -138,9 +147,9 @@ export function createCompanion({
     if (!offersDownload(verdict)) throw new CompanionError(verdict);
 
     if (file === null) {
-      const total = vision.ranges.reduce((sum, [begin, end]) => sum + (end - begin), 0);
+      const total = entry.ranges.reduce((sum, [begin, end]) => sum + (end - begin), 0);
       show({ phase: 'downloading', verdict, received: 0, total });
-      await downloadRanges({ name: `${model.name} images`, vision, openRange, cache, signal,
+      await downloadRanges({ name: `${model.name} ${named.listed}`, entry, openRange, cache, signal,
         onProgress: (received) => { if (!signal.aborted) show({ phase: 'downloading', verdict, received, total }); } });
       onCacheChanged?.();
       signal.throwIfAborted();
@@ -148,7 +157,7 @@ export function createCompanion({
 
     show({ phase: 'loading', verdict, received: 0, total: null });
     const { id, reply } = client.send(Request.LOAD_COMPANION,
-      { name: cachedFileName(key), vision, memoryBudget, maxChunk: LOAD_CHUNK_BYTES },
+      { media: kind, name: cachedFileName(key), entry, memoryBudget, maxChunk: LOAD_CHUNK_BYTES },
       { onProgress: ({ done, total }) => { if (!signal.aborted) show({ phase: 'loading', verdict, received: done, total }); } });
     const cancel = () => client.request(Request.CANCEL, { target: id }).catch(() => {});
     signal.addEventListener('abort', cancel, { once: true });

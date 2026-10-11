@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/arch/vision_encoder.h"
+#include "core/arch/media_encoder.h"
 
 namespace bllm::arch {
 
@@ -87,11 +87,11 @@ namespace bllm::arch {
 // projection.
 //
 // What it asks of the other contracts:
-//   - capability/capability.h: a lookup by projector type,
-//       find_vision_encoder(std::string_view projector_type)
-//     returning the encoder or null, beside find_architecture; "gemma4v" its
-//     one entry. Preflight turns null into a blocker naming the projector
-//     type, as it names an architecture.
+//   - capability/capability.h: find_media_encoder(MediaKind::Image,
+//     "gemma4v") returning it; preflight turns null into a blocker naming
+//     the projector type, as it names an architecture.
+// Its tokens: `<|image|>`, `<|image>` and `<image|>`, llama.cpp's img_beg
+// and img_end for gemma4v. No setup.
 //   - model/model_description.h: a vision description,
 //       struct VisionDescription { TensorId patch_embedding;
 //         uint32_t patch_size; TensorId position_table; uint32_t positions;
@@ -126,6 +126,6 @@ namespace bllm::arch {
 //   C++ performance guidelines
 //     WASM.4 Reduce indirect dispatch in hot paths — chosen once, at load.
 
-extern const VisionEncoder kGemma4Vision;
+extern const MediaEncoder kGemma4Vision;
 
 }  // namespace bllm::arch

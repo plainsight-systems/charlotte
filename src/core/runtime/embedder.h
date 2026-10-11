@@ -2,13 +2,15 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 
+#include "core/arch/media_encoder.h"
 #include "core/kernels/program.h"
 #include "core/runtime/ends.h"
-#include "core/runtime/vision.h"
+#include "core/runtime/media_stage.h"
 #include "core/tokenizer/tokenizer.h"
 
 namespace bllm::runtime {
@@ -179,19 +181,16 @@ namespace bllm::runtime {
 // placeholder. The embedder holds at most one stage a kind, attached once
 // that kind's companion has loaded and released with the embedder or by
 // attaching null; it knows each only through media_stage.h's interface and
-// its kind's three tokens. So:
-//   - attach(MediaKind, std::unique_ptr<MediaStage>, MediaTokens, width)
-//     in place of attach(Vision, ImageTokens, width); stage(kind) the stage
-//     attached, or null, in place of vision();
-//   - start(text, std::optional<MediaKind>, done, userdata) in place of
-//     start(text, bool image, …): none, or the kind whose prepared medium
-//     the encode carries;
-//   - MediaNotReady in place of ImageNotReady — the kind asked for has no
-//     stage attached or nothing prepared;
+// its kind's three tokens:
+//   - attach(kind, stage, tokens, width) and stage(kind);
+//   - start(text, kind, done, userdata), the kind whose prepared medium the
+//     encode carries, or none;
+//   - MediaNotReady — the kind asked for has no stage attached or nothing
+//     prepared;
 //   - Placeholder, as media_stage.h states: the encode's kind's placeholder
 //     other than once, or any other attached kind's at all.
-// Nothing an encode computes changes: the stage's step, its link's copy and
-// the text step, in that order on the queue, as an image's are now.
+// An encode with a medium runs the stage's step, its link's copy and the
+// text step, in that order on the queue.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -228,8 +227,8 @@ enum class EmbedError {
     NonFinite,        // a component of the vector is not finite
     Step,             // the step failed; the message is WebGPU's
     Cancelled,        // the embedder was destroyed with the encode in flight
-    ImageNotReady,    // an image asked for, and none prepared, or no vision encoder loaded
-    Placeholder,      // with an image, the text holds `<|image|>` other than once; without, at all
+    MediaNotReady,    // a medium asked for, and none prepared, or no stage of its kind attached
+    Placeholder,      // the medium's placeholder other than once, or another attached kind's at all
 };
 
 // An encode's outcome. `tokens` is what the text made with its ends, or, for
@@ -267,20 +266,22 @@ public:
     // after the call.
     [[nodiscard]] EmbedResult start(std::string_view text, EmbedCallback done, void* userdata);
 
-    // Starts an encode of `text` with the vision encoder's prepared image
-    // where `text` writes `<|image|>`, once (runtime/vision.h): the vision
-    // step and the text step submitted together, the image's rows copied
-    // between them. Refuses, besides start()'s, ImageNotReady and
-    // Placeholder. With `image` false, as start(text, …).
-    [[nodiscard]] EmbedResult start(std::string_view text, bool image, EmbedCallback done, void* userdata);
+    // Starts an encode of `text` with the prepared medium of `media`'s
+    // stage where `text` writes that kind's placeholder, once
+    // (runtime/media_stage.h): the stage's step and the text step submitted
+    // together, the medium's rows copied between them. Refuses, besides
+    // start()'s, MediaNotReady and Placeholder. With no kind, as
+    // start(text, …), Placeholder for any attached kind's placeholder.
+    [[nodiscard]] EmbedResult start(std::string_view text, std::optional<arch::MediaKind> media, EmbedCallback done,
+                                    void* userdata);
 
-    // The vision encoder, once its companion has loaded: its tokens in this
+    // A kind's stage, once its companion has loaded: its tokens in this
     // model's vocabulary and the hidden width its rows are. Released with
-    // the embedder, or by attach(nullptr, …).
-    void attach(std::unique_ptr<Vision> vision, ImageTokens tokens, std::uint32_t width);
+    // the embedder, or by attaching null; the other kind's untouched.
+    void attach(arch::MediaKind kind, std::unique_ptr<MediaStage> stage, MediaTokens tokens, std::uint32_t width);
 
-    // The vision encoder attached, or null.
-    [[nodiscard]] Vision* vision() noexcept;
+    // The stage of `kind` attached, or null.
+    [[nodiscard]] MediaStage* stage(arch::MediaKind kind) noexcept;
 
     // The model's tokenizer, whose vocabulary a companion's verdict reads.
     [[nodiscard]] const tokenizer::Tokenizer& tokenizer() const noexcept;

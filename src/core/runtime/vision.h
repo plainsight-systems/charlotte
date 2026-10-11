@@ -7,16 +7,14 @@
 
 #include "core/kernels/program.h"
 #include "core/media/image.h"
-#include "core/tokenizer/tokenizer.h"
+#include "core/runtime/media_stage.h"
 
 namespace bllm::runtime {
 
 // Axis M (encode): changes with a new stage in the encode path.
 //
-// The image kind of runtime/media_stage.h's stage: Vision implements its
-// interface, ready_tokens() becoming ready_rows() and ImageTokens
-// media_stage.h's MediaTokens; the embedder holds it as a MediaStage
-// (runtime/embedder.h's Media). Nothing below that it computes changes.
+// The image kind of runtime/media_stage.h's stage: the embedder holds it
+// as a MediaStage, its tokens media_stage.h's MediaTokens.
 //
 // The image stage of an encode: an image becomes rows of the text model's
 // width, and those rows stand in the text step where the image's
@@ -64,7 +62,7 @@ namespace bllm::runtime {
 //   - An image's rows are the vision step's alone and an image is one step:
 //     nothing of one image is kept for the next, as nothing of one text is.
 //   - Refusals before the GPU runs, each named, start() returning at once:
-//     ImageNotReady, the slot empty or still filling; Placeholder, the text
+//     MediaNotReady, the slot empty or still filling; Placeholder, the text
 //     holding no `<|image|>` with an image, one without, or more than one;
 //     TooManyTokens, the text's tokens and M rows past the context, with
 //     the count; and the image's own refusals as it is prepared
@@ -84,7 +82,7 @@ namespace bllm::runtime {
 //     (residency/file_ranges.h) within what the budget leaves beside the
 //     text model's plan — 2 GiB less 384 MB by default, so its 320 MB fits;
 //     Upload; Run, its graph building, the text model's vocabulary holding
-//     the three image tokens, and pairs (arch/vision_encoder.h) accepting the
+//     the three image tokens, and pairs (arch/media_encoder.h) accepting the
 //     loaded text model. A verdict names everything still missing, as a
 //     model's does.
 //   - Loaded: its own upload on the same device and its own program, built
@@ -108,7 +106,7 @@ namespace bllm::runtime {
 //   - kernels/gather/gather.h: an invocation whose row lies in the step's
 //     media rows returns before reading its identifier: those rows are the
 //     copy's.
-//   - runtime/embedder.h: start(text, image), the image the slot's, and
+//   - runtime/embedder.h: start(text, Image), the image the slot's, and
 //     optional; the text
 //     without an image refused, Placeholder, where it holds `<|image|>`;
 //     the context check counting M rows; the vision stage optional,
@@ -221,17 +219,8 @@ struct ImageSlot {
     SlotState state = SlotState::Empty;
 };
 
-// The text model's tokens an image's rows stand among, resolved at load from
-// its vocabulary by text: the placeholder a text writes, and llama.cpp's
-// img_beg and img_end for gemma4v around the rows.
-struct ImageTokens {
-    tokenizer::TokenId placeholder;   // "<|image|>"
-    tokenizer::TokenId begin;         // "<|image>"
-    tokenizer::TokenId end;           // "<image|>"
-};
-
 // The vision encoder, loaded beside the text model, and its slot.
-class Vision {
+class Vision final : public MediaStage {
 public:
     // Preconditions: `program` was built from the vision encoder's graph,
     // with no readback; `link` copies its `soft_tokens` into the text
@@ -252,16 +241,16 @@ public:
     [[nodiscard]] const ImageSlot& slot() const noexcept { return slot_; }
 
     // The soft tokens the slot's image becomes, or 0 when it is not ready.
-    [[nodiscard]] std::uint32_t ready_tokens() const noexcept;
+    [[nodiscard]] std::uint32_t ready_rows() const noexcept override;
 
     // Submits the vision step over the slot's patches — its grid's columns,
     // its patches written into `pixels` — and empties the slot.
-    // Precondition: ready_tokens() > 0.
-    void run(kernels::StepCallback done, void* userdata);
+    // Precondition: ready_rows() > 0.
+    void run(kernels::StepCallback done, void* userdata) override;
 
-    [[nodiscard]] const kernels::ProgramLink& link() const noexcept { return *link_; }
+    [[nodiscard]] const kernels::ProgramLink& link() const noexcept override { return *link_; }
 
-    ~Vision();
+    ~Vision() override;
     Vision(const Vision&) = delete;
     Vision& operator=(const Vision&) = delete;
 

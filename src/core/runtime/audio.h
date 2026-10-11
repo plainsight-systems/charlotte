@@ -80,16 +80,11 @@ namespace bllm::runtime {
 //     each kind's companion is released apart from the other's.
 //
 // What it asks of the other contracts:
-//   - runtime/embedder.h: a stage a kind (media_stage.h), attach(kind,
-//     stage, tokens, width); start(text, kind) for an encode with that
-//     kind's medium, or none; MediaNotReady in place of ImageNotReady.
-//   - runtime/vision.h: Vision implements media_stage.h, ready_tokens()
-//     becoming ready_rows(); nothing it computes changes.
-//   - preflight/preflight.h: preflight_companion and plan_companion take
-//     the kind; CompanionHost's text_bytes becomes the bytes every plan
-//     already loaded holds, the text model's and the other companion's, and
-//     gains the text model's context, which bounds a clip's rows.
-//   - capability/capability.h: find_media_encoder(kind, type).
+//   - runtime/embedder.h: its Audio kind's stage attached and started as
+//     the image's (media_stage.h).
+//   - preflight/preflight.h: CompanionHost gains the text model's context
+//     offered, which bounds a clip's rows; the audio kind's working set.
+//   - capability/capability.h: find_media_encoder(Audio, "gemma4a").
 //   - kernels/program.h: nothing new — a second program on the same upload,
 //     its own step, inputs and no readback.
 //   - The boundary, contract 11 (src/wasm/bindings.cpp, web/worker.js):

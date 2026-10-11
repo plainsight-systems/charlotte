@@ -49,8 +49,8 @@ constexpr std::array kArchitectures{
     Row<std::string_view, arch::Architecture>{"llama", &arch::kLlama},
     Row<std::string_view, arch::Architecture>{"qwen3", &arch::kQwen3},
 };
-constexpr std::array kVisionEncoders{
-    Row<std::string_view, arch::VisionEncoder>{"gemma4v", &arch::kGemma4Vision},
+constexpr std::array kMediaEncoders{
+    Row<std::string_view, arch::MediaEncoder>{"gemma4v", &arch::kGemma4Vision},
 };
 constexpr std::array kFormats{
     Row<gguf::TensorType, formats::Format>{gguf::TensorType::F32, &formats::kF32},
@@ -85,8 +85,9 @@ const arch::Architecture* find_architecture(std::string_view general_architectur
     return lookup<std::string_view, arch::Architecture>(kArchitectures, general_architecture);
 }
 
-const arch::VisionEncoder* find_vision_encoder(std::string_view projector_type) noexcept {
-    return lookup<std::string_view, arch::VisionEncoder>(kVisionEncoders, projector_type);
+const arch::MediaEncoder* find_media_encoder(arch::MediaKind kind, std::string_view projector_type) noexcept {
+    const arch::MediaEncoder* encoder = lookup<std::string_view, arch::MediaEncoder>(kMediaEncoders, projector_type);
+    return encoder != nullptr && encoder->kind == kind ? encoder : nullptr;
 }
 
 const formats::Format* find_format(gguf::TensorType type) noexcept {

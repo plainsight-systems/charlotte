@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "core/arch/architecture.h"
-#include "core/arch/vision_encoder.h"
+#include "core/arch/media_encoder.h"
 #include "core/capability/capability.h"
 #include "core/formats/format.h"
 #include "core/graph/encoder.h"
@@ -349,52 +349,71 @@ Verdict preflight(gguf::ByteSource& source, const gguf::TensorIndex& index, cons
 
 namespace {
 
-// A companion's vision encoder, found by its projector type and described.
-struct DescribedVision {
-    const arch::VisionEncoder* encoder;
+// What a kind of encoder is called in a blocker.
+std::string_view kind_name(arch::MediaKind kind) {
+    return kind == arch::MediaKind::Image ? "vision encoder" : "audio encoder";
+}
+
+// A companion's encoder of `kind`, found by its projector type and described.
+struct DescribedEncoder {
+    const arch::MediaEncoder* encoder;
     std::string_view projector;
     model::ModelDescription description;
 };
 
-std::optional<DescribedVision> check_vision(const gguf::TensorIndex& index, Verdict& verdict) {
-    constexpr std::string_view kKey = "clip.vision.projector_type";
+std::optional<DescribedEncoder> check_encoder(arch::MediaKind kind, const gguf::TensorIndex& index,
+                                              Verdict& verdict) {
+    const std::string_view key = arch::projector_key(kind);
     std::string_view name;
-    if (const auto e = index.read_string(kKey, name); e != gguf::MetadataError::Ok) {
-        verdict.blockers.push_back({Stage::Describe, unreadable_key(e, kKey)});
+    if (const auto e = index.read_string(key, name); e != gguf::MetadataError::Ok) {
+        verdict.blockers.push_back({Stage::Describe, unreadable_key(e, key)});
         return std::nullopt;
     }
-    const arch::VisionEncoder* encoder = capability::find_vision_encoder(name);
+    const arch::MediaEncoder* encoder = capability::find_media_encoder(kind, name);
     if (encoder == nullptr) {
-        verdict.blockers.push_back({Stage::Describe, "vision encoder " + quoted(name) + " is not supported"});
+        verdict.blockers.push_back({Stage::Describe, std::string(kind_name(kind)) + " " + quoted(name) +
+                                                         " is not supported"});
         return std::nullopt;
     }
     model::ModelDescription description{};
     if (const auto r = encoder->describe(index, description); !r.ok()) {
-        verdict.blockers.push_back({Stage::Describe, "vision encoder " + quoted(name) + " cannot read this file: " +
-                                                         std::string(to_string(r.error)) + " (" + r.subject + ")"});
+        verdict.blockers.push_back({Stage::Describe, std::string(kind_name(kind)) + " " + quoted(name) +
+                                                         " cannot read this file: " + std::string(to_string(r.error)) +
+                                                         " (" + r.subject + ")"});
         return std::nullopt;
     }
-    return DescribedVision{encoder, name, std::move(description)};
+    return DescribedEncoder{encoder, name, std::move(description)};
 }
 
-// The budget a companion is planned in: what the model it serves leaves.
+// The budget a companion is planned in: what the plans loaded leave.
 policy::LoadPolicy companion_policy(const policy::LoadPolicy& policy, const CompanionHost& host) {
     policy::LoadPolicy p = policy;
-    p.memory_budget = policy.memory_budget > host.text_bytes ? policy.memory_budget - host.text_bytes : 0;
+    p.memory_budget = policy.memory_budget > host.resident_bytes ? policy.memory_budget - host.resident_bytes : 0;
     return p;
 }
 
-void check_vision_fit(const gguf::TensorIndex& index, const DescribedVision& d,
-                      std::span<const residency::FileRange> ranges, const residency::DeviceLimits& limits,
-                      const policy::LoadPolicy& policy, media::ImageBudget budget, Verdict& verdict,
-                      residency::ResidencyPlan& plan) {
-    const std::uint32_t pooling = d.description.vision->pooling;
-    const std::uint32_t rows = budget.most * pooling * pooling;
-    if (const auto r = residency::plan_residency(index, d.description, limits, policy,
-                                                 graph::vision_working_set(d.description, rows), plan, ranges);
-        !r.ok()) {
+// The working buffers a companion's step binds: its kind's, at its most
+// rows. Null, with a blocker, for a kind this build has no working set for.
+std::optional<residency::WorkingSet> working_set(const DescribedEncoder& d, media::ImageBudget budget,
+                                                 Verdict& verdict) {
+    if (d.description.vision) {
+        const std::uint32_t pooling = d.description.vision->pooling;
+        return graph::vision_working_set(d.description, budget.most * pooling * pooling);
+    }
+    verdict.blockers.push_back({Stage::Fit, std::string(kind_name(d.encoder->kind)) + " " + quoted(d.projector) +
+                                                " has no working set in this build"});
+    return std::nullopt;
+}
+
+void check_fit(const gguf::TensorIndex& index, const DescribedEncoder& d, std::span<const residency::FileRange> ranges,
+               const residency::DeviceLimits& limits, const policy::LoadPolicy& policy, media::ImageBudget budget,
+               Verdict& verdict, residency::ResidencyPlan& plan) {
+    const auto set = working_set(d, budget, verdict);
+    if (!set) return;
+    if (const auto r = residency::plan_residency(index, d.description, limits, policy, *set, plan, ranges); !r.ok()) {
         verdict.blockers.push_back({Stage::Fit, r.error == residency::PlanError::ExceedsBudget
-                                                    ? "needs " + mebibytes(plan.total_bytes) + "; the budget left beside the model is " +
+                                                    ? "needs " + mebibytes(plan.total_bytes) +
+                                                          "; the budget left beside the model is " +
                                                           mebibytes(policy.memory_budget)
                                                     : fit_failure(r, plan, policy)});
         return;
@@ -406,21 +425,22 @@ void check_vision_fit(const gguf::TensorIndex& index, const DescribedVision& d,
 
 }  // namespace
 
-std::string plan_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,
-                           const residency::DeviceLimits& limits, const policy::LoadPolicy& policy,
-                           media::ImageBudget budget, const CompanionHost& host, model::ModelDescription& description,
-                           residency::ResidencyPlan& plan) {
+std::string plan_companion(arch::MediaKind kind, const gguf::TensorIndex& index,
+                           std::span<const residency::FileRange> ranges, const residency::DeviceLimits& limits,
+                           const policy::LoadPolicy& policy, media::ImageBudget budget, const CompanionHost& host,
+                           model::ModelDescription& description, residency::ResidencyPlan& plan) {
     Verdict verdict;
-    const auto described = check_vision(index, verdict);
+    const auto described = check_encoder(kind, index, verdict);
     if (!described) return verdict.blockers.front().detail;
-    check_vision_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, verdict, plan);
+    check_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, verdict, plan);
     if (!verdict.fit) return verdict.blockers.front().detail;
     description = described->description;
     return {};
 }
 
-Verdict preflight_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,
-                            std::uint64_t file_size, std::uint64_t index_end, const residency::DeviceLimits& limits,
+Verdict preflight_companion(arch::MediaKind kind, const gguf::TensorIndex& index,
+                            std::span<const residency::FileRange> ranges, std::uint64_t file_size,
+                            std::uint64_t index_end, const residency::DeviceLimits& limits,
                             const policy::LoadPolicy& policy, media::ImageBudget budget, const CompanionHost& host) {
     Verdict verdict;
     if (const residency::RangesResult r = residency::check_ranges(ranges, file_size, index_end); !r.ok()) {
@@ -428,31 +448,35 @@ Verdict preflight_companion(const gguf::TensorIndex& index, std::span<const resi
                                                          std::to_string(r.range) + ")"});
         return verdict;
     }
-    if (const auto described = check_vision(index, verdict)) {
+    const auto described = check_encoder(kind, index, verdict);
+    if (described) {
+        const std::string named = std::string(kind_name(kind)) + " " + quoted(described->projector);
         residency::ResidencyPlan plan;
-        check_vision_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, verdict, plan);
+        check_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, verdict, plan);
         if (verdict.fit) {
-            std::vector<kernels::Launch> launches;
-            if (const auto r = described->encoder->graph(described->description, plan, launches); !r.ok()) {
-                verdict.blockers.push_back({Stage::Run, "vision encoder " + quoted(described->projector) +
-                                                            " cannot run this file: " + std::string(to_string(r.error)) +
-                                                            " (" + r.subject + ")"});
+            for (const arch::MediaGraphFn graph : {described->encoder->graph, described->encoder->setup}) {
+                if (graph == nullptr) continue;
+                std::vector<kernels::Launch> launches;
+                if (const auto r = graph(described->description, plan, launches); !r.ok()) {
+                    verdict.blockers.push_back({Stage::Run, named + " cannot run this file: " +
+                                                                std::string(to_string(r.error)) + " (" + r.subject +
+                                                                ")"});
+                    break;
+                }
             }
         }
         if (const auto r = described->encoder->pairs(described->description, host.text, host.text_architecture);
             !r.ok()) {
-            verdict.blockers.push_back({Stage::Run, "vision encoder " + quoted(described->projector) +
-                                                        " does not serve the model loaded (" + r.subject + ")"});
+            verdict.blockers.push_back({Stage::Run, named + " does not serve the model loaded (" + r.subject + ")"});
+        }
+        for (const std::string_view token : described->encoder->tokens) {
+            if (!host.vocabulary.find(token)) {
+                verdict.blockers.push_back({Stage::Run, "the model loaded has no " + quoted(token) + " token"});
+            }
         }
     }
     check_formats(index, verdict, ranges);
     check_rows(index, verdict, ranges);
-    for (const std::string_view token : {std::string_view{"<|image|>"}, std::string_view{"<|image>"},
-                                         std::string_view{"<image|>"}}) {
-        if (!host.vocabulary.find(token)) {
-            verdict.blockers.push_back({Stage::Run, "the model loaded has no " + quoted(token) + " token"});
-        }
-    }
     return verdict;
 }
 

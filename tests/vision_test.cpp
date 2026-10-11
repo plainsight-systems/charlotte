@@ -186,9 +186,11 @@ std::uint64_t workgroups(const kernels::Launch& l, std::uint32_t tokens) {
 
 TEST_CASE("the vision graph: 133 launches a step at every grid, a layer's 8 in order, ε / W to the pooling") {
     const Header h = read_mmproj();
-    const arch::VisionEncoder* encoder = capability::find_vision_encoder("gemma4v");
+    const arch::MediaEncoder* encoder = capability::find_media_encoder(arch::MediaKind::Image, "gemma4v");
     REQUIRE(encoder == &arch::kGemma4Vision);
-    CHECK(capability::find_vision_encoder("gemma3") == nullptr);
+    CHECK(capability::find_media_encoder(arch::MediaKind::Image, "gemma3") == nullptr);
+    // A type found only for its own kind.
+    CHECK(capability::find_media_encoder(arch::MediaKind::Audio, "gemma4v") == nullptr);
     const model::ModelDescription m = described(h.index);
     residency::ResidencyPlan plan;
     REQUIRE(residency::plan_residency(h.index, m, kDefaults, policy::LoadPolicy{}, graph::vision_working_set(m, kRows),
@@ -241,7 +243,7 @@ TEST_CASE("a companion's verdict: Run beside EmbeddingGemma 2, each stage it can
     const media::ImageBudget budget{70, 280};
     const preflight::CompanionHost host{embedder, "gemma-embedding2", t->vocabulary(), 384ull << 20};
 
-    const auto verdict = preflight::preflight_companion(h.index, kVisionRanges, kFileSize, 58'656, kDefaults,
+    const auto verdict = preflight::preflight_companion(arch::MediaKind::Image, h.index, kVisionRanges, kFileSize, 58'656, kDefaults,
                                                         policy::LoadPolicy{}, budget, host);
     for (const auto& b : verdict.blockers) MESSAGE(preflight::to_string(b.stage) << ": " << b.detail);
     CHECK(verdict.reached() == preflight::Stage::Run);
@@ -252,21 +254,21 @@ TEST_CASE("a companion's verdict: Run beside EmbeddingGemma 2, each stage it can
     // The whole file: the audio encoder's tensors would be uploaded, its
     // conv weights' rows of 3 refused.
     const residency::FileRange whole[] = {{0, kFileSize}};
-    const auto all = preflight::preflight_companion(h.index, whole, kFileSize, 58'656, kDefaults, policy::LoadPolicy{},
+    const auto all = preflight::preflight_companion(arch::MediaKind::Image, h.index, whole, kFileSize, 58'656, kDefaults, policy::LoadPolicy{},
                                                     budget, host);
     CHECK(all.reached() == preflight::Stage::Fit);
 
     // Ranges that miss the header; a budget the model leaves too little of;
     // a model it does not serve.
     const residency::FileRange late[] = {{1, 58'656}};
-    CHECK(preflight::preflight_companion(h.index, late, kFileSize, 58'656, kDefaults, policy::LoadPolicy{}, budget, host)
+    CHECK(preflight::preflight_companion(arch::MediaKind::Image, h.index, late, kFileSize, 58'656, kDefaults, policy::LoadPolicy{}, budget, host)
               .reached() == preflight::Stage::Read);
     policy::LoadPolicy tight{};
     tight.memory_budget = 500ull << 20;
-    CHECK(preflight::preflight_companion(h.index, kVisionRanges, kFileSize, 58'656, kDefaults, tight, budget, host)
+    CHECK(preflight::preflight_companion(arch::MediaKind::Image, h.index, kVisionRanges, kFileSize, 58'656, kDefaults, tight, budget, host)
               .reached() == preflight::Stage::Describe);
     const preflight::CompanionHost other{embedder, "qwen3", t->vocabulary(), 384ull << 20};
-    CHECK(preflight::preflight_companion(h.index, kVisionRanges, kFileSize, 58'656, kDefaults, policy::LoadPolicy{},
+    CHECK(preflight::preflight_companion(arch::MediaKind::Image, h.index, kVisionRanges, kFileSize, 58'656, kDefaults, policy::LoadPolicy{},
                                          budget, other)
               .reached() == preflight::Stage::Upload);
 }

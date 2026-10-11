@@ -169,7 +169,7 @@ struct ModelDescription {
     // and what makes it plan no cache.
     std::optional<EncoderDescription> encoder;
     // Set by a vision encoder's describe and by no other
-    // (arch/vision_encoder.h).
+    // (arch/media_encoder.h).
     std::optional<VisionDescription> vision;
     // An audio encoder's, set by its describe and by no other, as `vision`
     // is (and FeedForwardActivation gains Sigmoid, the gate of its GLU,

@@ -249,6 +249,7 @@ graph::GraphResult vision(const model::ModelDescription& model, const residency:
 
 }  // namespace
 
-const VisionEncoder kGemma4Vision{kProjector, describe, vision, pairs};
+const MediaEncoder kGemma4Vision{MediaKind::Image, kProjector, describe, vision, nullptr, pairs,
+                                  {"<|image|>", "<|image>", "<image|>"}};
 
 }  // namespace bllm::arch

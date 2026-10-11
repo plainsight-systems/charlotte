@@ -16,7 +16,7 @@ namespace bllm::graph {
 // Axis A: changes when a vision encoder needs a block the ones here do not
 // cover.
 //
-// The blocks a vision encoder's graph composes (arch/vision_encoder.h), as
+// The blocks a vision encoder's graph composes (arch/media_encoder.h), as
 // encoder.h's are an embedder's. A vision encoder runs one step over an
 // image's patches, every patch attending to every other, and ends in rows
 // of the text model's width — soft tokens — which the text model's own step

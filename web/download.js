@@ -21,7 +21,7 @@ export function cacheKey(model) {
 
 // Where a companion's ranges live in the cache: named by their hash, as a
 // curated model is by its file's.
-export const rangesCacheKey = (vision) => `ranges-${vision.rangesSha256}`;
+export const rangesCacheKey = (entry) => `ranges-${entry.rangesSha256}`;
 
 // `openDownload(url, { signal })` resolves with { totalSize, chunks };
 // `cache.writer(key)` with a writer. `onProgress(received, total)` follows the
@@ -59,24 +59,25 @@ export async function downloadModel({ model, openDownload, cache, onProgress, si
   }
 }
 
-// Streams a companion's ranges (catalog.js's `vision`) into one cache file,
+// Streams a companion's ranges (catalog.js's `vision` or `audio`, `entry`)
+// into one cache file,
 // in order, back to back, hashing the bytes as they arrive, and publishes it
 // only when every range is whole and their hash matches rangesSha256: a part
 // of a file verified as a whole file is, against a pinned value.
 // `openRange(url, begin, end, { signal })` resolves with { totalSize, chunks
 // } for that range. `onProgress(received, total)` follows the download over
 // the ranges' bytes. `name` is what the cache lists it as.
-export async function downloadRanges({ name, vision, openRange, cache, onProgress, signal }) {
-  const total = vision.ranges.reduce((sum, [begin, end]) => sum + (end - begin), 0);
-  const writer = await cache.writer(rangesCacheKey(vision));
+export async function downloadRanges({ name, entry, openRange, cache, onProgress, signal }) {
+  const total = entry.ranges.reduce((sum, [begin, end]) => sum + (end - begin), 0);
+  const writer = await cache.writer(rangesCacheKey(entry));
   try {
     const hash = new Sha256();
     let received = 0;
-    for (const [begin, end] of vision.ranges) {
-      const { totalSize, chunks } = await openRange(vision.url, begin, end, { signal });
-      if (totalSize !== vision.sizeBytes) {
+    for (const [begin, end] of entry.ranges) {
+      const { totalSize, chunks } = await openRange(entry.url, begin, end, { signal });
+      if (totalSize !== entry.sizeBytes) {
         throw new DownloadError(`the server's file is ${formatBytes(totalSize)}, ` +
-                                `but the model list says ${formatBytes(vision.sizeBytes)}`);
+                                `but the model list says ${formatBytes(entry.sizeBytes)}`);
       }
       let got = 0;
       for await (const chunk of chunks) {
@@ -93,10 +94,10 @@ export async function downloadRanges({ name, vision, openRange, cache, onProgres
       }
     }
     const sha256 = hash.hex();
-    if (sha256 !== vision.rangesSha256) {
+    if (sha256 !== entry.rangesSha256) {
       throw new DownloadError('the downloaded ranges do not match their published SHA-256');
     }
-    await writer.commit({ name, url: vision.url, sizeBytes: received, ranges: vision.ranges, sha256 });
+    await writer.commit({ name, url: entry.url, sizeBytes: received, ranges: entry.ranges, sha256 });
   } catch (error) {
     await writer.discard();
     throw error;

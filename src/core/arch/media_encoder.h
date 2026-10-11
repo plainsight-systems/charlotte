@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string_view>
 #include <vector>
 
@@ -12,8 +13,7 @@
 
 namespace bllm::arch {
 
-// Contract: what every media encoder supplies. It replaces
-// arch/vision_encoder.h, whose VisionEncoder becomes the Image kind of it.
+// Contract: what every media encoder supplies.
 //
 // A media encoder turns an image's patches or an audio clip's spectrogram
 // into rows a text model reads in place of tokens: soft tokens. It lives in
@@ -43,18 +43,16 @@ namespace bllm::arch {
 //     weights alone into a working buffer the step reads and nothing else
 //     writes — gemma4a's relative position tables (graph/audio.h). Null for
 //     gemma4v.
-// And one check an architecture has no need of: pairs, whether the text
-// model it is loaded beside reads its rows — its projection's width is that
-// model's hidden width, and that model is one it is known to serve — refused
-// by name otherwise.
+// And what an architecture has no need of: pairs, whether the text model
+// it is loaded beside reads its rows — its projection's width is that
+// model's hidden width, and that model is one it is known to serve —
+// refused by name otherwise; and the three tokens of that model's
+// vocabulary its rows stand among, by text — the placeholder a text writes,
+// and the tokens llama.cpp's multimodal library puts around the rows for
+// this projector (runtime/media_stage.h).
 //
 // Function pointers in a static table, as Architecture's, and for the same
 // reasons: no state, chosen once at load, never called per step (WASM.4).
-//
-// What changes for the image kind: nothing it computes. kGemma4Vision gains
-// its kind, Image, and a null setup; find_vision_encoder(type) becomes
-// find_media_encoder(MediaKind::Image, type); the companion's verdict and
-// load take the kind (preflight/preflight.h).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -91,6 +89,13 @@ struct MediaEncoder {
     MediaGraphFn graph;
     MediaGraphFn setup;      // or null
     PairsFn pairs;
+    // The placeholder, the token before the rows, the token after.
+    std::array<std::string_view, 3> tokens;
 };
+
+// The key whose value names a companion's encoder of `kind`.
+[[nodiscard]] constexpr std::string_view projector_key(MediaKind kind) noexcept {
+    return kind == MediaKind::Image ? "clip.vision.projector_type" : "clip.audio.projector_type";
+}
 
 }  // namespace bllm::arch

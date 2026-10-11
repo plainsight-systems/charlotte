@@ -181,7 +181,7 @@ std::unique_ptr<tokenizer::Tokenizer> tokenizer_of(const Text& m) {
     return t;
 }
 
-runtime::ImageTokens image_tokens_of(const tokenizer::Tokenizer& t) {
+runtime::MediaTokens image_tokens_of(const tokenizer::Tokenizer& t) {
     const auto placeholder = t.vocabulary().find("<|image|>");
     const auto begin = t.vocabulary().find("<|image>");
     const auto end = t.vocabulary().find("<image|>");
@@ -191,19 +191,26 @@ runtime::ImageTokens image_tokens_of(const tokenizer::Tokenizer& t) {
     return {*placeholder, *begin, *end};
 }
 
+// The embedder's image stage.
+runtime::Vision& vision_of(runtime::Embedder& embedder) {
+    auto* vision = dynamic_cast<runtime::Vision*>(embedder.stage(arch::MediaKind::Image));
+    REQUIRE(vision != nullptr);
+    return *vision;
+}
+
 // The text embedder with the vision encoder attached.
 std::unique_ptr<runtime::Embedder> embedder_of(WGPUInstance instance, const Text& m, const VisionModel& v) {
     auto t = tokenizer_of(m);
     runtime::Ends ends;
     REQUIRE(runtime::resolve_ends(m.index, t->vocabulary(), ends).error == runtime::EndsError::Ok);
-    const runtime::ImageTokens tokens = image_tokens_of(*t);
+    const runtime::MediaTokens tokens = image_tokens_of(*t);
     auto embedder = std::make_unique<runtime::Embedder>(std::move(t), build_program(instance, *m.upload, m.launches,
                                                                                     m.embedding),
                                                         ends, m.upload->plan().context_offered, 768);
     auto link = std::make_unique<kernels::ProgramLink>(
         *v.upload, kernels::Binding{v.soft_tokens.buffer, v.soft_tokens.offset, v.soft_tokens.length}, *m.upload,
         kernels::Binding{m.hidden.buffer, m.hidden.offset, m.hidden.length});
-    embedder->attach(std::make_unique<runtime::Vision>(build_program(instance, *v.upload, v.launches), std::move(link),
+    embedder->attach(arch::MediaKind::Image, std::make_unique<runtime::Vision>(build_program(instance, *v.upload, v.launches), std::move(link),
                                                        kernels::Binding{v.pixels.buffer, v.pixels.offset,
                                                                         v.pixels.length},
                                                        kBudget, v.description.vision->patch_size,
@@ -257,12 +264,13 @@ void on_embedded(const runtime::EmbedResult& result, std::span<const float> embe
 Embedded embed(WGPUInstance instance, runtime::Embedder& embedder, const VisionReference& r) {
     const bool image = !r.scene.empty();
     if (image) {
-        prepare(*embedder.vision(), scene_named(r.scene));
-        REQUIRE(embedder.vision()->ready_tokens() == r.rows);
+        prepare(vision_of(embedder), scene_named(r.scene));
+        REQUIRE(vision_of(embedder).ready_rows() == r.rows);
     }
     const std::string text = std::string(r.before) + (image ? "<|image|>" : "") + std::string(r.after);
     Embedded e;
-    const runtime::EmbedResult started = embedder.start(text, image, on_embedded, &e);
+    const runtime::EmbedResult started =
+        embedder.start(text, image ? std::optional{arch::MediaKind::Image} : std::nullopt, on_embedded, &e);
     REQUIRE(started.error == EmbedError::Ok);
     CHECK(started.tokens == r.tokens_before.size() + r.rows + r.tokens_after.size());
     pump_until(instance, e.done, "the encode");
@@ -300,7 +308,7 @@ TEST_CASE("each image and query is embedded within llama.cpp's own spread, its t
     // The tokens, before the GPU: the text with its placeholder, encoded and
     // wrapped as the embedder does, the placeholder replaced.
     const auto t = tokenizer_of(*text);
-    const runtime::ImageTokens image = image_tokens_of(*t);
+    const runtime::MediaTokens image = image_tokens_of(*t);
     runtime::Ends ends;
     REQUIRE(runtime::resolve_ends(text->index, t->vocabulary(), ends).error == runtime::EndsError::Ok);
     for (const VisionReference& r : kVisionReferences) {
@@ -381,10 +389,14 @@ TEST_CASE("each query ranks its own image first; an image embedded twice gives t
 
     // Refusals: no image prepared; a placeholder without an image, or twice.
     Embedded unused;
-    CHECK(embedder->start("<|image|>", true, on_embedded, &unused).error == EmbedError::ImageNotReady);
-    CHECK(embedder->start("a <|image|> here", false, on_embedded, &unused).error == EmbedError::Placeholder);
-    prepare(*embedder->vision(), scene_named("red_circle"));
-    CHECK(embedder->start("<|image|> and <|image|>", true, on_embedded, &unused).error == EmbedError::Placeholder);
-    CHECK(embedder->start("no placeholder", true, on_embedded, &unused).error == EmbedError::Placeholder);
+    constexpr auto kImage = std::optional{arch::MediaKind::Image};
+    CHECK(embedder->start("<|image|>", kImage, on_embedded, &unused).error == EmbedError::MediaNotReady);
+    CHECK(embedder->start("a <|image|> here", std::nullopt, on_embedded, &unused).error == EmbedError::Placeholder);
+    // A kind with no stage attached has nothing prepared.
+    CHECK(embedder->start("<|audio|>", std::optional{arch::MediaKind::Audio}, on_embedded, &unused).error ==
+          EmbedError::MediaNotReady);
+    prepare(vision_of(*embedder), scene_named("red_circle"));
+    CHECK(embedder->start("<|image|> and <|image|>", kImage, on_embedded, &unused).error == EmbedError::Placeholder);
+    CHECK(embedder->start("no placeholder", kImage, on_embedded, &unused).error == EmbedError::Placeholder);
     CHECK_FALSE(unused.done);
 }

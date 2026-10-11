@@ -103,7 +103,7 @@ if (!('gpu' in navigator)) {
   });
 
   const loadPolicyOf = (model) => loadPolicyFor(model.policy?.load, platform);
-  const companion = createCompanion({ client, cache, loadPolicyOf,
+  const companion = createCompanion({ kind: 'image', client, cache, loadPolicyOf,
     onChange: (state) => search.showCompanion(state),
     onCacheChanged: () => refreshCache() });
   const search = createSearch(page.search, {

@@ -44,7 +44,7 @@ media::ImageError Vision::rows(std::uint32_t first_row, std::span<const std::uin
     return media::ImageError::Ok;
 }
 
-std::uint32_t Vision::ready_tokens() const noexcept {
+std::uint32_t Vision::ready_rows() const noexcept {
     return slot_.state == SlotState::Ready ? slot_.grid.tokens : 0;
 }
 

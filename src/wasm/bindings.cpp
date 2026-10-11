@@ -212,6 +212,7 @@
 #include <emscripten/eventloop.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -225,7 +226,7 @@
 #include <vector>
 
 #include "core/arch/architecture.h"
-#include "core/arch/vision_encoder.h"
+#include "core/arch/media_encoder.h"
 #include "core/cache/kv.h"
 #include "core/capability/capability.h"
 #include "core/gguf/reader.h"
@@ -518,17 +519,23 @@ struct Check {
 };
 #endif
 
-// A companion's load (runtime/vision.h): its Upload of the ranges it reads,
-// one chunk buffer, and what begin made of its header for finish.
+// A companion's load (runtime/media_stage.h): its kind, its Upload of the
+// ranges it reads, one chunk buffer, and what begin made of its header for
+// finish.
 struct CompanionLoad {
+    bllm::arch::MediaKind kind = bllm::arch::MediaKind::Image;
     std::uint32_t begin_request = 0;
     std::unique_ptr<bllm::residency::Upload> upload;
     std::vector<std::byte> chunk;
     bool settled = false;
     bllm::model::ModelDescription description;
-    const bllm::arch::VisionEncoder* encoder = nullptr;
+    const bllm::arch::MediaEncoder* encoder = nullptr;
     bllm::media::ImageBudget budget{};
 };
+
+constexpr std::size_t kMediaKinds = 2;
+
+constexpr std::size_t index_of(bllm::arch::MediaKind kind) noexcept { return static_cast<std::size_t>(kind); }
 
 struct Session {
     std::unique_ptr<bllm::gpu::Device> device;          // the checked device, kept
@@ -539,11 +546,12 @@ struct Session {
     // description and architecture (preflight.h's CompanionHost).
     bllm::model::ModelDescription loaded_description;
     std::string loaded_architecture;
+    // The companion loading, of either kind; one at a time.
     std::unique_ptr<CompanionLoad> companion;
-    // The companion a load finished: its buffers, which the vision stage the
-    // embedder holds borrows. Declared before the embedder, so released
-    // after it.
-    std::unique_ptr<bllm::residency::Upload> companion_loaded;
+    // Each kind's companion a load finished: its buffers, which that kind's
+    // stage the embedder holds borrows. Declared before the embedder, so
+    // released after it.
+    std::array<std::unique_ptr<bllm::residency::Upload>, kMediaKinds> companion_loaded;
     // Over `loaded`, whose buffers their programs borrow: declared after it,
     // so released before it. One or the other, as the model generates or
     // encodes.
@@ -1044,11 +1052,32 @@ std::uint64_t index_end_of(const bllm::gguf::TensorIndex& index, std::uint64_t f
     return end;
 }
 
-// The loaded model a companion pairs against; null when none encodes.
-std::optional<bllm::preflight::CompanionHost> host_of(const Session& s) {
+// The loaded model a companion of `kind` pairs against, and the bytes the
+// plans it shares the budget with hold: the text model's and the other
+// kind's companion's — that kind's own is replaced by the load. Null when
+// no model encodes.
+std::optional<bllm::preflight::CompanionHost> host_of(const Session& s, bllm::arch::MediaKind kind) {
     if (s.embedder == nullptr || s.loaded == nullptr) return std::nullopt;
+    std::uint64_t resident = s.loaded->plan().total_bytes;
+    for (std::size_t k = 0; k < kMediaKinds; ++k) {
+        if (k != index_of(kind) && s.companion_loaded[k] != nullptr) resident += s.companion_loaded[k]->plan().total_bytes;
+    }
     return bllm::preflight::CompanionHost{s.loaded_description, s.loaded_architecture,
-                                          s.embedder->tokenizer().vocabulary(), s.loaded->plan().total_bytes};
+                                          s.embedder->tokenizer().vocabulary(), resident};
+}
+
+// A kind as the page writes it: 0 image, 1 audio.
+std::optional<bllm::arch::MediaKind> kind_of(std::uint32_t kind) {
+    if (kind == 0) return bllm::arch::MediaKind::Image;
+    if (kind == 1) return bllm::arch::MediaKind::Audio;
+    return std::nullopt;
+}
+
+// The vision stage attached, or null.
+bllm::runtime::Vision* vision_of(Session& s) {
+    if (s.embedder == nullptr) return nullptr;
+    // C.146: the stage is held by its interface; the image kind's is a Vision.
+    return dynamic_cast<bllm::runtime::Vision*>(s.embedder->stage(bllm::arch::MediaKind::Image));
 }
 
 std::string verdict_json(const bllm::preflight::Verdict& verdict) {
@@ -1096,21 +1125,28 @@ void on_companion_accepted(bllm::residency::UploadError error, void* userdata) {
     bllm_reply(request, "{\"ok\":true}");
 }
 
-// The vision encoder's program is built: the link to the text program and
-// the vision stage, attached to the embedder.
-void on_vision_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kernels::ProgramError error,
+// A companion's program is built: the link to the text program and its
+// kind's stage, attached to the embedder.
+void on_media_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kernels::ProgramError error,
                      std::string_view message, void* userdata) {
     const std::uint32_t request = to_generation(userdata);
     Session& s = session();
     CompanionLoad* load = s.companion.get();
-    if (load == nullptr || load->settled || s.companion_loaded == nullptr || s.embedder == nullptr) {
+    if (load == nullptr || load->settled || s.companion_loaded[index_of(load->kind)] == nullptr ||
+        s.embedder == nullptr) {
         bllm_reply(request, failure_json("the companion's load was replaced by another").c_str());
         return;
     }
     load->settled = true;
+    auto& loaded = s.companion_loaded[index_of(load->kind)];
     if (error != bllm::kernels::ProgramError::Ok) {
-        s.companion_loaded.reset();
-        bllm_reply(request, failure_json("the vision encoder's kernels did not build", message).c_str());
+        loaded.reset();
+        bllm_reply(request, failure_json("the encoder's kernels did not build", message).c_str());
+        return;
+    }
+    if (!load->description.vision) {
+        loaded.reset();
+        bllm_reply(request, failure_json("this build has no stage for the companion's kind").c_str());
         return;
     }
     const auto scratch = [](const bllm::residency::ResidencyPlan& plan, std::string_view purpose) {
@@ -1119,15 +1155,18 @@ void on_vision_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kern
         }
         return bllm::kernels::Binding{};
     };
-    const auto& vision_plan = s.companion_loaded->plan();
-    auto link = std::make_unique<bllm::kernels::ProgramLink>(*s.companion_loaded, scratch(vision_plan, "soft_tokens"),
+    const auto& encoder_plan = loaded->plan();
+    auto link = std::make_unique<bllm::kernels::ProgramLink>(*loaded, scratch(encoder_plan, "soft_tokens"),
                                                              *s.loaded, scratch(s.loaded->plan(), "hidden"));
+    // The encoder's tokens, which preflight found in the vocabulary.
     const auto& vocabulary = s.embedder->tokenizer().vocabulary();
-    const bllm::runtime::ImageTokens tokens{*vocabulary.find("<|image|>"), *vocabulary.find("<|image>"),
-                                            *vocabulary.find("<image|>")};
+    const auto& texts = load->encoder->tokens;
+    const bllm::runtime::MediaTokens tokens{*vocabulary.find(texts[0]), *vocabulary.find(texts[1]),
+                                            *vocabulary.find(texts[2])};
     const bllm::model::VisionDescription& v = *load->description.vision;
-    s.embedder->attach(std::make_unique<bllm::runtime::Vision>(std::move(program), std::move(link),
-                                                               scratch(vision_plan, "pixels"), load->budget,
+    s.embedder->attach(load->kind,
+                       std::make_unique<bllm::runtime::Vision>(std::move(program), std::move(link),
+                                                               scratch(encoder_plan, "pixels"), load->budget,
                                                                v.patch_size, v.pooling),
                        tokens, s.loaded_description.embedding_width);
     bllm_reply(request, ("{\"ok\":true,\"imageTokens\":" + std::to_string(load->budget.most) + "}").c_str());
@@ -1142,18 +1181,17 @@ void on_companion_finished(bllm::residency::UploadError error, void* userdata) {
         bllm_reply(request, failure_json(bllm::residency::to_string(error)).c_str());
         return;
     }
-    s.companion_loaded = std::move(load->upload);
+    auto& loaded = s.companion_loaded[index_of(load->kind)];
+    loaded = std::move(load->upload);
     std::vector<bllm::kernels::Launch> launches;
-    const bllm::graph::GraphResult built =
-        load->encoder->graph(load->description, s.companion_loaded->plan(), launches);
+    const bllm::graph::GraphResult built = load->encoder->graph(load->description, loaded->plan(), launches);
     if (!built.ok()) {
         load->settled = true;
-        s.companion_loaded.reset();
-        bllm_reply(request, failure_json("the vision encoder's graph does not build", built.subject).c_str());
+        loaded.reset();
+        bllm_reply(request, failure_json("the encoder's graph does not build", built.subject).c_str());
         return;
     }
-    bllm::kernels::Program::build(*s.companion_loaded, std::move(launches), std::nullopt, on_vision_built,
-                                  to_userdata(request));
+    bllm::kernels::Program::build(*loaded, std::move(launches), std::nullopt, on_media_built, to_userdata(request));
 }
 
 // A memory budget as the page writes it: an exact integer, or NaN for the
@@ -1287,10 +1325,10 @@ EMSCRIPTEN_KEEPALIVE void bllm_load_begin(std::uint32_t request, const std::byte
 #if BLLM_DIAGNOSTICS_ENABLED
     s.check.reset();
 #endif
-    // A companion goes with the model it served: its vision stage went with
-    // the embedder, its buffers now.
+    // A companion goes with the model it served: its stage went with the
+    // embedder, its buffers now.
     s.companion.reset();
-    s.companion_loaded.reset();
+    for (auto& loaded : s.companion_loaded) loaded.reset();
     s.loaded.reset();
     s.loaded_description = description;
     s.loaded_architecture = std::string(architecture);
@@ -1430,8 +1468,15 @@ EMSCRIPTEN_KEEPALIVE void bllm_cancel(std::uint32_t request, std::uint32_t targe
 
 // Starts an encode: see the top of this file.
 EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, std::uint32_t text_length,
-                                     std::uint32_t image) {
+                                     std::uint32_t media) {
     Session& s = session();
+    // 0 none, 1 the image stage's, 2 the audio stage's.
+    if (media > 2) {
+        bllm_reply(request, failure_json("the medium passed in is not one this build names").c_str());
+        return;
+    }
+    const std::optional<bllm::arch::MediaKind> kind =
+        media == 0 ? std::nullopt : kind_of(media - 1);
     if (s.embedder == nullptr) {
         bllm_reply(request, failure_json(s.generator != nullptr ? "the model generates; it does not embed"
                                                                 : "no model is loaded")
@@ -1439,7 +1484,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, st
         return;
     }
     const bllm::runtime::EmbedResult started =
-        s.embedder->start({text, text_length}, image != 0, on_embedded, to_userdata(request));
+        s.embedder->start({text, text_length}, kind, on_embedded, to_userdata(request));
     using bllm::runtime::EmbedError;
     switch (started.error) {
         case EmbedError::Ok:
@@ -1466,13 +1511,14 @@ EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, st
         case EmbedError::DeviceLost:
             bllm_reply(request, failure_json("the GPU device was lost").c_str());
             return;
-        case EmbedError::ImageNotReady:
-            bllm_reply(request, failure_json("no image is prepared").c_str());
+        case EmbedError::MediaNotReady:
+            bllm_reply(request, failure_json(media == 1 ? "no image is prepared" : "no audio clip is prepared").c_str());
             return;
         case EmbedError::Placeholder:
-            bllm_reply(request, failure_json(image != 0 ? "the text must hold <|image|> once with an image"
-                                                        : "the text holds <|image|> and no image")
-                                    .c_str());
+            bllm_reply(request,
+                       failure_json(media == 0 ? "the text holds a medium's placeholder and no medium"
+                                               : "the text must hold its medium's placeholder once, and no other's")
+                           .c_str());
             return;
         default:
             bllm_reply(request, failure_json("the encode cannot start").c_str());
@@ -1481,7 +1527,8 @@ EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, st
 }
 
 // Judges a companion beside the loaded model: see the top of this file.
-EMSCRIPTEN_KEEPALIVE void bllm_companion_preflight(std::uint32_t request, const std::byte* resident,
+EMSCRIPTEN_KEEPALIVE void bllm_companion_preflight(std::uint32_t request, std::uint32_t kind_index,
+                                                   const std::byte* resident,
                                                    std::uint32_t resident_length, double file_size,
                                                    const double* ranges, std::uint32_t range_count,
                                                    std::uint32_t least_tokens,
@@ -1489,7 +1536,12 @@ EMSCRIPTEN_KEEPALIVE void bllm_companion_preflight(std::uint32_t request, const 
                                                    double max_binding_size, std::uint32_t offset_alignment,
                                                    double memory_budget) {
     Session& s = session();
-    const auto host = host_of(s);
+    const auto kind = kind_of(kind_index);
+    if (!kind) {
+        bllm_reply(request, "{\"status\":\"unreadable\",\"error\":\"the kind passed in is not one this build names\"}");
+        return;
+    }
+    const auto host = host_of(s, *kind);
     if (!host) {
         bllm_reply(request, "{\"status\":\"unreadable\",\"error\":\"no model that embeds is loaded\"}");
         return;
@@ -1498,7 +1550,8 @@ EMSCRIPTEN_KEEPALIVE void bllm_companion_preflight(std::uint32_t request, const 
     bllm::media::ImageBudget budget{};
     if (!exact_integer(file_size) || file_size < resident_length || !exact_integer(max_buffer_size) ||
         !exact_integer(max_binding_size) || !budget_or_unset(memory_budget) ||
-        !read_ranges(ranges, range_count, parsed) || !read_budget(least_tokens, most_tokens, budget)) {
+        !read_ranges(ranges, range_count, parsed) ||
+        (*kind == bllm::arch::MediaKind::Image && !read_budget(least_tokens, most_tokens, budget))) {
         bllm_reply(request, "{\"status\":\"unreadable\",\"error\":\"the sizes passed in are not valid\"}");
         return;
     }
@@ -1522,18 +1575,24 @@ EMSCRIPTEN_KEEPALIVE void bllm_companion_preflight(std::uint32_t request, const 
                                                static_cast<std::uint64_t>(max_binding_size), offset_alignment};
     const auto size = static_cast<std::uint64_t>(file_size);
     const bllm::preflight::Verdict verdict = bllm::preflight::preflight_companion(
-        index, parsed, size, index_end_of(index, size), limits, policy, budget, *host);
+        *kind, index, parsed, size, index_end_of(index, size), limits, policy, budget, *host);
     bllm_reply(request, verdict_json(verdict).c_str());
 }
 
 // Begins a companion's load beside the loaded model: see the top of this file.
-EMSCRIPTEN_KEEPALIVE void bllm_companion_load_begin(std::uint32_t request, const std::byte* prefix,
+EMSCRIPTEN_KEEPALIVE void bllm_companion_load_begin(std::uint32_t request, std::uint32_t kind_index,
+                                                    const std::byte* prefix,
                                                     std::uint32_t prefix_length, double file_size,
                                                     const double* ranges, std::uint32_t range_count,
                                                     std::uint32_t max_chunk, std::uint32_t least_tokens,
                                                     std::uint32_t most_tokens, double memory_budget) {
     Session& s = session();
-    const auto host = host_of(s);
+    const auto kind = kind_of(kind_index);
+    if (!kind) {
+        bllm_reply(request, failure_json("the kind passed in is not one this build names").c_str());
+        return;
+    }
+    const auto host = host_of(s, *kind);
     if (s.device == nullptr || !host) {
         bllm_reply(request, failure_json("no model that embeds is loaded to load a companion beside").c_str());
         return;
@@ -1545,7 +1604,8 @@ EMSCRIPTEN_KEEPALIVE void bllm_companion_load_begin(std::uint32_t request, const
     std::vector<bllm::residency::FileRange> parsed;
     bllm::media::ImageBudget budget{};
     if (!exact_integer(file_size) || file_size < prefix_length || max_chunk == 0 || !budget_or_unset(memory_budget) ||
-        !read_ranges(ranges, range_count, parsed) || !read_budget(least_tokens, most_tokens, budget)) {
+        !read_ranges(ranges, range_count, parsed) ||
+        (*kind == bllm::arch::MediaKind::Image && !read_budget(least_tokens, most_tokens, budget))) {
         bllm_reply(request, failure_json("the sizes passed in are not valid").c_str());
         return;
     }
@@ -1569,23 +1629,24 @@ EMSCRIPTEN_KEEPALIVE void bllm_companion_load_begin(std::uint32_t request, const
     bllm::model::ModelDescription description;
     bllm::residency::ResidencyPlan plan;
     if (const std::string stop =
-            bllm::preflight::plan_companion(index, parsed, limits, policy, budget, *host, description, plan);
+            bllm::preflight::plan_companion(*kind, index, parsed, limits, policy, budget, *host, description, plan);
         !stop.empty()) {
         bllm_reply(request, failure_json(stop).c_str());
         return;
     }
     std::string_view projector;
-    (void)index.read_string("clip.vision.projector_type", projector);
-    // A companion loaded before is replaced: its vision stage first, then its
-    // buffers.
-    if (s.embedder != nullptr) s.embedder->attach(nullptr, {}, 0);
-    s.companion_loaded.reset();
+    (void)index.read_string(bllm::arch::projector_key(*kind), projector);
+    // A companion of this kind loaded before is replaced: its stage first,
+    // then its buffers. The other kind's stays.
+    if (s.embedder != nullptr) s.embedder->attach(*kind, nullptr, {}, s.loaded_description.embedding_width);
+    s.companion_loaded[index_of(*kind)].reset();
     s.companion = std::make_unique<CompanionLoad>();
     CompanionLoad& load = *s.companion;
+    load.kind = *kind;
     load.begin_request = request;
     load.chunk.resize(max_chunk);
     load.description = description;
-    load.encoder = bllm::capability::find_vision_encoder(projector);
+    load.encoder = bllm::capability::find_media_encoder(*kind, projector);
     load.budget = budget;
     bllm::residency::Upload::begin(*s.device, index, plan, size, bllm::capability::find_format, {}, max_chunk,
                                    on_companion_ready, to_userdata(request), parsed);
@@ -1617,8 +1678,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_companion_load_finish(std::uint32_t request) {
 
 // Starts an image in the vision stage's slot: its grid, or the refusal.
 EMSCRIPTEN_KEEPALIVE void bllm_image_begin(std::uint32_t request, std::uint32_t width, std::uint32_t height) {
-    Session& s = session();
-    bllm::runtime::Vision* vision = s.embedder != nullptr ? s.embedder->vision() : nullptr;
+    bllm::runtime::Vision* vision = vision_of(session());
     if (vision == nullptr) {
         bllm_reply(request, failure_json("no vision encoder is loaded").c_str());
         return;
@@ -1646,8 +1706,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_image_begin(std::uint32_t request, std::uint32_t 
 // The next band of the slot's image, `length` RGBA bytes at `pixels`.
 EMSCRIPTEN_KEEPALIVE void bllm_image_rows(std::uint32_t request, std::uint32_t first_row, const std::uint8_t* pixels,
                                           std::uint32_t length) {
-    Session& s = session();
-    bllm::runtime::Vision* vision = s.embedder != nullptr ? s.embedder->vision() : nullptr;
+    bllm::runtime::Vision* vision = vision_of(session());
     if (vision == nullptr) {
         bllm_reply(request, failure_json("no vision encoder is loaded").c_str());
         return;
@@ -1656,7 +1715,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_image_rows(std::uint32_t request, std::uint32_t f
         bllm_reply(request, failure_json("the band is out of order or not whole rows").c_str());
         return;
     }
-    bllm_reply(request, vision->ready_tokens() > 0 ? "{\"ok\":true,\"ready\":true}" : "{\"ok\":true,\"ready\":false}");
+    bllm_reply(request, vision->ready_rows() > 0 ? "{\"ok\":true,\"ready\":true}" : "{\"ok\":true,\"ready\":false}");
 }
 
 #if BLLM_DIAGNOSTICS_ENABLED

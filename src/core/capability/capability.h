@@ -4,7 +4,7 @@
 
 #include "core/gguf/types.h"
 
-namespace bllm::arch { struct Architecture; struct VisionEncoder; }
+namespace bllm::arch { struct Architecture; struct MediaEncoder; enum class MediaKind; }
 namespace bllm::formats { class Format; }
 namespace bllm::tokenizer { struct Algorithm; struct PreTokenizer; }
 
@@ -26,14 +26,13 @@ namespace bllm::capability {
 
 [[nodiscard]] const arch::Architecture* find_architecture(std::string_view general_architecture) noexcept;
 
-// Becoming find_media_encoder(arch::MediaKind, projector_type) for every
-// kind of media encoder (arch/media_encoder.h): the table keyed by kind and
-// type, "gemma4v" the image kind's one entry and "gemma4a" the audio kind's.
-//
-// A companion file's vision encoder, by its clip.vision.projector_type
-// (arch/vision_encoder.h): the identifier that names the encoder, where its
-// general.architecture, "clip", names none.
-[[nodiscard]] const arch::VisionEncoder* find_vision_encoder(std::string_view projector_type) noexcept;
+// A companion file's media encoder of `kind`, by the value of that kind's
+// projector key (arch/media_encoder.h): clip.vision.projector_type or
+// clip.audio.projector_type, the identifier that names the encoder, where
+// its general.architecture, "clip", names none. A type the table holds for
+// the other kind is not found.
+[[nodiscard]] const arch::MediaEncoder* find_media_encoder(arch::MediaKind kind,
+                                                           std::string_view projector_type) noexcept;
 [[nodiscard]] const formats::Format* find_format(gguf::TensorType type) noexcept;
 
 [[nodiscard]] const tokenizer::Algorithm* find_tokenizer(std::string_view tokenizer_model) noexcept;

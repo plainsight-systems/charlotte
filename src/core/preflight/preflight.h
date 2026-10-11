@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/arch/media_encoder.h"
 #include "core/gguf/byte_source.h"
 #include "core/gguf/index.h"
 #include "core/media/image.h"
@@ -154,44 +155,37 @@ struct Verdict {
                                 const residency::DeviceLimits& limits,
                                 const policy::LoadPolicy& policy);
 
-// The model a companion file is loaded beside (runtime/vision.h): what its
-// encoder must pair with, the vocabulary its image tokens must be in, and
-// the bytes its plan holds, which the companion's shares the budget with.
+// The model a companion file is loaded beside (runtime/media_stage.h): what
+// its encoder must pair with, the vocabulary its kind's tokens must be in,
+// and the bytes every plan already loaded holds — the text model's and the
+// other kind's companion's, when it is — which the companion shares the
+// budget with.
 struct CompanionHost {
     const model::ModelDescription& text;
     std::string_view text_architecture;
     const tokenizer::Vocabulary& vocabulary;
-    std::uint64_t text_bytes;
+    std::uint64_t resident_bytes;
 };
 
-// A companion's verdict, judged stage by stage as a model's is: Download,
-// its ranges (residency/file_ranges.h); Describe, its encoder found by
-// clip.vision.projector_type and described; Fit, planned against its ranges
-// within what the budget leaves beside the model, its step's rows the image
+// A companion's verdict for its encoder of `kind`, judged stage by stage as a
+// model's is: Download, its ranges (residency/file_ranges.h); Describe, its
+// encoder found by the kind's projector key (arch/media_encoder.h) and
+// described; Fit, planned against its ranges within what the budget leaves
+// beside the plans loaded, its step's rows the kind's — for an image the
 // budget's most patches; Upload, the formats and rows of the tensors inside
-// the ranges; Run, its graph building, pairs accepting the model, and the
-// three image tokens in the model's vocabulary. `index_end` is where the
-// header and index end.
-[[nodiscard]] Verdict preflight_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,
-                                          std::uint64_t file_size, std::uint64_t index_end,
-                                          const residency::DeviceLimits& limits, const policy::LoadPolicy& policy,
-                                          media::ImageBudget budget, const CompanionHost& host);
-
-// For an audio encoder (runtime/audio.h), both take the companion's kind,
-// arch/media_encoder.h's MediaKind: the encoder found by the kind's key,
-// clip.vision.projector_type or clip.audio.projector_type; its working set
-// the kind's — an image's from the budget's most tokens, an audio clip's
-// rows the text model's context less its ends and the two audio tokens; Run
-// checking the kind's three tokens in the vocabulary and, for audio, the
-// setup graph building. The image budget becomes an image's alone, unused
-// for audio. CompanionHost's text_bytes becomes resident_bytes, every plan
-// already loaded — the text model's and the other kind's companion's, when
-// it is — which the companion shares the budget with; and the host gains
-// the text model's context offered.
+// the ranges; Run, its graphs building, pairs accepting the model, and the
+// encoder's three tokens in the model's vocabulary. `index_end` is where the
+// header and index end. The image budget is an image's alone.
+[[nodiscard]] Verdict preflight_companion(arch::MediaKind kind, const gguf::TensorIndex& index,
+                                          std::span<const residency::FileRange> ranges, std::uint64_t file_size,
+                                          std::uint64_t index_end, const residency::DeviceLimits& limits,
+                                          const policy::LoadPolicy& policy, media::ImageBudget budget,
+                                          const CompanionHost& host);
 
 // What a companion's load carries out: its description and the plan its
 // verdict judged Fit. Returns what stops it, or an empty string.
-[[nodiscard]] std::string plan_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,
+[[nodiscard]] std::string plan_companion(arch::MediaKind kind, const gguf::TensorIndex& index,
+                                         std::span<const residency::FileRange> ranges,
                                          const residency::DeviceLimits& limits, const policy::LoadPolicy& policy,
                                          media::ImageBudget budget, const CompanionHost& host,
                                          model::ModelDescription& description, residency::ResidencyPlan& plan);

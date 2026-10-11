@@ -73,7 +73,7 @@ test('a first ensure checks, downloads the ranges and loads them, in that order'
   const client = fakeClient();
   const net = network();
   const phases = [];
-  const companion = createCompanion({ client, cache, ...net, onChange: (s) => phases.push(s?.phase) });
+  const companion = createCompanion({ kind: 'image', client, cache, ...net, onChange: (s) => phases.push(s?.phase) });
   await companion.ensure(MODEL);
   assert.deepEqual([...new Set(phases)], ['checking', 'downloading', 'loading', 'loaded']);
   // The header read from the first range alone, sized as the published file.
@@ -83,7 +83,9 @@ test('a first ensure checks, downloads the ranges and loads them, in that order'
   assert.equal(preflight.memoryBudget, 1e9);
   const [, load] = client.asked.find(([kind]) => kind === Request.LOAD_COMPANION);
   assert.equal(load.name, `ranges-${VISION.rangesSha256}.gguf`);
-  assert.deepEqual(load.vision.ranges, RANGES);
+  assert.equal(load.media, 'image');
+  assert.equal(preflight.media, 'image');
+  assert.deepEqual(load.entry.ranges, RANGES);
   assert.deepEqual(Buffer.from(await (await cache.file(`ranges-${VISION.rangesSha256}`)).arrayBuffer()), RANGED);
   // Loaded: a second ensure asks nothing.
   const before = client.asked.length;
@@ -95,7 +97,7 @@ test('a cached companion is checked from its copy and loaded without a fetch', a
   const cache = memoryCache();
   cache.files.set(`ranges-${VISION.rangesSha256}`, new Blob([RANGED]));
   const net = network();
-  const companion = createCompanion({ client: fakeClient(), cache, ...net });
+  const companion = createCompanion({ kind: 'image', client: fakeClient(), cache, ...net });
   await companion.ensure(MODEL);
   assert.deepEqual(net.fetched, []);
   assert.equal(companion.state.phase, 'loaded');
@@ -105,7 +107,7 @@ test('a verdict short of run is refused, by name, with nothing downloaded', asyn
   const verdict = { status: 'read', reached: 'describe', fit: null,
     blockers: [{ stage: 'fit', detail: 'needs 330 MB beside the model; 120 MB are left' }] };
   const net = network();
-  const companion = createCompanion({ client: fakeClient({ verdict }), cache: memoryCache(), ...net });
+  const companion = createCompanion({ kind: 'image', client: fakeClient({ verdict }), cache: memoryCache(), ...net });
   await assert.rejects(companion.ensure(MODEL), (error) => error instanceof CompanionError && /120 MB/.test(error.message));
   assert.equal(companion.state.phase, 'failed');
   assert.deepEqual(companion.state.verdict.blockers, verdict.blockers);
@@ -117,7 +119,7 @@ test('ranges that do not match their hash are refused and nothing is cached', as
   changed[4_000] ^= 1;
   const cache = memoryCache();
   const client = fakeClient();
-  const companion = createCompanion({ client, cache, ...network(changed) });
+  const companion = createCompanion({ kind: 'image', client, cache, ...network(changed) });
   await assert.rejects(companion.ensure(MODEL), /SHA-256/);
   assert.equal(cache.files.size, 0);
   assert.ok(!client.asked.some(([kind]) => kind === Request.LOAD_COMPANION));
@@ -127,7 +129,7 @@ test('release mid-load cancels the load, and its late answer changes nothing', a
   let finishLoad;
   const client = fakeClient({ load: () => new Promise((resolve) => { finishLoad = resolve; }) });
   const states = [];
-  const companion = createCompanion({ client, cache: memoryCache(), ...network(), onChange: (s) => states.push(s) });
+  const companion = createCompanion({ kind: 'image', client, cache: memoryCache(), ...network(), onChange: (s) => states.push(s) });
   const ensured = companion.ensure(MODEL);
   while (finishLoad === undefined) await new Promise((resolve) => setTimeout(resolve, 0));
   companion.release();
@@ -153,4 +155,20 @@ test('each state reads as the search panel shows it', () => {
   assert.equal(describeCompanion({ phase: 'loading', received: 0, total: null }), 'Loading the image encoder');
   assert.equal(describeCompanion({ phase: 'loaded' }), 'Image encoder loaded');
   assert.equal(describeCompanion({ phase: 'failed', message: 'x' }), 'The image encoder did not load');
+});
+
+test("an audio companion reads the entry's `audio` and is listed as the model's audio", async () => {
+  const cache = memoryCache();
+  const client = fakeClient();
+  const listed = [];
+  const recording = { ...cache, writer: async (key) => {
+    const w = await cache.writer(key);
+    return { ...w, commit: async (d) => { listed.push(d.name); await w.commit(d); } };
+  } };
+  const companion = createCompanion({ kind: 'audio', client, cache: recording, ...network() });
+  await companion.ensure({ ...MODEL, vision: undefined, audio: VISION });
+  assert.deepEqual(listed, ['E audio']);
+  const [, load] = client.asked.find(([kind]) => kind === Request.LOAD_COMPANION);
+  assert.equal(load.media, 'audio');
+  assert.throws(() => createCompanion({ kind: 'video', client, cache }), /no companion of kind/);
 });

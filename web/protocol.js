@@ -31,13 +31,15 @@ export const Request = Object.freeze({
   // when the text does not fit the context.
   EMBED: 'embed',
   // Judge a loaded model's companion file (companion.js) from its header,
-  // read from its first range — { bytes, totalSize, vision, memoryBudget },
-  // `vision` the catalog's entry and memoryBudget the model's load policy's,
-  // or absent. DONE carries the verdict, as PREFLIGHT's.
+  // read from its first range — { media, bytes, totalSize, entry,
+  // memoryBudget }, `media` 'image' or 'audio', `entry` the catalog's for
+  // that kind and memoryBudget the model's load policy's, or absent. DONE
+  // carries the verdict, as PREFLIGHT's.
   PREFLIGHT_COMPANION: 'preflight-companion',
   // Load a cached companion beside the loaded model, by its file's name —
-  // { name, vision, memoryBudget, maxChunk }; progress comes back as
-  // PROGRESS replies. DONE carries { imageTokens }, the most an image becomes.
+  // { media, name, entry, memoryBudget, maxChunk }; progress comes back as
+  // PROGRESS replies. DONE carries, for an image companion, { imageTokens },
+  // the most an image becomes.
   LOAD_COMPANION: 'load-companion',
   // Decode a photo in the worker and prepare it in the module's one image
   // slot — { image }, a Blob. DONE carries { tokens, width, height }: the
