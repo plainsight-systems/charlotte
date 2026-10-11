@@ -71,6 +71,19 @@ Decided 2026-10-02:
   it came from, and nothing is claimed for hardware it did not run on.
   Supersedes BLLM-002's target matrix and its owed floor budget.
 
+Decided 2026-10-11:
+
+- **No optional WebGPU feature, and no limit above the defaults.** The harness
+  runs wherever WebGPU's core does, in f32 throughout, and its forward pass is
+  held to llama.cpp's within the spread of llama.cpp's own CPU and Metal
+  backends (`tests/gpu/reference_test.cpp`), a tolerance never widened.
+  `shader-f16`, `subgroups` and 32 KiB of workgroup memory are where other
+  WebGPU engines' extra speed comes from
+  (`research/2026-10-11-webgpu-inference-engines.md`); f16 is worth about 1.5
+  times in prefill by Google's measurement, and rounds every activation. Speed
+  is sought within these bounds, and every kernel keeps a token's bits the
+  same at every step length.
+
 Decided 2026-10-07:
 
 - **The sampled token stays on the GPU and is read back a step behind.** The
