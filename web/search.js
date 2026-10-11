@@ -87,11 +87,13 @@
 //     worth a change to the boundary.
 //   - One passage a step, as the embedder takes them. By the estimates
 //     above, several in one step would share only the mapping, about 0.5 ms
-//     of 6.1. Measured in Chrome, a 70-token paragraph takes 15.6 ms, 11 to
-//     13 of them not scaling with its tokens and not yet accounted for
-//     (the same note): if that cost is the step's, a batch would share most
-//     of it. The embedder would have to mask attention and pool by passage
-//     (GPU.6), a change to the encode path's design, not to this page.
+//     of 6.1. Measured in Chrome, a 70-token paragraph took 15.6 ms, most of
+//     it matrix products of too few tiles to fill the GPU, and takes 11.0
+//     with them split along K (kernels/matmul/matmul.h; the same note); what
+//     a batch would share is again the step's fixed cost, and the products
+//     the split leaves. The embedder would have to mask attention and pool
+//     by passage (GPU.6), a change to the encode path's design, not to this
+//     page.
 //
 // Verification: in the app's Chromium with EmbeddingGemma 2, the document
 // in tests/fixtures/search/ — paragraphs on unrelated subjects, one of them

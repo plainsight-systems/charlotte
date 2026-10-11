@@ -21,9 +21,9 @@ This file tracks active and accepted work.
   fixture's seven queries (`tests/fixtures/search/`) ranks its own
   paragraph first.
 
-  In Chrome a query encodes in 13.9 ms and 418 tokens in 38.5 ms; the
-  worker's hops take under 0.1 ms
-  (`research/2026-10-11-chrome-encode-benchmark.md`).
+  In Chrome a query encodes in 7.0 ms and 418 tokens in 39.2 ms, a short
+  step's matrix products split along K; the worker's hops take under 0.1
+  ms (`research/2026-10-11-chrome-encode-benchmark.md`).
 
   Open: the panel with an iPhone's on-screen keyboard up.
 
@@ -78,10 +78,9 @@ Speed, none of it a correctness gap:
 - Prefill attention: 20.7% of a 512-token step natively (the same note).
 - Decode's products of few rows, at 150 to 210 GB/s against the larger
   products' 300 and more (the same note).
-- Prefill's workgroups for short prompts.
+- Prefill's products of many tiles over a short K at short steps, which
+  the split along K leaves: gate and up, 35% of a 16-token Qwen3 step
+  natively; a query still 7.0 ms against an estimate of 2
+  (`research/2026-10-11-chrome-encode-benchmark.md`).
 - The re-prefill when the chat template rewrites history, as after a
   reasoning turn.
-- The encode's 11 to 13 ms that does not scale with its tokens, against
-  about 1 ms counted: 7 times the estimate for a short query
-  (`research/2026-10-11-chrome-encode-benchmark.md`). A native step
-  profile would place it, and whether batching passages would share it.

@@ -10,7 +10,9 @@
 //   - paragraph: one of the search fixture's paragraphs as a document,
 //     about 70 tokens: what indexing sends a passage at a time.
 //   - long: five chapters of the benchmark's text as a document, about 450
-//     tokens, near the most one encode holds.
+//     tokens, near the most one encode holds; and two, three, four and six
+//     chapters, about 170 to 500, the lengths a split along K's gate decides
+//     between (kernels/matmul/matmul.h).
 //   - hop: a CANCEL naming no request, which the worker answers without
 //     calling the module (wasm_runtime.js): the page to the worker and
 //     back, two messages and nothing else. Not an encode: it calibrates the
@@ -42,10 +44,12 @@ export const EMBED_SCENARIOS = [
   { name: 'paragraph', task: 'document', text: PARAGRAPH },
   { name: 'long', task: 'document',
     text: Array.from({ length: 5 }, (_, i) => `Chapter ${i + 1}. ${CHAPTER}`).join(' ') },
+  ...[2, 3, 4, 6].map((n) => ({ name: `chapters${n}`, task: 'document',
+    text: Array.from({ length: n }, (_, i) => `Chapter ${i + 1}. ${CHAPTER}`).join(' ') })),
   { name: 'hop', task: null, text: null },
 ];
 
-export const EMBED_RUNS = 20;   // measured, after one discarded
+export const EMBED_RUNS = 10;   // measured, after one discarded
 
 const median = (values) => spread(values).median;
 

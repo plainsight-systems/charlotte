@@ -77,3 +77,93 @@ the pipelines warming; the others within 2% of their medians.
   hops' absence suggests, batching would save most of it: a document of a
   thousand such paragraphs takes about 16 s to index, 11 to 13 s of it that
   cost. Whether it is the step's is what the profile above would show.
+
+## The fixed cost found, and the split along K
+
+**Code:** commit after `b609405`, the development site's release module,
+`web/dev/embed_benchmark.js` with texts of 2, 3, 4 and 6 chapters beside the
+first three, 10 runs a text after one discarded.
+
+### Where the 11 to 13 ms went
+
+Natively, Qwen3's prompt steps of 8, 16 and 32 tokens each took 15 to 17 ms
+of GPU time against floors near 1 ms (`make profile`). The time was in the
+tiled matrix products: each tile's workgroup walks the whole of K alone,
+and a product of few output tiles, such as an output or down projection,
+ran 8 to 16 workgroups on the GPU's 40 cores. EmbeddingGemma 2's down,
+output and per-layer products, timed alone in Chrome, came to about 9.8 ms
+of a 21-token encode's 14.3: the fixed cost above.
+
+`kernels/matmul/matmul.h` now splits such a product along K, a workgroup
+for each of the 32 ranges its fixed order of addition already has, and adds
+each output's range sums in that order in a second launch. The bits are the
+tiled form's, which the GPU tests hold it to. Which steps split is a gate of
+two values: the ratio is fitted to every listed model's product shapes timed
+alone in Chrome; the cap to the whole encodes below.
+
+### Method
+
+Four builds of the release module, each served at a path of its own on one
+origin, so they share the cached model and no build is cached for another:
+
+- **before:** the commit before the split.
+- **never:** the split built in, its gate set never to split.
+- **cap 128** and **cap 64:** the gate at a ratio of 2, capped at 128 and at
+  64 workgroups.
+
+They ran in turn, then in turn reversed, so drift through a session falls on
+each alike.
+
+Conditions:
+
+- Chrome 151 on the M3 Max, on mains power; the page visible throughout,
+  none left out hidden; not cross-origin isolated, so `performance.now()`
+  rounds to 100 µs.
+- Another program's GPU test suite ran repeatedly through the first
+  attempts and slowed them by up to 1.8 times, the runs drifting slower
+  from one to the next. Those runs are discarded; the suite was paused for
+  the runs below, and none started during them.
+
+### Results
+
+The medians of the last round, run cap 64, never, before. The round
+before it, run before, never, cap 64, agreed within 1% for never and cap
+64; before, first in it, ran 3 to 5% slower than here:
+
+| Text | Tokens | before | never | cap 64 |
+|---|---|---|---|---|
+| query | 21 | 14.3 ms | 14.5 | 7.0 |
+| paragraph | 70 | 16.0 | 16.0 | 11.0 |
+| 2 chapters | 172 | 22.1 | 22.3 | 19.5 |
+| 3 chapters | 254 | 26.7 | 26.7 | 26.0 |
+| 4 chapters | 336 | 33.5 | 33.6 | 33.5 |
+| long | 418 | 39.1 | 39.1 | 39.2 |
+| 6 chapters | 500 | 47.0 | 47.3 | 47.1 |
+
+- **The split halves a short encode.** A query takes 7.0 ms, 2.0 times
+  faster; a paragraph 11.0, 1.45 times; 172 tokens 1.13 times. Past 254
+  tokens the gate leaves the products tiled and the times are the tiled
+  form's.
+- **The cap of 64, not 128.** Under 128 the down and global output
+  projections split at 418 and 500 tokens, 27 to 33 MB of range sums each
+  way a launch, and those encodes ran 1.0 to 1.4 ms slower than never
+  splitting, in two rounds; at 336 tokens 128 was 2% faster than 64. A
+  launch timed alone keeps its range sums in the GPU's caches, which is why
+  the shapes timed alone had favored 128.
+- **The tiled form's own cost.** The first build with the split ran the
+  tiled form 2 to 3% slower than before at every length, in Chrome; natively
+  0.3%. Each invocation's place in its tile was recomputed for each of the
+  32 ranges. Worked out once a tile, never matches before within 1%.
+- **What remains.** A query is still 7.0 ms against the 2 ms
+  `runtime/embedder.h` estimated. The products the gate leaves are now the
+  largest share: natively, Qwen3's gate and up take 35% of a 16-token step,
+  a product of many tiles over a short K, where splitting lost in every
+  measurement.
+
+Natively, Qwen3's prompt steps, GPU time a step, before and after (`make
+profile`, DIAGNOSTIC, the final code): 8 tokens 16.8 ms and 6.5; 16 tokens
+15.0 and 6.5; 32 tokens 16.9 and 10.1; 64 tokens 20.6 and 15.7; 128 tokens
+33.0 and 31.1; 512 tokens 129.1 and 128.7. Its repetition check on decode at
+position 1,024, a kernel the split does not touch, read 10.6% against its
+10% bound, and 7.1% and 11.5% on other runs: a bound that run-to-run
+variation reaches.
