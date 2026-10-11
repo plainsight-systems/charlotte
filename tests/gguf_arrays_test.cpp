@@ -10,6 +10,7 @@
 #include "core/gguf/arrays.h"
 #include "core/gguf/reader.h"
 #include "support/gguf_fixture.h"
+#include "support/metadata_file.h"
 
 using namespace bllm::gguf;
 
@@ -146,4 +147,56 @@ TEST_CASE("a vocabulary-sized string array is read in one pass") {
     CHECK(merges[0] == "m0");
     CHECK(merges[150'000] == "m150000");
     CHECK(merges[kCount - 1] == "m299999");
+}
+
+namespace {
+
+TensorIndex read_metadata(const bllm::testing::MetadataFile& file) {
+    const auto bytes = file.bytes();
+    MemoryByteSource source{bytes};
+    TensorIndex index;
+    REQUIRE(read_index(source, index).error == ReadError::Ok);
+    return index;
+}
+
+}  // namespace
+
+TEST_CASE("a short array of counts or flags is decoded at read, as a value a layer is") {
+    bllm::testing::MetadataFile file;
+    file.int32s("heads", {2, 2, 1, 2})
+        .uint32s("widths", {256, 512})
+        .booleans("sliding", {true, true, false})
+        .int32s("negative", {2, -1})
+        .uint32("scalar", 7);
+    const TensorIndex index = read_metadata(file);
+    std::vector<std::uint32_t> counts;
+    REQUIRE(index.read_u32_array("heads", counts) == MetadataError::Ok);
+    CHECK(counts == std::vector<std::uint32_t>{2, 2, 1, 2});
+    REQUIRE(index.read_u32_array("widths", counts) == MetadataError::Ok);
+    CHECK(counts == std::vector<std::uint32_t>{256, 512});
+    std::vector<bool> flags;
+    REQUIRE(index.read_bool_array("sliding", flags) == MetadataError::Ok);
+    CHECK(flags == std::vector<bool>{true, true, false});
+    // A negative count, a scalar, flags read as counts, a missing key: each
+    // refused, the output untouched.
+    std::vector<std::uint32_t> untouched{9};
+    CHECK(index.read_u32_array("negative", untouched) == MetadataError::WrongType);
+    CHECK(index.read_u32_array("scalar", untouched) == MetadataError::WrongType);
+    CHECK(index.read_u32_array("sliding", untouched) == MetadataError::WrongType);
+    CHECK(index.read_u32_array("absent", untouched) == MetadataError::MissingKey);
+    CHECK(untouched == std::vector<std::uint32_t>{9});
+    CHECK(index.read_bool_array("heads", flags) == MetadataError::WrongType);
+}
+
+TEST_CASE("an array of numbers longer than kMaxDecodedArray is located, not decoded") {
+    std::vector<std::int32_t> many(kMaxDecodedArray + 1, 3);
+    bllm::testing::MetadataFile file;
+    file.int32s("many", std::span<const std::int32_t>{many});
+    const TensorIndex index = read_metadata(file);
+    std::vector<std::uint32_t> counts;
+    CHECK(index.read_u32_array("many", counts) == MetadataError::WrongType);
+    ArrayLocation location{};
+    REQUIRE(index.read_array("many", location) == MetadataError::Ok);
+    CHECK(location.element_count == kMaxDecodedArray + 1);
+    CHECK(location.decoded.empty());
 }

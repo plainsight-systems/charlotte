@@ -47,6 +47,23 @@ public:
         return *this;
     }
 
+    MetadataFile& uint32s(std::string_view key, std::initializer_list<std::uint32_t> values) {
+        array_header(key, gguf::ValueType::UInt32, values.size());
+        for (const std::uint32_t v : values) put(&v, sizeof v);
+        ++entries_;
+        return *this;
+    }
+
+    MetadataFile& booleans(std::string_view key, std::initializer_list<bool> values) {
+        array_header(key, gguf::ValueType::Bool, values.size());
+        for (const bool v : values) {
+            const std::uint8_t b = v ? 1 : 0;
+            put(&b, 1);
+        }
+        ++entries_;
+        return *this;
+    }
+
     MetadataFile& float32s(std::string_view key, std::span<const float> values) {
         array_header(key, gguf::ValueType::Float32, values.size());
         for (const float v : values) put(&v, sizeof v);

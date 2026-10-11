@@ -203,6 +203,18 @@ ReadError Reader::take_array(ArrayLocation& out) {
         for (std::uint64_t i = 0; i < out.element_count; ++i) {
             if (const auto e = skip_string(); e != ReadError::Ok) return e;
         }
+    } else if (out.element_count <= kMaxDecodedArray) {
+        // A short array of numbers: each element read, as a scalar is
+        // (index.h).
+        const std::uint64_t size = scalar_size(out.element_type);
+        const bool is_signed = out.element_type == ValueType::Int8 || out.element_type == ValueType::Int16 ||
+                               out.element_type == ValueType::Int32 || out.element_type == ValueType::Int64;
+        out.decoded.reserve(static_cast<std::size_t>(out.element_count));
+        for (std::uint64_t i = 0; i < out.element_count; ++i) {
+            std::uint64_t raw = 0;
+            if (const auto e = take_uint(static_cast<int>(size), raw); e != ReadError::Ok) return e;
+            out.decoded.push_back(is_signed ? static_cast<std::uint64_t>(sign_extend(raw, size)) : raw);
+        }
     } else {
         std::uint64_t total = 0;
         if (!checked_mul(out.element_count, scalar_size(out.element_type), total)) {

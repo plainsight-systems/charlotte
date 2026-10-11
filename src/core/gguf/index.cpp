@@ -60,4 +60,34 @@ MetadataError TensorIndex::read_array(std::string_view key, ArrayLocation& out) 
     return read_as<ArrayLocation>(entry(key), ValueType::Array, out);
 }
 
+MetadataError TensorIndex::read_u32_array(std::string_view key, std::vector<std::uint32_t>& out) const {
+    const MetadataEntry* e = entry(key);
+    if (e == nullptr) return MetadataError::MissingKey;
+    if (e->type != ValueType::Array) return MetadataError::WrongType;
+    const ArrayLocation& a = std::get<ArrayLocation>(e->value);
+    if (a.element_type != ValueType::UInt32 && a.element_type != ValueType::Int32) return MetadataError::WrongType;
+    if (a.decoded.size() != a.element_count) return MetadataError::WrongType;   // too long to be decoded
+    std::vector<std::uint32_t> values;
+    values.reserve(a.decoded.size());
+    for (const std::uint64_t v : a.decoded) {
+        if (a.element_type == ValueType::Int32 && static_cast<std::int64_t>(v) < 0) return MetadataError::WrongType;
+        values.push_back(static_cast<std::uint32_t>(v));
+    }
+    out = std::move(values);
+    return MetadataError::Ok;
+}
+
+MetadataError TensorIndex::read_bool_array(std::string_view key, std::vector<bool>& out) const {
+    const MetadataEntry* e = entry(key);
+    if (e == nullptr) return MetadataError::MissingKey;
+    if (e->type != ValueType::Array) return MetadataError::WrongType;
+    const ArrayLocation& a = std::get<ArrayLocation>(e->value);
+    if (a.element_type != ValueType::Bool || a.decoded.size() != a.element_count) return MetadataError::WrongType;
+    std::vector<bool> values;
+    values.reserve(a.decoded.size());
+    for (const std::uint64_t v : a.decoded) values.push_back(v != 0);
+    out = std::move(values);
+    return MetadataError::Ok;
+}
+
 }  // namespace bllm::gguf

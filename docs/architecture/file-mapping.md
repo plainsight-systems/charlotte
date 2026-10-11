@@ -251,7 +251,8 @@ Four rules hold for every contract:
    run. Scalar and string metadata is decoded during the parse and read through
    typed accessors that distinguish a missing key from a key of the wrong type.
    Arrays, such as a vocabulary, are located rather than decoded; the consumer
-   decodes them from the byte source.
+   decodes them from the byte source. A short array of numbers, a value a
+   layer, is decoded too, so describe reads it from the index alone.
 3. **Capability** — `core/capability`. One table from each identifier a file
    carries — architecture, weight format, tokenization algorithm, pre-tokenizer
    — to the implementation that runs it. Supported means present in the table;

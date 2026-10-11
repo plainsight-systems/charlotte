@@ -26,7 +26,15 @@ namespace bllm::gguf {
 //     defects: one is a file that lacks a field, the other a file that
 //     misdeclares it.
 //   - Arrays are located, not decoded. A vocabulary is ~150,000 strings and
-//     only the tokenizer reads it, from the byte source.
+//     only the tokenizer reads it, from the byte source. The exception is a
+//     short array of numbers — at most kMaxDecodedArray, as a value a layer
+//     is — whose elements are decoded too, so describe, which has the index
+//     alone, reads a per-layer value as it reads a scalar. Decoding them costs
+//     at most 8 KiB an array, at read.
+
+// The longest array of numbers the read decodes: far past any model's
+// layers.
+inline constexpr std::uint64_t kMaxDecodedArray = 1024;
 
 // A tensor's position in the index. Its own type, so a tensor identifier
 // cannot be passed where a layer or a token is meant (I.4).
@@ -44,6 +52,10 @@ struct ArrayLocation {
     ValueType element_type;
     std::uint64_t element_count;
     ByteRange bytes;
+    // For an array of numbers of at most kMaxDecodedArray elements, each
+    // element's bits widened to 64, signed ones sign-extended; empty
+    // otherwise.
+    std::vector<std::uint64_t> decoded;
 };
 
 // One metadata value as the file stores it. Integers widen to 64 bits and
@@ -82,6 +94,13 @@ public:
     // `out` views storage owned by the index and lives as long as it does.
     [[nodiscard]] MetadataError read_string(std::string_view key, std::string_view& out) const noexcept;
     [[nodiscard]] MetadataError read_array(std::string_view key, ArrayLocation& out) const noexcept;
+    // A short array of counts, one a layer: UINT32 elements, or INT32 ones
+    // none negative, the form llama.cpp's converter writes them in. WrongType
+    // for any other array, a longer one, or a scalar. `out` is left untouched
+    // unless it succeeds.
+    [[nodiscard]] MetadataError read_u32_array(std::string_view key, std::vector<std::uint32_t>& out) const;
+    // A short array of flags: BOOL elements, as read_u32_array reads counts.
+    [[nodiscard]] MetadataError read_bool_array(std::string_view key, std::vector<bool>& out) const;
 
 private:
     friend ReadResult read_index(ByteSource& source, TensorIndex& out);
