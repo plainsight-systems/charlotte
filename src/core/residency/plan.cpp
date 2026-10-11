@@ -305,8 +305,10 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
                 pieces.push_back({range.buffer, range.offset, range.length, first, count});
             }
         }
+        const bool whole = std::find(model.read_whole.begin(), model.read_whole.end(),
+                                     static_cast<gguf::TensorId>(i)) != model.read_whole.end();
         out.tensors.push_back({static_cast<gguf::TensorId>(i), WeightView{t.type, shape, std::move(pieces)},
-                               tied ? model.token_embedding : std::nullopt});
+                               tied ? model.token_embedding : std::nullopt, true, whole});
     }
 
     // Each group's span, now its members are placed: one buffer, from the

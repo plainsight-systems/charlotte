@@ -23,6 +23,7 @@
 #include "core/graph/audio.h"
 #include "core/residency/file_ranges.h"
 #include "core/residency/plan.h"
+#include "core/residency/routes.h"
 #include "support/model_headers.h"
 
 using namespace bllm;
@@ -190,6 +191,18 @@ TEST_CASE("the audio encoder plans against its range: every clamped product in o
                           [&](const residency::PlannedScratch& s) { return s.purpose == purpose; }));
     }
     MESSAGE("weights " << plan.weight_bytes / 1e6 << " MB, working set " << plan.scratch_bytes / 1e6 << " MB");
+
+    // Every audio tensor routes, the convolutions' weights — rows of 9 and of
+    // 5, read whole by their kernels — among them.
+    std::vector<residency::Route> routes;
+    residency::ResidencyPlan carried;
+    const auto routed = residency::plan_routes(h.index, plan, kFileSize, capability::find_format, {}, routes, carried,
+                                               kAudioRanges);
+    REQUIRE_MESSAGE(routed.ok(), routed.subject);
+    for (const gguf::TensorId id : m.read_whole) {
+        CHECK(plan.tensors[static_cast<std::size_t>(id)].whole);
+    }
+    CHECK(m.read_whole.size() == 2 + 12);
 }
 
 TEST_CASE("the audio encoder cannot plan against the vision span: its tensors lie outside it") {

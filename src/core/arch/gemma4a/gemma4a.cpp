@@ -211,6 +211,10 @@ DescribeResult describe_gemma4a(const gguf::TensorIndex& index, model::ModelDesc
         const bool audio = name.starts_with("a.") || name.starts_with("mm.a.");
         if (audio && !described[i]) return refuse(DescribeError::UnsupportedValue, std::string(name));
     }
+    // The convolutions' weights, read whole by their kernels: rows of 9 and
+    // of 1,152, and each layer's of 5 (formats/format.h).
+    out.read_whole = {a.convolution[0], a.convolution[1]};
+    for (const model::ConformerLayer& l : a.layers) out.read_whole.push_back(l.depthwise);
     out.audio = std::move(a);
     out.product_spans = std::move(spans);
     return {};

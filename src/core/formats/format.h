@@ -59,9 +59,12 @@ namespace bllm::formats {
 //     is refused by routes (RowNotSteppable) and reported by preflight, so no
 //     kernel is handed one. A scalar, one value, is the exception: no kernel
 //     steps through it, and the one that reads it — the norm, Gemma 4's
-//     layer output scale (kernels/norm/norm.h) — reads it whole. Describe
-//     checks every role's tensor against its role's shape, so a scalar
-//     never fills a role that a kernel steps through.
+//     layer output scale (kernels/norm/norm.h) — reads it whole. So is an F32
+//     tensor its description declares read whole (model_description.h's
+//     read_whole), such as an audio encoder's convolution weights, rows of 9
+//     and of 5, each read whole by its own kernel. Describe checks every
+//     role's tensor against its role's shape, so neither ever fills a role
+//     that a kernel steps through.
 //   - Whether adjacent lanes read adjacent addresses depends on how a kernel
 //     maps lanes to groups; the layout makes it possible, and each kernel
 //     states its own mapping.

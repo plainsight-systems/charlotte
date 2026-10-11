@@ -193,6 +193,10 @@ struct PlannedTensor {
     // it. Every tensor keeps an entry, so the plan's tensors stay indexed by
     // tensor id.
     bool present = true;
+    // Read whole by its kernel, never stepped through by groups: the
+    // description's read_whole (model_description.h), which routes accept
+    // whatever its rows.
+    bool whole = false;
 };
 
 // One layer's cache storage. Position p lives in slot p mod slots; for a

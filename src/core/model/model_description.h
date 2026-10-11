@@ -253,6 +253,11 @@ struct ModelDescription {
     std::optional<AudioDescription> audio;
     // The products whose weights carry their bounds or bias in their binding.
     std::vector<ProductSpan> product_spans;
+    // F32 tensors no kernel steps through 32 weights at a time, each read
+    // whole by the one kernel that reads it — an audio encoder's
+    // convolution weights (kernels/subsample, kernels/light_conv) — so their
+    // rows need not be a whole number of groups (formats/format.h).
+    std::vector<gguf::TensorId> read_whole;
     std::vector<LayerDescription> layers;
 };
 

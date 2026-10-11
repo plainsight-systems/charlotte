@@ -216,7 +216,9 @@ void check_formats(const gguf::TensorIndex& index, Verdict& verdict,
 
 // Upload needs every row a whole number of unpack's groups (format.h), as
 // routes does; one blocker, naming how many tensors fall short and the first.
-void check_rows(const gguf::TensorIndex& index, Verdict& verdict, std::span<const residency::FileRange> ranges = {}) {
+// `whole`: the tensors the description declares read whole (formats/format.h).
+void check_rows(const gguf::TensorIndex& index, Verdict& verdict, std::span<const residency::FileRange> ranges = {},
+                std::span<const gguf::TensorId> whole = {}) {
     std::size_t short_rows = 0;
     const gguf::TensorEntry* first = nullptr;
     for (const gguf::TensorEntry& tensor : index.tensors()) {
@@ -224,6 +226,8 @@ void check_rows(const gguf::TensorIndex& index, Verdict& verdict, std::span<cons
             continue;
         }
         if (formats::steps_by_groups(tensor) || formats::is_scalar(tensor)) continue;
+        const auto id = static_cast<gguf::TensorId>(&tensor - index.tensors().data());
+        if (std::find(whole.begin(), whole.end(), id) != whole.end()) continue;
         if (first == nullptr) first = &tensor;
         ++short_rows;
     }
@@ -486,7 +490,9 @@ Verdict preflight_companion(arch::MediaKind kind, const gguf::TensorIndex& index
         }
     }
     check_formats(index, verdict, ranges);
-    check_rows(index, verdict, ranges);
+    check_rows(index, verdict, ranges,
+               described ? std::span<const gguf::TensorId>(described->description.read_whole)
+                         : std::span<const gguf::TensorId>{});
     return verdict;
 }
 
