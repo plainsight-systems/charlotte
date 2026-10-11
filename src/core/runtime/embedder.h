@@ -51,10 +51,11 @@ namespace bllm::runtime {
 //          text made; valid only during the call.
 //   - Two ways an encode can end, kept apart. start() returns at once with
 //     a refusal for what it can know before the GPU runs — Busy,
-//     DeviceLost, a text the tokenizer refuses, TooManyTokens — and then
-//     never calls back. An encode it accepts calls back exactly once, with
-//     Ok and the vector, or with what happened after it was submitted —
-//     Step, NonFinite, DeviceLost, Cancelled — and an empty vector.
+//     DeviceLost, a text the tokenizer refuses, TooManyTokens, an empty
+//     text — and then never calls back. An encode it accepts calls back
+//     exactly once, with Ok and the vector, or with what happened after it
+//     was submitted — Step, NonFinite, DeviceLost, Cancelled — and an empty
+//     vector.
 //   - The context offered is the smaller of kPrefillBlock, 512 tokens, and
 //     the model's trained context (residency/plan.h): the most one step
 //     holds. EmbeddingGemma 2 is trained to 8,192 by its card and declares
@@ -114,10 +115,10 @@ namespace bllm::runtime {
 //     16-token query and 60 ms for 512 tokens, by the estimates above.
 //
 // What it asks of the other contracts:
-//   - kernels/program.h: kMaxReadback rises from 16 bytes to 4 KiB, so a
+//   - kernels/program.h: a readback of up to kMaxReadback, 4 KiB, so a
 //     program reads back an embedding as it reads back the draw's record —
 //     two slots of the range's size, copied after the step's pass, mapped
-//     once submitted. Unchanged for a generator, whose range stays 16.
+//     once submitted. A generator's range is its 16 bytes.
 //   - tokenizer/tokenizer.h: nothing; the embedder calls encode with its
 //     limit, as the generator does, and adds the ends itself.
 //   - preflight/preflight.h: Run, for a model whose architecture encodes
@@ -138,13 +139,16 @@ namespace bllm::runtime {
 //   - Against the reference, EmbeddingGemma 2 at Q8_0, the file pinned by
 //     SHA-256 and fetched as test data: for each of a set of pinned texts —
 //     a short query, a passage of a few hundred tokens, one of exactly 510
-//     tokens, and text in three scripts — the embedding llama.cpp's
+//     tokens of its own, and text in three scripts — the embedding llama.cpp's
 //     llama-embedding gives, mean pooling and its own normalization, on its
 //     CPU backend and on Metal, kept as a fixture by
 //     tools/make_reference_embeddings.sh. Each of ours is within the
 //     largest difference llama.cpp shows between its own two backends on
-//     that text, component by component, and its cosine with each of
-//     theirs at least theirs with each other's. llama.cpp is pinned for
+//     that text of Metal's, component by component, and its cosine with
+//     Metal's at least the CPU's with Metal's: Metal the reference, as the
+//     logits' reference test takes it. The check discriminates: the model
+//     with its RoPE pairing swapped falls outside on every text. llama.cpp
+//     is pinned for
 //     this tool at a commit of its own, a9d27ac693ff0a1d3cba449c912c2b891904a4c7,
 //     the first holding gemma-embedding2 (src/models/gemma-embedding2.cpp);
 //     the logits fixtures keep their pin, 988190680d5a89fce97de3c20df2c2813731fd61,
@@ -154,12 +158,13 @@ namespace bllm::runtime {
 //     included, those llama-tokenize gives at the same pin
 //     (tokenizer/bpe/gemma4_bpe.h).
 //   - On the GPU, the same text embedded twice gives the same bits; an
-//     encode after a refused one, and after a failed step, gives the bits a
-//     fresh embedder gives; destroying an embedder mid-encode reports
-//     Cancelled; and each refusal — Busy, TooManyTokens with its count —
-//     named — a text admitted that merges past the context among them,
-//     refused after its encode with the count it made. ends.h's refusals, on the CPU, over headers
-//     tools/make_fixture_gguf.py writes with each flag removed or retyped.
+//     encode after a refused one gives the bits a fresh embedder gives; a
+//     step that reads back no vector is Step; a lost device DeviceLost, and
+//     every later encode refused so; destroying an embedder mid-encode
+//     reports Cancelled; and each refusal — Busy, Text, TooManyTokens with
+//     its count — named, a text admitted that merges past the context among
+//     them, refused after its encode with the count it made. ends.h's
+//     refusals, on the CPU, over headers with each flag removed or retyped.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -191,6 +196,8 @@ enum class EmbedError {
     Busy,             // an encode is running
     DeviceLost,       // a step reported the device lost; no encode can run
     TooManyTokens,    // the text makes more than the context offered, ends included
+    Text,             // the tokenizer refused the text: not UTF-8, or too long to encode
+    EmptyText,        // no tokens at all: an empty text, and a file that adds no ends
     NonFinite,        // a component of the vector is not finite
     Step,             // the step failed; the message is WebGPU's
     Cancelled,        // the embedder was destroyed with the encode in flight
@@ -226,7 +233,7 @@ public:
 
     // Starts an encode of `text`. Returns Ok once the step is submitted, and
     // then `done` is called exactly once, however the encode ends; returns a
-    // refusal — Busy, DeviceLost, the tokenizer's, TooManyTokens — without
+    // refusal — Busy, DeviceLost, Text, TooManyTokens, EmptyText — without
     // running anything, and then `done` is never called. `text` is not read
     // after the call.
     [[nodiscard]] EmbedResult start(std::string_view text, EmbedCallback done, void* userdata);

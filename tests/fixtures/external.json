@@ -20,6 +20,11 @@
    "name": "models/gemma-3-1b-it-q4_0.gguf",
    "url": "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_0.gguf",
    "sha256": "27ee88e03be02e9ba73def9a819d570d8ad73716e50769e87f374ae394b0276e"
+  },
+  {
+   "name": "models/embeddinggemma-2-q8_0.gguf",
+   "url": "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-Q8_0.gguf",
+   "sha256": "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135"
   }
  ]
 }

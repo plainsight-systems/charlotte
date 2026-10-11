@@ -269,16 +269,20 @@ TEST_CASE("destroying the program with two steps outstanding reports each Cancel
     }
 }
 
-TEST_CASE("a readback range over 16 bytes is refused at build") {
+TEST_CASE("a readback range over kMaxReadback, or not whole words, is refused at build") {
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     Stamping s;
     upload_for_stamps(instance.get(), *device, s);
     const kernels::Binding range{s.sampled.buffer, s.sampled.offset, 16};
-    const Built built = try_build(instance.get(), *s.upload,
-                                  {kernels::Launch{kStamp, nullptr, std::vector<std::byte>(4), {range}, 1, 1}},
-                                  kernels::Binding{s.sampled.buffer, 0, 32});
-    CHECK(built.error == kernels::ProgramError::Build);
+    for (const std::uint64_t size : {kernels::kMaxReadback + 4, std::uint64_t{6}}) {
+        CAPTURE(size);
+        const Built built = try_build(instance.get(), *s.upload,
+                                      {kernels::Launch{kStamp, nullptr, std::vector<std::byte>(4), {range}, 1, 1}},
+                                      kernels::Binding{s.sampled.buffer, 0, size});
+        CHECK(built.error == kernels::ProgramError::Build);
+        CHECK(built.message.find("4 KiB") != std::string::npos);
+    }
 }
 
 TEST_CASE("constants spanning several slots are each launch's own, at its own offset") {

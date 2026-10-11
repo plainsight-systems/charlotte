@@ -167,8 +167,11 @@ using BuildCallback = void (*)(std::unique_ptr<Program> program, ProgramError er
 using StepCallback = void (*)(ProgramError error, std::string_view message, std::span<const std::byte> readback,
                               void* userdata);
 
-// The most bytes a step reads back: the draw's record.
-inline constexpr std::uint64_t kMaxReadback = 16;
+// The most bytes a step reads back: a generator's draw record, 16, or an
+// embedder's vector, 4 bytes a dimension — 3 KiB for EmbeddingGemma 2's 768
+// (runtime/embedder.h). Each of the two slots a step may be outstanding in
+// holds this much in the program's state, made at build.
+inline constexpr std::uint64_t kMaxReadback = 4096;
 
 // A kernel as build() compiles it, for a launch: the step's declaration
 // (step.wgsl), then the kernel, then the unpack of the format it reads and

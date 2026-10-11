@@ -418,8 +418,8 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
     if (readback) {
         WGPUBuffer buffer = upload.buffer(readback->buffer);
         if (buffer == nullptr || readback->size == 0 || readback->size > kMaxReadback || readback->size % 4 != 0) {
-            done(nullptr, ProgramError::Build, "the readback range is not a buffer upload created, of 4 to 16 bytes",
-                 userdata);
+            done(nullptr, ProgramError::Build,
+                 "the readback range is not a buffer upload created, a whole number of words up to 4 KiB", userdata);
             return;
         }
         state->readback = State::Source{buffer, readback->offset, readback->size};

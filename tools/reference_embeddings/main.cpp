@@ -1,0 +1,162 @@
+// llama.cpp's embeddings for pinned texts, on its CPU backend and on Metal,
+// written as the C++ fixture tests/gpu/embedder_test.cpp reads. A
+// development tool, run by tools/make_reference_embeddings.sh; never part of
+// the harness.
+//
+// Each text is tokenized with the file's ends, as llama-embedding tokenizes
+// it, decoded as one batch — an encoder's attention runs both ways, so the
+// whole text in one step — mean-pooled by the model's pooling type, and
+// normalized to unit length as llama-embedding's default normalization,
+// common_embd_normalize's L2, does. Floats are written as hexadecimal
+// literals, so the fixture holds llama.cpp's values exactly.
+//
+// A text written "@N <words>" is cut to the longest run of its first words
+// that makes N tokens with the ends, and refused if no run makes exactly N:
+// a text of exactly the context, found by the tokenizer it is held to.
+//
+//     reference_embeddings <model.gguf> <llama.cpp commit> <model sha256> <name> <text> [<name> <text> ...]
+
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+#include "llama.h"
+
+namespace {
+
+constexpr int kBlock = 512;
+
+struct Backend {
+    llama_model* model;
+    llama_context* context;
+};
+
+Backend open(const char* path, bool cpu) {
+    llama_model_params mp = llama_model_default_params();
+    static ggml_backend_dev_t no_devices[] = {nullptr};
+    if (cpu) {
+        mp.devices = no_devices;   // the CPU alone
+        mp.n_gpu_layers = 0;
+    } else {
+        mp.n_gpu_layers = -1;      // every layer on Metal
+    }
+    llama_model* model = llama_model_load_from_file(path, mp);
+    if (model == nullptr) std::exit(1);
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = kBlock;
+    cp.n_batch = kBlock;
+    cp.n_ubatch = kBlock;   // the whole text in one batch: attention runs both ways
+    cp.embeddings = true;
+    if (cpu) {
+        cp.offload_kqv = false;
+        cp.op_offload = false;
+    }
+    llama_context* context = llama_init_from_model(model, cp);
+    if (context == nullptr) std::exit(1);
+    return {model, context};
+}
+
+// The text's unit-length embedding.
+std::vector<float> embed(const Backend& b, std::vector<llama_token> tokens) {
+    llama_memory_clear(llama_get_memory(b.context), true);
+    llama_batch batch = llama_batch_init(static_cast<int>(tokens.size()), 0, 1);
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        batch.token[i] = tokens[i];
+        batch.pos[i] = static_cast<llama_pos>(i);
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = 1;
+    }
+    batch.n_tokens = static_cast<int>(tokens.size());
+    if (llama_decode(b.context, batch) != 0) std::exit(1);
+    const int n = llama_model_n_embd_out(b.model);
+    const float* pooled = llama_get_embeddings_seq(b.context, 0);
+    if (pooled == nullptr) std::exit(1);
+    std::vector<float> out(pooled, pooled + n);
+    llama_batch_free(batch);
+    // common_embd_normalize, norm 2.
+    double sum = 0;
+    for (const float v : out) sum += static_cast<double>(v) * v;
+    const double norm = std::sqrt(sum);
+    const float scale = norm > 0 ? static_cast<float>(1.0 / norm) : 0.0f;
+    for (float& v : out) v *= scale;
+    return out;
+}
+
+std::vector<llama_token> tokenize(const llama_vocab* vocab, const std::string& text) {
+    std::vector<llama_token> tokens(text.size() + 8);
+    const int n = llama_tokenize(vocab, text.data(), static_cast<int>(text.size()), tokens.data(),
+                                 static_cast<int>(tokens.size()), true, false);
+    if (n < 0) std::exit(1);
+    tokens.resize(n);
+    return tokens;
+}
+
+// "@N <words>": the longest run of the first words making N tokens or fewer,
+// which must make exactly N.
+std::string cut(const llama_vocab* vocab, const std::string& text) {
+    if (text.empty() || text[0] != '@') return text;
+    const std::size_t space = text.find(' ');
+    const std::size_t want = std::strtoul(text.c_str() + 1, nullptr, 10);
+    const std::string words = text.substr(space + 1);
+    std::string best;
+    for (std::size_t end = words.find(' '); ; end = words.find(' ', end + 1)) {
+        const std::string run = words.substr(0, end);
+        if (tokenize(vocab, run).size() > want) break;
+        best = run;
+        if (end == std::string::npos) break;
+    }
+    if (tokenize(vocab, best).size() != want) {
+        std::fprintf(stderr, "no run of the words makes exactly %zu tokens\n", want);
+        std::exit(1);
+    }
+    return best;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 6 || (argc - 4) % 2 != 0) {
+        std::fprintf(stderr, "usage: reference_embeddings <model.gguf> <commit> <sha256> <name> <text> ...\n");
+        return 2;
+    }
+    llama_backend_init();
+    const Backend cpu = open(argv[1], true), metal = open(argv[1], false);
+    const llama_vocab* vocab = llama_model_get_vocab(metal.model);
+
+    std::printf("// Generated by tools/make_reference_embeddings.sh. Do not edit.\n");
+    std::printf("// llama.cpp %s, CPU and Metal, on the model of SHA-256 %s.\n", argv[2], argv[3]);
+    std::printf("// Each text: its name, the text, its tokens with the file's ends, and its unit-length\n");
+    std::printf("// embedding on Metal and on the CPU, mean-pooled and L2-normalized.\n");
+    std::printf("inline constexpr std::string_view kReferenceSha256 = \"%s\";\n", argv[3]);
+    std::printf("inline const ReferenceEmbedding kReferenceEmbeddings[] = {\n");
+    for (int a = 4; a < argc; a += 2) {
+        const std::string text = cut(vocab, argv[a + 1]);
+        const std::vector<llama_token> tokens = tokenize(vocab, text);
+        const int n = static_cast<int>(tokens.size());
+        if (n <= 0 || n > kBlock) {
+            std::fprintf(stderr, "%s: %d tokens, not 1 to %d\n", argv[a], n, kBlock);
+            return 1;
+        }
+        const std::vector<float> m = embed(metal, tokens), c = embed(cpu, tokens);
+        std::printf("    {\"%s\", R\"REF(%s)REF\", {", argv[a], text.c_str());
+        for (int i = 0; i < n; ++i) std::printf("%s%d", i ? ", " : "", tokens[i]);
+        std::printf("}, {");
+        for (std::size_t i = 0; i < m.size(); ++i) std::printf("%s%af", i ? ", " : "", m[i]);
+        std::printf("}, {");
+        for (std::size_t i = 0; i < c.size(); ++i) std::printf("%s%af", i ? ", " : "", c[i]);
+        std::printf("}},\n");
+        std::fprintf(stderr, "%s: %d tokens\n", argv[a], n);
+    }
+    std::printf("};\n");
+
+    for (const Backend* b : {&cpu, &metal}) {
+        llama_free(b->context);
+        llama_model_free(b->model);
+    }
+    llama_backend_free();
+    return 0;
+}
