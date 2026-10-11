@@ -149,6 +149,17 @@ namespace bllm::kernels {
 //     rows, one binding spanning the three, each read from its own place in
 //     it (residency, below): outputs 0 .. H_q × d − 1 into `query`, the next
 //     H_kv × d into `key`, the rest into `value` — the rope kernel's inputs.
+//   - gated by input: one weight's product through the activation, times a
+//     working buffer's value at the token's row and the output's column —
+//     activation(W x)[t][o] × u[t × stride + column + o] — Gemma 4's
+//     per-layer gate, GELU of the product times the layer's per-layer input
+//     (graph/encoder.h), so the activation is never written and read back
+//     to be multiplied. u binds after the output, read-only — its own
+//     declaration of binding 5, which QKV writes; the stride and first
+//     column ride in the constants, which grow to 64 bytes for every
+//     launch, one slot as they were. Both forms, as every epilogue has;
+//     decode and prefill compute it alike, so a token's bits are the same
+//     either way.
 //   - gated activation: the layer's gate and up weights as one product,
 //     likewise, rows gate then up; a decode set's 4 rows are 2 gate rows
 //     and the same 2 of up, a prefill tile's 64 outputs 32 and the same 32,
@@ -168,13 +179,15 @@ namespace bllm::kernels {
 //     the outputs it writes; `columns` (K), a write's `out_width` and the
 //     activation are override constants, so indices fold when the pipeline
 //     is built.
-//   - Constants (binding 1): struct Matmul { members: array<vec4<u32>, 3> }
-//     — for each member of the product, or its one piece: its first word
-//     within the binding, its blocks, for unpack, and its first output row
-//     and row count.
+//   - Constants (binding 1): struct Matmul { members: array<vec4<u32>, 3>,
+//     gate_input: vec4<u32> } — for each member of the product, or its one
+//     piece: its first word within the binding, its blocks, for unpack, and
+//     its first output row and row count; and GatedByInput's stride and
+//     first column. 64 bytes.
 //   - Bindings: 2 the weights (`weights`, unpack's): one piece, or the range
 //     spanning a fused group's members; 3 the input; then the outputs,
-//     written — one, or query, key and value. Five at most.
+//     written — one, or query, key and value; then, for GatedByInput, its
+//     input u, read-only. Five at most.
 //
 // What it asks of the other contracts:
 //   - kernels/interface.h: a launch may run in a range of token counts
@@ -368,6 +381,7 @@ enum class Epilogue {
     Write,
     QKV,
     GatedActivation,
+    GatedByInput,
 };
 
 // One matrix product of the graph.
@@ -381,8 +395,13 @@ struct MatmulLaunch {
     // activation, in outputs[0].
     std::array<residency::BufferRange, 3> outputs;
     Epilogue epilogue;
-    model::FeedForwardActivation activation;         // GatedActivation's
+    model::FeedForwardActivation activation;         // GatedActivation's and GatedByInput's
     Rows rows;                                       // LastToken for the head
+    // GatedByInput's input u, read-only: output o of token t multiplies
+    // u[t × gate_input_stride + gate_input_column + o].
+    residency::BufferRange gate_input = {};
+    std::uint32_t gate_input_stride = 0;
+    std::uint32_t gate_input_column = 0;
 };
 
 // The product's launches: for each piece of the weight, a decode launch,

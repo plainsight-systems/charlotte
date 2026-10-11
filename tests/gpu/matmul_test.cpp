@@ -375,3 +375,49 @@ TEST_CASE("gate and up as one product write activation(gate) x up, for SiLU and 
         }
     }
 }
+
+TEST_CASE("a product gated by an input writes activation(W x) times the input at its row and column") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_weights(instance.get(), *device);
+    const auto source = source_rows(instance.get(), *device, u);
+    const auto gate = decoded(u, "ffn_gate");
+    // u is the source rows themselves, read from column 100 of each token's
+    // row of 1,024: a working buffer the product only reads.
+    constexpr std::uint32_t kStride = 1024, kColumn = 100;
+    kernels::MatmulLaunch m{{&u.view("ffn_gate"), nullptr, nullptr},
+                            1,
+                            u.input,
+                            {u.out[0], u.out[1], u.out[2]},
+                            kernels::Epilogue::GatedByInput,
+                            model::FeedForwardActivation::GeluTanh,
+                            kernels::Rows::EveryToken};
+    m.gate_input = u.source;
+    m.gate_input_stride = kStride;
+    m.gate_input_column = kColumn;
+    const auto launches = kernels::matmul_launches(m);
+    const std::uint32_t rows = static_cast<std::uint32_t>(u.entry("ffn_gate").dimensions[1]);
+    const auto prefilled = run(instance.get(), *device, u, 1024, launches, 33, 0, {rows});
+    for (std::uint32_t t = 0; t < 33; ++t) {
+        for (std::uint32_t r = 0; r < rows; ++r) {
+            const Want g = reference(gate, source, 1024, r, t);
+            const double x = g.value;
+            const double act = 0.5 * x * (1 + std::tanh(std::sqrt(2 / std::numbers::pi) * (x + 0.044715 * x * x * x)));
+            const double gin = source[std::size_t{t} * kStride + kColumn + r];
+            // The product's bound through GELU's slope, at most 1.13, its f32
+            // evaluation within 2⁻¹⁶, and the multiply's rounding.
+            const double bound = (1.13 * g.bound + std::ldexp(std::abs(act), -16)) * std::abs(gin) +
+                                 std::ldexp(std::abs(act * gin), -23) + std::ldexp(1.0, -30);
+            CHECK(std::abs(prefilled[0][std::size_t{t} * rows + r] - act * gin) <= bound);
+        }
+    }
+    // Decoded alone, the same bits as prefilled.
+    for (const std::uint32_t t : {0u, 32u}) {
+        CAPTURE(t);
+        const auto alone = run(instance.get(), *device, u, 1024, launches, 1, t, {rows});
+        // Alone, the step's one token is at row 0 of u as of the input:
+        // compare against a prefill whose token 0 is row t.
+        const auto shifted = run(instance.get(), *device, u, 1024, launches, 2, t, {rows});
+        CHECK(std::equal(alone[0].begin(), alone[0].end(), shifted[0].begin()));
+    }
+}

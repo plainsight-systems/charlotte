@@ -160,3 +160,28 @@ TEST_CASE("gate and up run a decode workgroup a 4 pairs and a prefill tile a 32"
     }
     CHECK(gelu);
 }
+
+TEST_CASE("a product gated by an input binds the input after its output and carries its stride and column") {
+    const auto w = q4_0(512, 512, 0);
+    const residency::BufferRange u{residency::BufferIndex{9}, 2048, 1 << 20};
+    kernels::MatmulLaunch m{{&w, nullptr, nullptr}, 1, kIn, {kQ, kK, kV}, Epilogue::GatedByInput,
+                            model::FeedForwardActivation::GeluTanh, kernels::Rows::EveryToken};
+    m.gate_input = u;
+    m.gate_input_stride = 12288;
+    m.gate_input_column = 5 * 512;
+    const auto launches = kernels::matmul_launches(m);
+    REQUIRE(launches.size() == 4);
+    CHECK(launches[0].entry_point == "decode_gated_input");
+    for (std::size_t i = 1; i < launches.size(); ++i) CHECK(launches[i].entry_point == "prefill_gated_input");
+    for (const kernels::Launch& l : launches) {
+        REQUIRE(l.bindings.size() == 4);
+        CHECK(l.bindings[2].buffer == kQ.buffer);
+        CHECK(l.bindings[3].buffer == u.buffer);
+        CHECK(l.bindings[3].offset == u.offset);
+        REQUIRE(l.constants.size() == 64);
+        std::uint32_t gate[2];
+        std::memcpy(gate, l.constants.data() + 48, sizeof gate);
+        CHECK(gate[0] == 12288);
+        CHECK(gate[1] == 5 * 512);
+    }
+}

@@ -41,8 +41,12 @@ constexpr std::uint32_t kMicro = 4;
 struct Member {
     std::uint32_t base, blocks, first_row, rows;
 };
-using Constants = std::array<Member, 3>;
-static_assert(sizeof(Constants) == 48);
+struct Constants {
+    std::array<Member, 3> members;
+    // GatedByInput's input: its row stride and first column, in floats.
+    std::uint32_t gate_input[4];
+};
+static_assert(sizeof(Constants) == 64);
 
 struct Entry {
     std::string_view decode, prefill;
@@ -53,6 +57,7 @@ Entry entry_of(Epilogue e) {
         case Epilogue::Write: return {"decode_write", "prefill_write"};
         case Epilogue::QKV: return {"decode_qkv", "prefill_qkv"};
         case Epilogue::GatedActivation: return {"decode_gated", "prefill_gated"};
+        case Epilogue::GatedByInput: return {"decode_gated_input", "prefill_gated_input"};
     }
     return {"decode_write", "prefill_write"};
 }
@@ -75,11 +80,14 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     const residency::WeightView& head = *m.weights[0];
     const std::uint64_t columns = head.shape().dimensions[0];
     const bool gated = m.epilogue == Epilogue::GatedActivation;
-    const auto bytes = std::as_bytes(std::span(members));
+    const auto bytes = std::as_bytes(std::span(&members, 1));
     std::vector<Binding> bindings{weights, {m.input.buffer, m.input.offset, m.input.length}};
     const std::uint32_t outputs = m.epilogue == Epilogue::QKV ? 3 : 1;
     for (std::uint32_t o = 0; o < outputs; ++o) {
         bindings.push_back({m.outputs[o].buffer, m.outputs[o].offset, m.outputs[o].length});
+    }
+    if (m.epilogue == Epilogue::GatedByInput) {
+        bindings.push_back({m.gate_input.buffer, m.gate_input.offset, m.gate_input.length});
     }
     std::vector<Override> overrides{
         {"columns", static_cast<double>(columns)},
@@ -145,10 +153,11 @@ std::vector<Launch> matmul_launches(const MatmulLaunch& m) {
     if (m.members == 1) {
         // One weight: a launch pair a piece, each binding its piece.
         for (const residency::WeightPiece& p : head.pieces()) {
-            const Constants members{Member{0, static_cast<std::uint32_t>(p.row_count * columns / block),
-                                           static_cast<std::uint32_t>(p.first_row),
-                                           static_cast<std::uint32_t>(p.row_count)},
-                                    Member{}, Member{}};
+            const Constants members{{Member{0, static_cast<std::uint32_t>(p.row_count * columns / block),
+                                            static_cast<std::uint32_t>(p.first_row),
+                                            static_cast<std::uint32_t>(p.row_count)},
+                                     Member{}, Member{}},
+                                    {m.gate_input_stride, m.gate_input_column, 0, 0}};
             add_launches(m, {p.buffer, p.offset, p.length}, members, p.row_count, out);
         }
         return out;
@@ -166,7 +175,7 @@ std::vector<Launch> matmul_launches(const MatmulLaunch& m) {
     std::uint64_t rows = 0;
     for (std::uint32_t i = 0; i < m.members; ++i) {
         const residency::WeightPiece& p = m.weights[i]->pieces().front();
-        members[i] = {static_cast<std::uint32_t>((p.offset - begin) / 4),
+        members.members[i] = {static_cast<std::uint32_t>((p.offset - begin) / 4),
                       static_cast<std::uint32_t>(p.row_count * columns / block), static_cast<std::uint32_t>(rows),
                       static_cast<std::uint32_t>(p.row_count)};
         rows += p.row_count;

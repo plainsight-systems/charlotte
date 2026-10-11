@@ -8,8 +8,8 @@
 // prefill walks them in turn, keeping each output's range sum and total.
 //
 // Entry points, one a form and epilogue, each binding only what it writes:
-//   decode_write, decode_qkv, decode_gated, prefill_write, prefill_qkv,
-//   prefill_gated.
+//   decode_write, decode_qkv, decode_gated, decode_gated_input,
+//   prefill_write, prefill_qkv, prefill_gated, prefill_gated_input.
 //
 // A product's rows are its members' rows in order — a weight piece, or a
 // fused group's Q, K, V or gate, up — each member read from its own first
@@ -22,6 +22,9 @@
 // output row, w its rows.
 struct Matmul {
     members: array<vec4<u32>, 3>,
+    // GatedByInput's input u: x its row stride, y its first column, in
+    // floats; 0 for every other epilogue.
+    gate_input: vec4<u32>,
 }
 
 // The program sets workgroup_size and last_token; the launcher the rest.
@@ -43,6 +46,9 @@ const kRanges = 32u;
 @group(0) @binding(4) var<storage, read_write> out0: array<f32>;
 @group(0) @binding(5) var<storage, read_write> out1: array<f32>;
 @group(0) @binding(6) var<storage, read_write> out2: array<f32>;
+// GatedByInput's u, read-only: its own declaration of binding 5, which the
+// QKV entry points write as out1, as two entry points may share a binding.
+@group(0) @binding(5) var<storage, read> gate_input: array<f32>;
 
 // Decode: each of 8 row slots' 32 range sums.
 var<workgroup> partials: array<f32, 256>;
@@ -265,6 +271,24 @@ fn decode_gated(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_
     }
 }
 
+// GatedByInput: an output row's total through the activation, times the
+// input u at the token's row and the output's column.
+fn gated_by_input(total: f32, token: u32, o: u32) -> f32 {
+    return activate(total) * gate_input[token * matmul.gate_input.x + matmul.gate_input.y + o];
+}
+
+@compute @workgroup_size(workgroup_size)
+fn decode_gated_input(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
+    decode_rows(wg.x, t);
+    if (t < 2u * set_rows) {
+        let at = locate(wg.x * 2u * set_rows + t);
+        if (at.z == 1u) {
+            let o = matmul.members[at.x].z + at.y;
+            out0[o] = gated_by_input(slot_total(row_slot(t)), token_of_decode(), o);
+        }
+    }
+}
+
 // ---- Prefill ----------------------------------------------------------------
 
 // Row slot `slot`'s member and row, as decode's slots: an invocation's 4
@@ -446,6 +470,22 @@ fn prefill_gated(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation
             let token = first + i;
             if (token < step.tokens && row < width) {
                 out0[token * width + row] = activate(totals[i][j]) * totals[i][j + 2u];
+            }
+        }
+    }
+}
+
+@compute @workgroup_size(workgroup_size)
+fn prefill_gated_input(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
+    let totals = prefill_tile(wg.x, t, false);
+    let first = first_token(wg.x, t);
+    for (var j = 0u; j < kMicro; j++) {
+        let at = slot_row(out_tile_of(wg.x), t % kOutputLanes + kOutputLanes * j, false);
+        for (var i = 0u; i < kMicro; i++) {
+            let token = first + i;
+            if (token < step.tokens && at.z == 1u) {
+                let o = matmul.members[at.x].z + at.y;
+                out0[token * out_width + o] = gated_by_input(totals[i][j], token, o);
             }
         }
     }
