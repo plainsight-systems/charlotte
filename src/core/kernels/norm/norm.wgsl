@@ -10,7 +10,11 @@
 // computed as x × r with r = inverseSqrt(mean of squares + epsilon), then × g,
 // llama.cpp's RMS_NORM then MUL. Where the launch adds, the block's output y
 // is added into x first, x written back as the new hidden row; with Gemma 3's
-// post-norm, y is itself normalized, with its own gain, before the add.
+// post-norm, y is itself normalized, with its own gain, before the add; with
+// Gemma 4's layer output scale, x is multiplied by a scalar after the add.
+// Without `normalize`, the launch adds and writes x, and nothing else. A
+// launch may cover several rows a token, rows_per_token, each normalized on
+// its own.
 //
 // inverseSqrt, dot, select and workgroupBarrier are WGSL built-ins; reduce is
 // below.
@@ -25,6 +29,9 @@ override workgroup_size: u32 = 256;
 override last_token: bool = false;
 override add: bool = false;
 override post_norm: bool = false;
+override scaled: bool = false;
+override normalize: bool = true;
+override rows_per_token: u32 = 1u;
 // The row's width, set by the program from the launcher; with no default, a
 // pipeline that is not given it fails to build.
 override width: u32;
@@ -35,6 +42,7 @@ override width: u32;
 @group(0) @binding(4) var<storage, read> output: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> hidden: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read_write> normed: array<vec4<f32>>;
+@group(0) @binding(7) var<storage, read> scale: array<f32>;
 
 // Rows up to 4,096 wide: at most 4 vec4s an invocation of 256.
 const kMaxVec4s = 4u;
@@ -61,9 +69,10 @@ fn reduce(index: u32, value: f32) -> f32 {
 
 @compute @workgroup_size(workgroup_size)
 fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) index: u32) {
-    // The row: this workgroup's, or the step's last for the final norm.
+    // The row: this workgroup's, of the step's tokens × rows_per_token, or
+    // the step's last for the final norm.
     let row = select(group.x, step.tokens - 1u, last_token);
-    if (row >= step.tokens) {
+    if (row >= step.tokens * rows_per_token) {
         return;
     }
     let vec4s = width / 4u;
@@ -113,13 +122,26 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
                 }
             }
         }
+        // Gemma 4's layer output scale, after the add: x = (x + y) × s.
+        var s = 1.0;
+        if (scaled) {
+            s = scale[0];
+        }
         for (var k = 0u; k < per_invocation; k++) {
             let i = index + k * workgroup_size;
             if (i < vec4s) {
                 x[k] = x[k] + y[k];
+                if (scaled) {
+                    x[k] = x[k] * s;
+                }
                 hidden[base + i] = x[k];
             }
         }
+    }
+    // An add alone writes nothing more. The override is the pipeline's, so
+    // the whole workgroup leaves here or none of it does.
+    if (!normalize) {
+        return;
     }
 
     // Step 3: the sum of squares. Each invocation sums its own vec4s' squares,

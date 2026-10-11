@@ -29,18 +29,24 @@ Launch norm_launch(const NormLaunch& n) {
     std::vector<std::byte> bytes(sizeof constants);
     std::memcpy(bytes.data(), &constants, sizeof constants);
     const bool post = n.post_gain != nullptr;
+    const bool scaled = n.scale != nullptr;
     return Launch{
         shaders::norm,
         nullptr,
         std::move(bytes),
         // Without a post-norm its gain is the norm's own: read-only, so the
         // two bindings may share it.
-        {whole(*n.gain), whole(post ? *n.post_gain : *n.gain), whole(n.output), whole(n.hidden), whole(n.normed)},
-        kWorkgroupSize,
+        // Without a scale, the gain takes its binding too.
+        {whole(*n.gain), whole(post ? *n.post_gain : *n.gain), whole(n.output), whole(n.hidden), whole(n.normed),
+         whole(scaled ? *n.scale : *n.gain)},
+        kWorkgroupSize * n.rows_per_token,
         kWorkgroupSize,
         n.rows,
         {{"add", n.add ? 1.0 : 0.0},
          {"post_norm", post ? 1.0 : 0.0},
+         {"scaled", scaled ? 1.0 : 0.0},
+         {"normalize", n.normalize ? 1.0 : 0.0},
+         {"rows_per_token", static_cast<double>(n.rows_per_token)},
          {"width", static_cast<double>(n.gain->shape().dimensions[0])}},
     };
 }

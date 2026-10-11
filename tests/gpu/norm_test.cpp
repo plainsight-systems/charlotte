@@ -324,3 +324,98 @@ TEST_CASE("a launch setting an override the program owns, or one override twice,
         CHECK(built.message.find(std::string(extra.name)) != std::string::npos);
     }
 }
+
+namespace {
+
+// The encoder's variants at EmbeddingGemma 2's width (norm.h): runs `norm`
+// after copying x into hidden and y into output, over `tokens` tokens of
+// `rows` rows in all; returns hidden and normed, `rows` rows each.
+Result run_launch(WGPUInstance instance, const gpu::Device& device, const Uploaded& u, kernels::Launch norm,
+                  std::uint32_t tokens, std::uint32_t rows) {
+    const std::uint32_t width = 512;
+    std::vector<kernels::Launch> launches;
+    // The copies cover `tokens` rows of the step; copy every row the norm reads.
+    kernels::Launch x = copy_launch(u.view("x_512"), u.hidden, width * (rows / tokens));
+    kernels::Launch y = copy_launch(u.view("y_512"), u.output, width * (rows / tokens));
+    launches.push_back(std::move(x));
+    launches.push_back(std::move(y));
+    launches.push_back(std::move(norm));
+    const auto program = build_program(instance, *u.upload, std::move(launches));
+    run_step(instance, *program, tokens);
+    return {read_floats(instance, device, u.upload->buffer(u.hidden.buffer), 0, rows * width),
+            read_floats(instance, device, u.upload->buffer(u.normed.buffer), 0, rows * width)};
+}
+
+std::vector<double> normalized(std::span<const double> row, std::span<const float> gain, double epsilon) {
+    double s = 0;
+    for (const double e : row) s += e * e;
+    const double r = 1.0 / std::sqrt(s / row.size() + epsilon);
+    std::vector<double> out;
+    for (std::size_t i = 0; i < row.size(); ++i) out.push_back(row[i] * r * gain[i]);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("a scaled add multiplies X by the scale after the add, then normalizes it") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_rows(instance.get(), *device);
+    const auto x = u.floats("x_512"), y = u.floats("y_512"), g = u.floats("gain_512"), pg = u.floats("post_512");
+    const float s = u.floats("scale")[0];
+    for (const bool post : {false, true}) {
+        CAPTURE(post);
+        kernels::NormLaunch n{&u.view("gain_512"), post ? &u.view("post_512") : nullptr, true, u.output, u.hidden,
+                              u.normed, kEpsilon, kernels::Rows::EveryToken};
+        n.scale = &u.view("scale");
+        const Result got = run_launch(instance.get(), *device, u, kernels::norm_launch(n), kRows, kRows);
+        for (std::uint32_t row = 0; row < kRows; ++row) {
+            CAPTURE(row);
+            std::vector<double> yr(y.begin() + row * 512, y.begin() + (row + 1) * 512);
+            if (post) yr = normalized(yr, pg, kEpsilon);
+            std::vector<double> hidden;
+            for (std::uint32_t i = 0; i < 512; ++i) hidden.push_back((x[row * 512 + i] + yr[i]) * s);
+            check_row(std::span(got.hidden).subspan(row * 512, 512), hidden);
+            check_row(std::span(got.normed).subspan(row * 512, 512), normalized(hidden, g, kEpsilon));
+        }
+    }
+}
+
+TEST_CASE("a norm that does not normalize adds, writes X, and leaves normed untouched") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_rows(instance.get(), *device);
+    const auto x = u.floats("x_512"), y = u.floats("y_512"), pg = u.floats("post_512");
+    kernels::NormLaunch n{&u.view("post_512"), &u.view("post_512"), true, u.output, u.hidden,
+                          u.normed, kEpsilon, kernels::Rows::EveryToken};
+    n.normalize = false;
+    const Result got = run_launch(instance.get(), *device, u, kernels::norm_launch(n), kRows, kRows);
+    for (std::uint32_t row = 0; row < kRows; ++row) {
+        CAPTURE(row);
+        const std::vector<double> yr = normalized(
+            std::vector<double>(y.begin() + row * 512, y.begin() + (row + 1) * 512), pg, kEpsilon);
+        std::vector<double> hidden;
+        for (std::uint32_t i = 0; i < 512; ++i) hidden.push_back(x[row * 512 + i] + yr[i]);
+        check_row(std::span(got.hidden).subspan(row * 512, 512), hidden);
+    }
+    CHECK(std::all_of(got.normed.begin(), got.normed.end(), [](float f) { return f == 0.0f; }));
+}
+
+TEST_CASE("a norm of several rows a token normalizes each row on its own, with its own epsilon") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_rows(instance.get(), *device);
+    const auto x = u.floats("x_512"), g = u.floats("gain_512");
+    const float epsilon = 512 * kEpsilon;   // the per-layer inputs' ε, folded (graph/encoder.h)
+    kernels::NormLaunch n{&u.view("gain_512"), nullptr, false, u.output, u.hidden,
+                          u.normed, epsilon, kernels::Rows::EveryToken};
+    n.rows_per_token = 2;
+    const kernels::Launch launch = kernels::norm_launch(n);
+    CHECK(launch.invocations_per_row == 512);
+    const Result got = run_launch(instance.get(), *device, u, launch, 2, kRows);
+    for (std::uint32_t row = 0; row < kRows; ++row) {
+        CAPTURE(row);
+        const std::vector<double> r(x.begin() + row * 512, x.begin() + (row + 1) * 512);
+        check_row(std::span(got.normed).subspan(row * 512, 512), normalized(r, g, epsilon));
+    }
+}

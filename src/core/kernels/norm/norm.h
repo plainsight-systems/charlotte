@@ -59,15 +59,29 @@ namespace bllm::kernels {
 //     element near zero carries its row's error. A row whose squares
 //     overflow f32 — about 10¹⁹ — is outside it; no listed model's
 //     activations come near.
-//   - Variants are override constants, so one source serves all three:
-//     `add`, and `post_norm` (which requires `add`); `width` is one too. Every binding is
-//     declared in every variant, so a launch that does not add still binds
-//     the output buffer and, without a post-norm, binds its gain twice: both
-//     read-only, so neither aliases a buffer the kernel writes.
+//   - Variants are override constants, so one source serves all of them:
+//     `add`, and `post_norm` (which requires `add`); `width` is one too.
+//     An encoder's (graph/encoder.h) take three more, each changing one
+//     launch's form and none of the decoder's:
+//       `scaled` (requires `add`): X multiplied by a scalar after the add
+//         and before the reduction — Gemma 4's layer output scale, which
+//         llama.cpp applies to the whole residual stream once a layer's last
+//         block is added;
+//       `normalize` (default true): false writes X after the add and
+//         nothing else — the add before the per-layer gate, which reads X;
+//       `rows_per_token` (default 1): a launch covers tokens ×
+//         rows_per_token rows of `width`, workgroup w the row w — the
+//         per-layer inputs, 24 rows of 512 a token, each normalized on its
+//         own. Not with a launch over the last token.
+//     Every binding is declared in every variant, so a launch that does not
+//     add still binds the output buffer and, without a post-norm or a scale,
+//     binds its gain in their places: all read-only, so none aliases a
+//     buffer the kernel writes.
 //   - Constants (binding 1), as WGSL lays them out:
 //       struct Norm { epsilon: f32 }
 //     Bindings: 2 the gain, 3 the post-norm's gain, 4 the block's output y,
-//     read-only; 5 the hidden buffer X; 6 the normed buffer.
+//     read-only; 5 the hidden buffer X; 6 the normed buffer; 7 the scale,
+//     one f32, read-only.
 //   - Gains are F32 and one piece: a norm's weight is one row of the hidden
 //     width, far under a binding (format.h's F32).
 //   - It reads the plan's `output` working buffer: a block's last matmul
@@ -125,7 +139,10 @@ namespace bllm::kernels {
 // reference: every variant, at the widths of the listed models; rows of
 // large and of tiny magnitude; a step of many rows and of one, each row's
 // result identical in both; and the final norm touching only the last row.
-//
+
+// The encoder's variants, likewise, at EmbeddingGemma 2's width of 512: a
+// scaled add, X then normalized; an add alone, normed untouched; and 2 rows a
+// token over 2 tokens, each row normalized on its own, with an ε of its own.//
 // Guidelines, by corpus:
 //   C++ performance guidelines
 //     GDSA.2 Declare each floating-point reduction's determinism level — as
@@ -145,7 +162,7 @@ namespace bllm::kernels {
 
 // One norm of the graph.
 struct NormLaunch {
-    const residency::WeightView* gain;            // never null; F32, one row of the hidden width
+    const residency::WeightView* gain;            // never null; F32, one row's width
     const residency::WeightView* post_gain;       // Gemma 3's post-norm of y, or null
     bool add;                                     // add y into X first; required by a post-norm
     residency::BufferRange output;                // y: the block's output
@@ -153,10 +170,19 @@ struct NormLaunch {
     residency::BufferRange normed;
     float epsilon;
     Rows rows;                                    // LastToken for the final norm
+    // Gemma 4's layer output scale: an F32 view of one float that multiplies
+    // X after the add, or null.
+    const residency::WeightView* scale = nullptr;
+    // False: the launch adds and writes X, and nothing else.
+    bool normalize = true;
+    // Rows a token, each normalized on its own: the per-layer inputs' 24.
+    std::uint32_t rows_per_token = 1;
 };
 
-// The launch for one norm. Preconditions: the gains are F32 views of the
-// hidden width, at most 4,096; a post-norm only where the launch adds.
+// The launch for one norm. Preconditions: the gains are F32 views of one
+// row's width, at most 4,096; a post-norm or a scale only where the launch
+// adds; a launch that does not normalize adds; rows_per_token 1 for a launch
+// over the last token.
 [[nodiscard]] Launch norm_launch(const NormLaunch& norm);
 
 }  // namespace bllm::kernels
