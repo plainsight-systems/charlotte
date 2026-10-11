@@ -15,8 +15,15 @@ This file tracks active and accepted work.
   (`tests/gpu/embedder_test.cpp`) and through the worker in the app's
   Chromium; a swapped RoPE pairing falls 30 to 60 times outside it.
 
-  Open: the page — `web/task_prompt.js`, the catalog entry and a view that
-  embeds — and the encode's time, measured as a page measurement is.
+  The page searches a pasted document (`web/search.js`): its paragraphs
+  embedded with the card's task prompts, one too long cut and its pieces
+  embedded, a query ranked against them. In the app's Chromium each of the
+  fixture's seven queries (`tests/fixtures/search/`) ranks its own
+  paragraph first.
+
+  Open: the encode's time and an indexing's, measured as a page
+  measurement is, which also calibrates the worker's message hops
+  (`web/search.js`); the panel with an iPhone's on-screen keyboard up.
 
 ## Accepted
 
