@@ -239,8 +239,13 @@ struct GraphResult {
 // (kernels/attention/attention.h); `activation`, the widest feed-forward;
 // one row of `logits`, the vocabulary; selection's `partials_a` and
 // `partials_b` and the `candidates` it keeps, (logit, token) pairs of two
-// words (kernels/topk/topk.h); and the draw's 16-byte record, `sampled`
-// (sampler/sampler.h). A decoder keeps a KV cache. Which buffers a graph
+// words (kernels/topk/topk.h); the draw's 16-byte record, `sampled`
+// (sampler/sampler.h); and `range_sums`, the most any of the model's
+// products split along K needs under kernels::kSplitGate, one row of
+// kernels::range_sum_floats' largest — 16 MiB for Qwen3, 32 for Llama 3.2,
+// 31.5 for Gemma 3 — or one float when none splits. Every product's launches
+// take that gate and that buffer (kernels/matmul/matmul.h). A decoder keeps a
+// KV cache. Which buffers a graph
 // binds is the graph's to say, and where they lie the planner's
 // (docs/architecture/change-axes.md).
 //

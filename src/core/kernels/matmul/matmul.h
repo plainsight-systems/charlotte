@@ -26,7 +26,9 @@ namespace bllm::kernels {
 // weight is written out expanded (GDSA.18).
 //
 // Two forms, one per regime, each its own launch; a step runs one (the
-// launch contract's token range, below), prefill in one of three tile widths.
+// launch contract's token range, below), prefill in one of three tile widths,
+// and a prefill product with too few tiles for the GPU split along K
+// (below), its own launch and a combine's.
 // The head is the exception: it covers the step's last token alone, in
 // both regimes, so its one launch is the decode form, run in every step.
 // Both forms add each output's products in one order, fixed by K alone
@@ -140,6 +142,49 @@ namespace bllm::kernels {
 //     and barriers, and the guard its multiply-adds to the step's. Tile
 //     width and the guard change no output's order of addition, so every
 //     tile's bits are the others' and decode's.
+//   - Prefill split along K, for a product whose tiles are few beside its
+//     length along K. A tile's workgroup walks all G = K / 32 groups in
+//     turn, so a product of few tiles runs few workgroups each a long
+//     chain: EmbeddingGemma 2's down projection, 512 outputs of 2,048, is 8
+//     tiles of 64 groups at any step up to 32 tokens, on a GPU of 40 cores,
+//     and took 160 µs at every step from 8 tokens to 128, where its
+//     arithmetic at 128 tokens is 19 µs at the target's peak (costs, below). Split, each of the tiled
+//     form's workgroups becomes kRanges, 32, one a range: workgroup
+//     (tile, r) walks range r's groups alone, exactly as the tiled form
+//     walks them — the same staging, products and guard, its range sum
+//     from zero — and writes each output's range sum to the working buffer
+//     `range_sums`, at [token][output][r], rather than adding it to a total.
+//     Then a combine launch, an invocation an output of each token, adds its
+//     32 range sums to a total from zero, in order, and applies the
+//     epilogue. So each output's order of addition is decode's and the
+//     tiled form's — the same range sums, each from zero, the same 32 adds
+//     in the same order — and its bits are theirs.
+//     Which steps split, by the workgroups the tiled form would run, W =
+//     output tiles × token tiles: when W is at most 4/5 of G, its chain long
+//     beside its parallel work, and at most 128, past which the tiled form
+//     has enough workgroups to hide its chain — about three a core on the
+//     target's 40 — and the split's range sums, 32 floats an output a token,
+//     cost more than they save. That is the gate, SplitGate (CDSA.21): two
+//     named values, measured, passed in by the graph, not read from ambient
+//     state, so a test forces either form. Measured in Chrome on the target
+//     over every listed model's product shapes at steps from 8 to 320
+//     tokens (costs, below), the split form was faster at every shape and
+//     step the gate takes but two, which tied within 3%; and slower or tied
+//     at every one it leaves but two — EmbeddingGemma 2's QKV and Qwen3's at
+//     8 tokens, where the tiled form ran 1.6 and 1.35 times as long — which a
+//     gate would take only at W = 2G, where the same products at 21 tokens
+//     lost by a third. The gate depends on
+//     the step only through its token tiles, so for each product it is a
+//     token range: every step up to split_tokens(), a whole number of the
+//     32-token tile, or none; the split and tiled launches each take their
+//     part of every tile width's range, as the launch contract asks.
+//     Its epilogues are Write, QKV and GatedByInput: the output and down
+//     projections, Llama 3.2's and Gemma 3's Q, K and V, and Gemma 4's
+//     per-layer gate and projection. The gated activation is not split: its
+//     combine would need a gate row's total and its up row's, and no listed
+//     model's gate and up — 64 to 256 tiles of pairs over K of 512 to 2,048
+//     — passes the gate, so split_tokens() is none for it by rule rather
+//     than by measurement, and the path is not built (CDSA.21's last).
 //
 // Epilogues — what a product writes — are variants, override constants:
 //   - write: y to one buffer: the output projection and down projection
@@ -187,7 +232,15 @@ namespace bllm::kernels {
 //   - Bindings: 2 the weights (`weights`, unpack's): one piece, or the range
 //     spanning a fused group's members; 3 the input; then the outputs,
 //     written — one, or query, key and value; then, for GatedByInput, its
-//     input u, read-only. Five at most.
+//     input u, read-only. Five at most. The split form's entry points,
+//     split_write, split_qkv and split_gated_input, bind the weights, the
+//     input and, at 4, `range_sums`, written; the combine's,
+//     combine_write, combine_qkv and combine_gated_input, bind at 3
+//     `range_sums`, read-only — its own declaration of binding 3, as u's is
+//     of 5 — and the outputs and u as the product's other entry points do,
+//     and no weights; the module still composes the format's unpack, which
+//     the combine never calls. The split's range sums of token t, output o,
+//     range r lie at (t × rows + o) × 32 + r, o the product's row.
 //
 // What it asks of the other contracts:
 //   - kernels/interface.h: a launch may run in a range of token counts
@@ -213,6 +266,17 @@ namespace bllm::kernels {
 //   - model/model_description.h: the feed-forward activation; and describe
 //     refuses attention and final logit softcapping, which no kernel
 //     applies, rather than run a file that declares them without it.
+//   - graph/graph.h and graph/encoder.h: the gate, passed to every product's
+//     launches, and the working buffer `range_sums`, range_sum_floats over
+//     the graph's products under the same gate, in each working set; a
+//     model none of whose products splits plans it at one float, as
+//     selection's unused partials are planned (graph.h), so every plan
+//     holds the same working buffers.
+//   - residency/plan.h: nothing; a working buffer as any other, its bytes
+//     counted against the budget.
+//   - kernels/interface.h: nothing; the split launch tiles its rows as the
+//     tiled form does, 32 times the workgroups, and the combine is a launch
+//     over rows, each in its token range.
 //
 // Determinism (GDSA.2): run to run, and batch-invariant on the target — a
 // token's outputs are the same bits decoded alone or prefilled in a step of
@@ -268,6 +332,46 @@ namespace bllm::kernels {
 //     dispatched together; WebGPU promises neither the order they run in
 //     nor what the caches keep, so where in that range a step falls is the
 //     target's, to be measured. Workgroups: QKV 1,024 of the tile.
+//   - Prefill split along K. The arithmetic, the weights' decodes and the
+//     staging are the tiled form's, spread over 32 times its workgroups, so
+//     each walks G / 32 groups, not G. Beside them: the range sums, 32
+//     floats an output a token, written once and read once — 128 B each
+//     way an output a token: 1.4 MB each way for EmbeddingGemma 2's down
+//     projection at 21 tokens, from the GPU's caches at best; and the
+//     combine's launch, an invocation an output a token, 32 adds each, at
+//     about 1.5 µs a launch. The working buffer holds the most any of the
+//     model's split products needs at its last split step, split_tokens()
+//     × its rows × 32 floats (range_sum_floats below): 12 MiB for
+//     EmbeddingGemma 2, its down and global output projections at 192
+//     tokens; 16 MiB for Qwen3, its down at 128; 32 MiB for Llama 3.2, its
+//     down at 128; 31.5 MiB for Gemma 3, its down at 224. Launches: a
+//     split product adds its combine's, in the steps it splits.
+//     Measured in Chrome 151 on the target, a page timing each product's
+//     launch alone, 200 back to back in one submission, the median of 5
+//     after a warm-up, on Q4_0 weights at each shape (DIAGNOSTIC: the shapes
+//     alone, not a model's step; the page was in a background window, which
+//     slows its timers, not the GPU's queue) — the tiled form against the
+//     split, at 21 tokens:
+//     EmbeddingGemma 2's down 161 µs against 34, its sliding output 85 and
+//     28, its per-layer projection 50 and 25; Qwen3's down 231 and 61, its
+//     output 159 and 53; Llama 3.2's QKV 175 and 133, its down 690 and 204;
+//     Gemma 3's QKV 97 and 61, its down 511 and 114. Every split output was
+//     bit for bit the tiled form's. A product the gate leaves, at 21 tokens:
+//     EmbeddingGemma 2's QKV 49 µs tiled, 66 split; Qwen3's QKV 95 and 135.
+// Optimization (practice): a prefill product of few tiles split along K
+// into 32 workgroups a tile, a range each, its range sums combined in a
+// second launch — split-K, as cuBLAS and CUTLASS split a GEMM whose output
+// tiles cannot fill the GPU (GPU.3). Here the split falls on the 32 ranges
+// the order of addition already fixes, so the combine adds them as decode
+// does and no output's bits change (GDSA.2), at the cost of writing each
+// range sum out and back (GDSA.6, GDSA.16's caveat: an intermediate the
+// combine must see whole). The gate is measured (CDSA.21, Per.6): for
+// EmbeddingGemma 2 it takes the down, output and per-layer products and
+// leaves QKV and gate and up. Their tiled times above, summed over its 24
+// layers, come to about 8.6 ms of a 21-token encode's 13.9 in Chrome
+// (docs/research/2026-10-11-chrome-encode-benchmark.md), and their split
+// times to about 2.7 — an estimate from launches timed alone on Q4_0, where
+// the model is Q8_0, until the step is measured whole.
 // Optimization (practice): weights decoded in the load path, never
 // expanded (GDSA.18) — llama.cpp's mul_mv and mul_mm do the same.
 // Optimization (practice): Q, K and V as one product and gate and up as
@@ -337,6 +441,17 @@ namespace bllm::kernels {
 //     bits would depend on its step.
 //   - f16 accumulators, ONNX Runtime's default: the same feature, and
 //     llama.cpp moved to f32 after f16 sums gave NaNs on Qwen models.
+//   - For short steps, decode's form over several tokens at once, a
+//     workgroup's rows read once for 4 or 8 tokens, as llama.cpp's Metal
+//     mul_mv_ext: measured beside the split (costs, above's page), it was
+//     bit for bit the same and as fast or faster up to about 8 tokens, and
+//     slower past them at every shape — each token re-reads its input from
+//     the GPU's caches, 4 bytes a multiply-add, where the tile reuses it for
+//     64 outputs — so one form more for steps the split already serves.
+//   - A fixed order of addition in fewer levels, so a split keeps 8 partial
+//     sums an output rather than 32: a quarter of the range sums' bytes, at
+//     the cost of every token's bits, decode's included, changing once —
+//     and the split's measured gains do not wait on it.
 //
 // Verification the implementation is held to, on the GPU against f64 over
 // the format's CPU-decoded weights: each form, each epilogue, each listed
@@ -349,8 +464,17 @@ namespace bllm::kernels {
 // for SiLU and GELU; and a token's outputs the same bits decoded alone and
 // prefilled in each of those steps, at tokens on each tile's edges, at widths
 // whose ranges are one group, several, and of unequal sizes (Gemma 3's
-// 1,152 and 6,912). On the CPU: each launch's geometry, token range, bindings
-// and variant, and the range boundaries.
+// 1,152 and 6,912). The split form: each of its epilogues, Write, QKV and
+// GatedByInput, at steps of 2, 21, 32 and 33 tokens, each output's bits the
+// tiled form's and decode's, at a width whose ranges are one group, several,
+// unequal, and none — K of 512, 16 groups, half the ranges empty — and a
+// piece. On the CPU: each launch's geometry, token range, bindings and
+// variant, and the range boundaries; the gate at both sides and on its
+// boundary — a gate that never splits and one that always does give the same
+// launches' ranges, complementary, covering every step from 2 to
+// kPrefillBlock once — and split_tokens and range_sum_floats at each listed
+// model's products, as above; and the graphs' working sets holding
+// `range_sums` at that size.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -360,7 +484,13 @@ namespace bllm::kernels {
 //     I.4    Make interfaces precisely and strongly typed — the epilogue is
 //            an enumeration.
 //     ES.45  Avoid magic constants — the micro-tile's 4 × 4 and the tiles'
-//            widths are named.
+//            widths are named, and the gate's 4/5 and 128.
+//     I.5    State preconditions — split_tokens' and matmul_launches'.
+//     F.8    Prefer pure functions — split_tokens and range_sum_floats, which
+//            the launches and the working set both call, so they cannot
+//            disagree on a buffer's size.
+//     Per.6  Don't make claims about performance without measurements — the
+//            gate's two values and the split's gains, measured.
 //   C++ performance guidelines
 //     GDSA.18 Store numbers as block-scaled codes decoded in the load path.
 //     GDSA.6 Count passes over global memory — the bytes above, and the
@@ -375,6 +505,11 @@ namespace bllm::kernels {
 //     GPU.3  Treat occupancy as latency-hiding budget — 32 accumulators an
 //            invocation, named, not 64 in arrays.
 //     SIMD.2 Lay out data so vector loads are linear — whole vec4s along K.
+//     CDSA.21 Put a measured, named, injectable threshold on every algorithm
+//            switch — SplitGate, both sides tested, and the gated split not
+//            built since no input reaches it.
+//     GDSA.16 Stream through on-chip tiles — and its caveat: the range sums
+//            are written out because the combine must see all 32.
 
 // What a product writes.
 enum class Epilogue {
@@ -404,11 +539,42 @@ struct MatmulLaunch {
     std::uint32_t gate_input_column = 0;
 };
 
+// When a prefill product splits along K: the tiled form's workgroups W at
+// most `numerator` / `denominator` of its groups along K, and at most
+// `max_workgroups`. The graph passes it; kSplitGate is the measured value.
+struct SplitGate {
+    std::uint32_t numerator;
+    std::uint32_t denominator;
+    std::uint32_t max_workgroups;
+};
+
+// Measured in Chrome 151 on the target (M3 Max, Metal), over every listed
+// model's product shapes at steps of 8 to 320 tokens (above): between the
+// crossovers, so an error in either value costs little.
+inline constexpr SplitGate kSplitGate{4, 5, 128};
+
+// The most tokens a step may hold for the product to split — a whole number
+// of 32-token tiles, at most kPrefillBlock — or 1 when it never splits, as a
+// gated activation never does. Precondition: columns is a whole number of
+// 32-weight groups; rows > 0.
+[[nodiscard]] std::uint32_t split_tokens(Epilogue epilogue, std::uint64_t rows, std::uint64_t columns,
+                                         SplitGate gate) noexcept;
+
+// The floats `range_sums` must hold for the product: split_tokens × rows ×
+// 32, or 0 when it never splits.
+[[nodiscard]] std::uint64_t range_sum_floats(Epilogue epilogue, std::uint64_t rows, std::uint64_t columns,
+                                             SplitGate gate) noexcept;
+
 // The product's launches: for each piece of the weight, a decode launch,
 // and a prefill launch for each tile width, each in its token range; or for the
 // head, the decode form alone, in every step. Preconditions: K is a whole number of 32-weight groups;
 // a fused group's members lie in one buffer within a binding's span, and
 // their rows are the epilogue's.
+// The split form adds two parameters: the gate, and `range_sums`, the
+// working buffer of that name, holding range_sum_floats; and for each tile
+// width, beside the tiled launch, a split launch where the gate splits the
+// product, each in its part of the width's token range, and the split's
+// combine.
 [[nodiscard]] std::vector<Launch> matmul_launches(const MatmulLaunch& matmul);
 
 }  // namespace bllm::kernels

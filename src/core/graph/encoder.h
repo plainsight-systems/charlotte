@@ -143,16 +143,22 @@ namespace bllm::graph {
 // which the per-layer gate's output reuses; `per_layer_raw` and `per_layer`,
 // L × P, 12,288 wide, 24 MiB each; `scores`, the widest layer's query heads
 // × kPrefillBlock rows of kPrefillBlock, 4 MiB, and `score_maxima`, a float
-// a chunk of each, 64 KiB (block_attention.h); `pooled`, W wide; and
-// `projected` and `embedding`, one row of D. No KV cache: the plan offers
-// the smaller of kPrefillBlock and the trained context. About 70 MiB for
-// EmbeddingGemma 2, beside its 294 MB of weights: 364 MB, under the 2 GiB
-// default budget and a phone's 512 MiB (web/platform_policy.js).
+// a chunk of each, 64 KiB (block_attention.h); `pooled`, W wide;
+// `projected` and `embedding`, one row of D; and `range_sums`, the most any
+// product split along K needs under kernels::kSplitGate — 12 MiB, the down
+// and global output projections' at 192 tokens (kernels/matmul/matmul.h).
+// Every product's launches take that gate and that buffer. No KV cache: the
+// plan offers the smaller of kPrefillBlock and the trained context. About
+// 82 MiB for EmbeddingGemma 2, beside its 294 MB of weights: 377 MB, under
+// the 2 GiB default budget and a phone's 512 MiB (web/platform_policy.js).
 //
 // What a step costs, counted, for EmbeddingGemma 2 at Q8_0 and N tokens:
 //   - Launches dispatched: the gather's 2 — the table's 142.6 MB is two
 //     pieces at a 128 MiB binding — the per-layer inputs' 2; 12 a layer,
-//     288; and the output block's 4: 296, about 0.44 ms at 1.5 µs each.
+//     288; and the output block's 4: 296, about 0.44 ms at 1.5 µs each;
+//     and in a step that splits a product along K, its combine's: up to 4 a
+//     layer — the down, output and per-layer gate and projection — 96 more
+//     at up to 32 tokens, about 0.14 ms (kernels/matmul/matmul.h).
 //     Compiled: each product's decode form and three prefill tiles beside
 //     the forms that run, as graph.h's.
 //   - Bytes: each 32-token tile of a product reads its weight once — the
