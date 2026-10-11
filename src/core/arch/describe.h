@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <initializer_list>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -116,5 +118,31 @@ struct Conventions {
                                          std::uint32_t& out);
 [[nodiscard]] DescribeResult read_f32_or(const gguf::TensorIndex& index, std::string_view arch,
                                          std::string_view key, float fallback, float& out);
+
+// For a companion's encoders (arch/media_encoder.h), whose keys are named in
+// full — clip.vision.<key>, clip.audio.<key> — and whose tensors are named
+// as each encoder's converter names them, not blk.<layer>.<suffix>:
+
+// A refusal of `error` naming `subject`.
+[[nodiscard]] DescribeResult refuse(DescribeError error, std::string subject);
+
+// A key read, its absence MissingKey and another type WrongKeyType, each
+// naming the key; the _or forms take `fallback` where the file omits it.
+[[nodiscard]] DescribeResult key_u32(const gguf::TensorIndex& index, std::string_view key, std::uint32_t& out);
+[[nodiscard]] DescribeResult key_u32_or(const gguf::TensorIndex& index, std::string_view key, std::uint32_t fallback,
+                                        std::uint32_t& out);
+[[nodiscard]] DescribeResult key_f32(const gguf::TensorIndex& index, std::string_view key, float& out);
+[[nodiscard]] DescribeResult key_bool(const gguf::TensorIndex& index, std::string_view key, bool& out);
+[[nodiscard]] DescribeResult key_bool_or(const gguf::TensorIndex& index, std::string_view key, bool fallback,
+                                         bool& out);
+// A string key that must hold `want`, UnsupportedValue otherwise.
+[[nodiscard]] DescribeResult expect_key(const gguf::TensorIndex& index, std::string_view key, std::string_view want);
+// A float array key that, where the file has it, holds `want` in every
+// element, UnsupportedValue otherwise.
+[[nodiscard]] DescribeResult expect_key_all(const gguf::TensorIndex& index, std::string_view key, float want);
+// The tensor named `name`, of exactly `dims` and, where `f32`, F32:
+// MissingTensor, ShapeMismatch or UnsupportedValue otherwise, naming it.
+[[nodiscard]] DescribeResult shaped_tensor(const gguf::TensorIndex& index, std::string_view name,
+                                           std::initializer_list<std::uint64_t> dims, bool f32, gguf::TensorId& out);
 
 }  // namespace bllm::arch

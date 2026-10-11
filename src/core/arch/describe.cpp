@@ -298,4 +298,84 @@ DescribeResult describe_layer_tensors(const gguf::TensorIndex& index, std::strin
     return {};
 }
 
+DescribeResult refuse(DescribeError error, std::string subject) { return {error, std::move(subject)}; }
+
+namespace {
+
+DescribeResult key_error(gguf::MetadataError e, std::string_view key) {
+    return refuse(e == gguf::MetadataError::MissingKey ? DescribeError::MissingKey : DescribeError::WrongKeyType,
+                  std::string(key));
+}
+
+}  // namespace
+
+DescribeResult key_u32(const gguf::TensorIndex& index, std::string_view key, std::uint32_t& out) {
+    if (const auto e = index.read_u32(key, out); e != gguf::MetadataError::Ok) return key_error(e, key);
+    return {};
+}
+
+DescribeResult key_u32_or(const gguf::TensorIndex& index, std::string_view key, std::uint32_t fallback,
+                          std::uint32_t& out) {
+    if (const auto e = index.read_u32(key, out); e == gguf::MetadataError::MissingKey) {
+        out = fallback;
+    } else if (e != gguf::MetadataError::Ok) {
+        return key_error(e, key);
+    }
+    return {};
+}
+
+DescribeResult key_f32(const gguf::TensorIndex& index, std::string_view key, float& out) {
+    if (const auto e = index.read_f32(key, out); e != gguf::MetadataError::Ok) return key_error(e, key);
+    return {};
+}
+
+DescribeResult key_bool(const gguf::TensorIndex& index, std::string_view key, bool& out) {
+    if (const auto e = index.read_bool(key, out); e != gguf::MetadataError::Ok) return key_error(e, key);
+    return {};
+}
+
+DescribeResult key_bool_or(const gguf::TensorIndex& index, std::string_view key, bool fallback, bool& out) {
+    if (const auto e = index.read_bool(key, out); e == gguf::MetadataError::MissingKey) {
+        out = fallback;
+    } else if (e != gguf::MetadataError::Ok) {
+        return key_error(e, key);
+    }
+    return {};
+}
+
+DescribeResult expect_key(const gguf::TensorIndex& index, std::string_view key, std::string_view want) {
+    std::string_view got;
+    if (const auto e = index.read_string(key, got); e != gguf::MetadataError::Ok) return key_error(e, key);
+    if (got != want) return refuse(DescribeError::UnsupportedValue, std::string(key));
+    return {};
+}
+
+DescribeResult expect_key_all(const gguf::TensorIndex& index, std::string_view key, float want) {
+    std::vector<float> values;
+    if (const auto e = index.read_f32_array(key, values); e == gguf::MetadataError::MissingKey) {
+        return {};
+    } else if (e != gguf::MetadataError::Ok) {
+        return key_error(e, key);
+    }
+    for (const float v : values) {
+        if (v != want) return refuse(DescribeError::UnsupportedValue, std::string(key));
+    }
+    return {};
+}
+
+DescribeResult shaped_tensor(const gguf::TensorIndex& index, std::string_view name,
+                             std::initializer_list<std::uint64_t> dims, bool f32, gguf::TensorId& out) {
+    const std::optional<gguf::TensorId> id = index.find(name);
+    if (!id) return refuse(DescribeError::MissingTensor, std::string(name));
+    const gguf::TensorEntry& t = index.tensor(*id);
+    if (t.dimension_count != dims.size()) return refuse(DescribeError::ShapeMismatch, std::string(name));
+    std::size_t i = 0;
+    for (const std::uint64_t d : dims) {
+        if (t.dimensions[i++] != d) return refuse(DescribeError::ShapeMismatch, std::string(name));
+    }
+    if (f32 && t.type != gguf::TensorType::F32) return refuse(DescribeError::UnsupportedValue, std::string(name));
+    out = *id;
+    return {};
+}
+
 }  // namespace bllm::arch
