@@ -12,11 +12,12 @@
 //     for it, the Upload carrying it out (residency/upload.h), and one chunk
 //     buffer, allocated at begin and reused for every chunk (WASM.1); and,
 //     made at begin from the same prefix, the description, the tokenizer and
-//     the stop set;
+//     the stop set — or, for a model that encodes, its ends (runtime/ends.h);
 //   - the loaded model: its Upload, which owns the weights' buffers, and the
 //     generator over it (runtime/generator.h), which owns the tokenizer, the
-//     program and the cache; the generator is released first, since its
-//     program borrows the Upload.
+//     program and the cache — or, for a model that encodes, the embedder
+//     (runtime/embedder.h), which owns the tokenizer and the program; either
+//     is released first, since its program borrows the Upload.
 // Every decision about that state is core's; this file only holds it and
 // translates.
 //
@@ -49,7 +50,8 @@
 // Contract 11, the boundary: this file and web/worker.js are the only two
 // places JavaScript and C++ meet. The crossings are preflight a header prefix;
 // begin a load, load a chunk of the file, and finish the load (web/load.js);
-// generate from a rendered prompt and the turn's policy; and cancel. A
+// generate from a rendered prompt and the turn's policy; cancel; and, for a
+// model that encodes, embed a text. A
 // prompt the tokenizer refuses as too long to encode is answered with code
 // "prompt-too-large", its bytes — normalized, or raw where it was refused
 // before normalizing — and kMaxEncodeBytes (tokenizer/tokenizer.h), which the
@@ -81,8 +83,10 @@
 //     device creates the buffers, it loads the tokenizer from the prefix,
 //     where its vocabulary and merges lie (preflight.h's load_tokenizer), and
 //     resolves the stop set from the file and the policy's stop texts
-//     (runtime/stops.h): 20 to 56 ms of the CPU's for the listed models,
-//     overlapped with the GPU's work rather than ahead of it. Answers once
+//     (runtime/stops.h) — or, for a model that encodes, its ends
+//     (runtime/ends.h), since it never samples: 20 to 56 ms of the CPU's
+//     for the listed models, overlapped with the GPU's work rather than
+//     ahead of it. Answers once
 //     the device holds the buffers: the chunk buffer's address and size, or
 //     the failure, named — the tokenizer's or the stop set's included, the
 //     buffers then released. A model already loaded is released first — its
@@ -97,7 +101,10 @@
 //     pipeline compiled together, asynchronously (kernels/program.h) —
 //     reading back the draw's record, and makes the cache at the context
 //     offered and the generator. Answers then, with the context offered, or
-//     with the failure that stopped any of it, named.
+//     with the failure that stopped any of it, named. For a model that
+//     encodes: the encoder's graph, its program reading back the step's
+//     embedding, and the embedder; answering with the context offered and
+//     the embedding's length.
 // A load already begun is refused, by name, until it finishes or fails; a
 // chunk or finish without a load is refused the same way.
 //
@@ -125,6 +132,22 @@
 //     comes as any turn's, stop reason "cancelled". Answers at once whether
 //     that turn was running.
 // One turn at a time: the page waits for a turn's answer before the next.
+// A model that encodes refuses generate, by name.
+//
+//   bllm_embed(request, text, text_length)
+//     Starts an encode of `text`, UTF-8 bytes in the module's memory which
+//     the page frees once the call returns: the embedder encodes them before
+//     it does. A refusal answers at once, named: no model loaded, a model
+//     that generates, an encode running, text that does not encode, the
+//     device lost, or text longer than the context — with code
+//     "text-too-long" and both counts, ends included, so the page can cut
+//     it and embed the pieces. Otherwise the vector goes back once through
+//     bllm_vector(request, pointer, length), a Float32Array view of the
+//     module's memory valid for that call — the vector's one crossing
+//     (WASM.2) — and the encode answers with the tokens the text made; or
+//     with its failure, named: the vector not finite, a step's failure with
+//     WebGPU's message, the device lost, or the encode cancelled by a new
+//     load. One encode at a time.
 //
 // A diagnostic build adds the check of a finished load, the same three
 // crossings over the file streamed a second time (residency/upload_check.h);
@@ -162,6 +185,8 @@
 #include "core/kernels/program.h"
 #include "core/residency/upload.h"
 #include "core/run_guard.h"
+#include "core/runtime/embedder.h"
+#include "core/runtime/ends.h"
 #include "core/runtime/generator.h"
 #include "core/runtime/stops.h"
 #include "core/sampler/sampler.h"
@@ -426,7 +451,8 @@ struct Load {
     const bllm::arch::Architecture* architecture = nullptr;
     bllm::policy::CachePrecision precision = bllm::policy::CachePrecision::F16;
     std::unique_ptr<bllm::tokenizer::Tokenizer> tokenizer;
-    bllm::runtime::StopSet stops;
+    bllm::runtime::StopSet stops;   // a generator's
+    bllm::runtime::Ends ends;       // an embedder's
     std::string tokenizer_failure;
     // Begin answers once both the buffers' answer and the tokenizer are in.
     bool prepared = false;
@@ -447,9 +473,11 @@ struct Session {
     std::unique_ptr<Load> load;
     std::unique_ptr<bllm::residency::Upload> loaded;    // the model a load finished
     std::uint64_t loaded_file_size = 0;
-    // Over `loaded`, whose buffers its program borrows: declared after it, so
-    // released before it.
+    // Over `loaded`, whose buffers their programs borrow: declared after it,
+    // so released before it. One or the other, as the model generates or
+    // encodes.
     std::unique_ptr<bllm::runtime::Generator> generator;
+    std::unique_ptr<bllm::runtime::Embedder> embedder;
     std::uint32_t turn_request = 0;   // the generate whose turn runs, or 0
 #if BLLM_DIAGNOSTICS_ENABLED
     std::unique_ptr<Check> check;   // declared after `loaded`, so released before it
@@ -580,6 +608,54 @@ void on_program_built(std::unique_ptr<bllm::kernels::Program> program, bllm::ker
     bllm_reply(request, ("{\"ok\":true,\"contextOffered\":" + std::to_string(plan.context_offered) + "}").c_str());
 }
 
+// The encoder's program is built: the embedder, and finish's answer.
+void on_encoder_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kernels::ProgramError error,
+                      std::string_view message, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    Session& s = session();
+    Load* load = s.load.get();
+    if (load == nullptr || load->settled || s.loaded == nullptr) {
+        bllm_reply(request, failure_json("the load was replaced by another").c_str());
+        return;
+    }
+    load->settled = true;
+    if (error != bllm::kernels::ProgramError::Ok) {
+        s.loaded.reset();
+        bllm_reply(request, failure_json("the model's kernels did not build", message).c_str());
+        return;
+    }
+    const std::uint32_t context = s.loaded->plan().context_offered;
+    const std::uint32_t dimensions = load->description.encoder->embedding_length;
+    s.embedder = std::make_unique<bllm::runtime::Embedder>(std::move(load->tokenizer), std::move(program), load->ends,
+                                                           context, dimensions);
+    bllm_reply(request, ("{\"ok\":true,\"contextOffered\":" + std::to_string(context) +
+                         ",\"embeddingLength\":" + std::to_string(dimensions) + "}")
+                            .c_str());
+}
+
+// The encoder's graph over the plan, and its program, reading back the
+// step's embedding (graph/encoder.h).
+void build_encoder(std::uint32_t request, Session& s, Load& load, bllm::arch::EncodeFn graph) {
+    const bllm::residency::ResidencyPlan& plan = s.loaded->plan();
+    std::vector<bllm::kernels::Launch> launches;
+    const bllm::graph::GraphResult built = graph(load.description, plan, launches);
+    std::optional<bllm::kernels::Binding> embedding;
+    for (const bllm::residency::PlannedScratch& scratch : plan.scratch) {
+        if (scratch.purpose == "embedding") {
+            embedding = bllm::kernels::Binding{scratch.range.buffer, scratch.range.offset,
+                                               std::uint64_t{load.description.encoder->embedding_length} *
+                                                   sizeof(float)};
+        }
+    }
+    if (!built.ok() || !embedding) {
+        load.settled = true;
+        s.loaded.reset();
+        bllm_reply(request, failure_json("the model's graph does not build", built.subject).c_str());
+        return;
+    }
+    bllm::kernels::Program::build(*s.loaded, std::move(launches), embedding, on_encoder_built, to_userdata(request));
+}
+
 void on_load_finished(bllm::residency::UploadError error, void* userdata) {
     const std::uint32_t request = to_generation(userdata);
     Session& s = session();
@@ -595,14 +671,12 @@ void on_load_finished(bllm::residency::UploadError error, void* userdata) {
     s.loaded_file_size = load->file_size;
     // The graph over the plan, and its program, reading back the draw's
     // record; every pipeline compiles together (kernels/program.h).
-    const bllm::residency::ResidencyPlan& plan = s.loaded->plan();
-    const bllm::arch::GraphFn graph = bllm::arch::decoder_graph(*load->architecture);
-    if (graph == nullptr) {
-        load->settled = true;
-        s.loaded.reset();
-        bllm_reply(request, failure_json("the model encodes, which this build runs no graph for", "").c_str());
+    if (const bllm::arch::EncodeFn encode = bllm::arch::encoder_graph(*load->architecture); encode != nullptr) {
+        build_encoder(request, s, *load, encode);
         return;
     }
+    const bllm::residency::ResidencyPlan& plan = s.loaded->plan();
+    const bllm::arch::GraphFn graph = bllm::arch::decoder_graph(*load->architecture);
     std::vector<bllm::kernels::Launch> launches;
     const bllm::graph::GraphResult built =
         graph(load->description, plan, *bllm::capability::find_format(plan.cache_type), launches);
@@ -688,6 +762,35 @@ void on_turn_end(const bllm::runtime::TurnResult& result, void* userdata) {
             return;
         case TurnFailure::DeviceLost:
             bllm_reply(request, failure_json("the GPU device was lost", result.message).c_str());
+            return;
+    }
+}
+
+// An encode's vector, read from the module's memory during the call: a view,
+// which the runtime copies at once (web/wasm_runtime.js).
+EM_JS(void, bllm_vector, (std::uint32_t request, const float* vector, std::uint32_t length), {
+    globalThis.bllmOnVector(request, HEAPF32.subarray(vector >> 2, (vector >> 2) + length));
+});
+
+void on_embedded(const bllm::runtime::EmbedResult& result, std::span<const float> embedding, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    using bllm::runtime::EmbedError;
+    switch (result.error) {
+        case EmbedError::Ok:
+            bllm_vector(request, embedding.data(), static_cast<std::uint32_t>(embedding.size()));
+            bllm_reply(request, ("{\"ok\":true,\"tokens\":" + std::to_string(result.tokens) + "}").c_str());
+            return;
+        case EmbedError::NonFinite:
+            bllm_reply(request, failure_json("the model's embedding was not finite").c_str());
+            return;
+        case EmbedError::DeviceLost:
+            bllm_reply(request, failure_json("the GPU device was lost", result.message).c_str());
+            return;
+        case EmbedError::Cancelled:
+            bllm_reply(request, failure_json("the encode was cancelled by another load").c_str());
+            return;
+        default:
+            bllm_reply(request, failure_json("a step failed on the GPU", result.message).c_str());
             return;
     }
 }
@@ -957,11 +1060,12 @@ EMSCRIPTEN_KEEPALIVE void bllm_load_begin(std::uint32_t request, const std::byte
     (void)index.read_string("general.architecture", architecture);
 
     // A new load replaces the model loaded before it, releasing its buffers
-    // first so the two are never on the device together: its generator
-    // first, so a turn running finishes cancelled and the program borrowing
-    // the buffers goes; any check of it too, since it must not outlive what
-    // it checks.
+    // first so the two are never on the device together: its generator or
+    // embedder first, so a turn or an encode running finishes cancelled and
+    // the program borrowing the buffers goes; any check of it too, since it
+    // must not outlive what it checks.
     s.generator.reset();
+    s.embedder.reset();
 #if BLLM_DIAGNOSTICS_ENABLED
     s.check.reset();
 #endif
@@ -981,7 +1085,14 @@ EMSCRIPTEN_KEEPALIVE void bllm_load_begin(std::uint32_t request, const std::byte
     // Optimization (browser): 20 to 56 ms of the CPU's for the listed models,
     // overlapped with the GPU's work rather than ahead of it.
     load.tokenizer_failure = bllm::preflight::load_tokenizer(source, index, load.tokenizer);
-    if (load.tokenizer_failure.empty()) {
+    if (load.tokenizer_failure.empty() && load.architecture != nullptr &&
+        bllm::arch::encoder_graph(*load.architecture) != nullptr) {
+        const bllm::runtime::EndsResult ends =
+            bllm::runtime::resolve_ends(index, load.tokenizer->vocabulary(), load.ends);
+        if (ends.error != bllm::runtime::EndsError::Ok) {
+            load.tokenizer_failure = "the file's ends cannot be resolved: " + ends.subject;
+        }
+    } else if (load.tokenizer_failure.empty()) {
         const bllm::runtime::StopsResult stops =
             bllm::runtime::resolve_stops(index, load.tokenizer->vocabulary(), policy.stop, load.stops);
         if (stops.error != bllm::runtime::StopsError::Ok) {
@@ -1023,7 +1134,9 @@ EMSCRIPTEN_KEEPALIVE void bllm_generate(std::uint32_t request, const char* text,
                                         float min_p, double seed, std::uint32_t max_tokens) {
     Session& s = session();
     if (s.generator == nullptr) {
-        bllm_reply(request, failure_json("no model is loaded").c_str());
+        bllm_reply(request, failure_json(s.embedder != nullptr ? "the model embeds; it does not generate"
+                                                               : "no model is loaded")
+                                .c_str());
         return;
     }
     if (!exact_integer(seed) || seed >= kMaxExactInteger) {
@@ -1089,6 +1202,48 @@ EMSCRIPTEN_KEEPALIVE void bllm_cancel(std::uint32_t request, std::uint32_t targe
     const bool running = s.generator != nullptr && target != 0 && s.turn_request == target;
     if (running) s.generator->cancel();
     bllm_reply(request, running ? "{\"ok\":true,\"running\":true}" : "{\"ok\":true,\"running\":false}");
+}
+
+// Starts an encode: see the top of this file.
+EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, std::uint32_t text_length) {
+    Session& s = session();
+    if (s.embedder == nullptr) {
+        bllm_reply(request, failure_json(s.generator != nullptr ? "the model generates; it does not embed"
+                                                                : "no model is loaded")
+                                .c_str());
+        return;
+    }
+    const bllm::runtime::EmbedResult started = s.embedder->start({text, text_length}, on_embedded, to_userdata(request));
+    using bllm::runtime::EmbedError;
+    switch (started.error) {
+        case EmbedError::Ok:
+            return;
+        case EmbedError::TooManyTokens:
+            bllm_reply(request, ("{\"ok\":false,\"error\":\"the text is longer than the context\""
+                                 ",\"code\":\"text-too-long\",\"textTokens\":" +
+                                 std::to_string(started.tokens) +
+                                 ",\"contextTokens\":" + std::to_string(started.context) + "}")
+                                    .c_str());
+            return;
+        case EmbedError::Text:
+            bllm_reply(request, failure_json(started.encode.error == bllm::tokenizer::EncodeError::TooLong
+                                                 ? "the text is too large to encode"
+                                                 : "the text is not valid UTF-8")
+                                    .c_str());
+            return;
+        case EmbedError::EmptyText:
+            bllm_reply(request, failure_json("the text makes no tokens").c_str());
+            return;
+        case EmbedError::Busy:
+            bllm_reply(request, failure_json("an encode is running").c_str());
+            return;
+        case EmbedError::DeviceLost:
+            bllm_reply(request, failure_json("the GPU device was lost").c_str());
+            return;
+        default:
+            bllm_reply(request, failure_json("the encode cannot start").c_str());
+            return;
+    }
 }
 
 #if BLLM_DIAGNOSTICS_ENABLED

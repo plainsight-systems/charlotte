@@ -22,6 +22,13 @@
 // generate's request: the runtime keeps the call id each request was given,
 // and asks the module to end that turn; a request that is not running is
 // answered false.
+//
+// embed, for a model that encodes, writes the text into the module's memory
+// as generate does and calls bllm_embed; the vector arrives once through
+// bllmOnVector with the call's id, a view of the module's memory copied at
+// once, and resolves with the tokens the text made; a failure rejects,
+// carrying the module's code — "text-too-long" with both counts. Load's
+// answer carries the embedding's length for such a model.
 
 import createModule from './charlotte.mjs';
 import { streamFile } from './load.js';
@@ -46,6 +53,7 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
   globalThis.bllmOnDeviceEvent = (event) => onDeviceEvent?.(event);
   globalThis.bllmOnReply = answer;
   globalThis.bllmOnText = (call, text) => streams.get(call)?.(text);
+  globalThis.bllmOnVector = (call, view) => vectors.set(call, view.slice());
 
   const module = await createModule();
   startDeviceCheck(module, { runBench, profileSteps });
@@ -104,10 +112,11 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
           finish: (call) => module._bllm_load_finish(call),
         });
         const { contextOffered } = loaded;
+        const embeddingLength = loaded.embeddingLength ?? null;
         if (profileSteps && module._bllm_observe_steps(1) !== 1) {
           throw new Error('the step observer could not be set: the device grants no timestamp queries');
         }
-        if (!canCheck) return { check: null, contextOffered };
+        if (!canCheck) return { check: null, contextOffered, embeddingLength };
         const checked = await pass('check', {
           begin: async ({ maxChunk: chunkBytes }) => {
             chunkPointer = settled(await callModule((call) => module._bllm_check_begin(call, chunkBytes))).chunkPointer;
@@ -115,7 +124,7 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
           chunk: (call, offset, length) => module._bllm_check_chunk(call, offset, length),
           finish: (call) => module._bllm_check_finish(call),
         });
-        return { check: { mismatches: checked.mismatches }, contextOffered };
+        return { check: { mismatches: checked.mismatches }, contextOffered, embeddingLength };
       } finally {
         handle.close();
       }
@@ -154,6 +163,32 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
       } finally {
         streams.delete(call);
         turns.delete(id);
+      }
+    },
+
+    // The text's unit-length embedding, and the tokens it made.
+    embed: async (text) => {
+      const bytes = new TextEncoder().encode(text);
+      const pointer = module._malloc(Math.max(1, bytes.length));
+      if (pointer === 0) throw new Error(`could not allocate ${bytes.length} bytes in the module`);
+      let call;
+      let answered;
+      try {
+        module.HEAPU8.set(bytes, pointer);
+        answered = callModule((c) => {
+          call = c;
+          module._bllm_embed(c, pointer, bytes.length);
+        });
+      } finally {
+        // The module encoded the text during the call.
+        module._free(pointer);
+      }
+      try {
+        const answer = await answered;
+        if (!answer.ok) throw new ModuleError(answer);
+        return { vector: vectors.get(call), tokens: answer.tokens };
+      } finally {
+        vectors.delete(call);
       }
     },
 
@@ -219,13 +254,16 @@ function callModule(start) {
 // the worker's request id, for cancel.
 const streams = new Map();
 const turns = new Map();
+// Each answered embed's vector, by its call id, until its answer is read.
+const vectors = new Map();
 
 // A failure the module answered, with its code where it gave one.
 class ModuleError extends Error {
-  constructor({ error, subject, code, promptTokens, contextTokens }) {
+  constructor({ error, subject, code, promptTokens, textTokens, contextTokens }) {
     super(subject ? `${error} (${subject})` : error);
     this.code = code;
     if (code === 'prompt-too-long') this.counts = { promptTokens, contextTokens };
+    if (code === 'text-too-long') this.counts = { textTokens, contextTokens };
   }
 }
 

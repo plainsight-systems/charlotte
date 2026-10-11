@@ -5,7 +5,8 @@
 // two places JavaScript and C++ meet. The crossings are preflight a header
 // prefix; load a cached model, which the worker streams through the module
 // itself (load.js); generate from a rendered prompt and the turn's policy;
-// and cancel, which stops a load or a generation by naming its request. Text
+// embed a text, for a model that encodes, its vector one reply; and cancel,
+// which stops a load or a generation by naming its request. Text
 // comes back one message per piece the reply completes, and a load's progress
 // one message a chunk (WASM.2). A failure's code, where the runtime gives one,
 // crosses with its message, so the page can act on it by name.
@@ -50,6 +51,7 @@ const handlers = {
   },
   [Request.GENERATE]: (runtime, { id, prompt, sampling, seed, maxTokens }, { token }) =>
     runtime.generate({ id, prompt, sampling, seed, maxTokens, onText: token }),
+  [Request.EMBED]: (runtime, { text }) => runtime.embed(text),
   [Request.CANCEL]: (runtime, { target }) => {
     const load = loads.get(target);
     if (load === undefined) return runtime.cancel(target);

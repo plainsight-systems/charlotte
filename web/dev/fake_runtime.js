@@ -35,7 +35,7 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench }) {
 
     // Loads nothing, and says so: no check is made.
     canCheck: false,
-    loadFromCache: async () => ({ check: null, contextOffered: 0 }),
+    loadFromCache: async () => ({ check: null, contextOffered: 0, embeddingLength: null }),
 
     generate: async ({ id, prompt, onText }) => {
       const text = `${REPLY}The rendered prompt was ${prompt.length} characters.`;
@@ -47,6 +47,11 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench }) {
         tokens++;
       }
       return { stopReason: 'stop', tokens, promptTokens: 0, reusedTokens: 0 };
+    },
+
+    // A stand-in for a model that generates: it embeds nothing, and says so.
+    embed: async () => {
+      throw new Error('the stand-in runtime does not embed');
     },
 
     cancel: (target) => {

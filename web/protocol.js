@@ -13,7 +13,8 @@ export const Request = Object.freeze({
   PREFLIGHT: 'preflight',
   // Load a cached model, by its file's name, with the index prefix length,
   // the confirmed duplicates and the same load policy; progress comes back as
-  // PROGRESS replies. DONE carries the context offered.
+  // PROGRESS replies. DONE carries the context offered, and the embedding's
+  // length for a model that encodes, else null.
   LOAD: 'load',
   // Generate a reply to a rendered prompt — { prompt, sampling, seed,
   // maxTokens }, sampling and maxTokens optional — streaming its text as
@@ -22,6 +23,12 @@ export const Request = Object.freeze({
   // prompt does not fit the context, and "prompt-too-large", shown by name,
   // when it is past the bytes one encode takes.
   GENERATE: 'generate',
+  // Embed a text, for a model that encodes — { text }, the task's prompt
+  // written around it. DONE carries { vector, tokens }: the unit-length
+  // Float32Array and the tokens the text made, ends included; FAILED's error
+  // carries code "text-too-long", with both counts, when the text does not
+  // fit the context.
+  EMBED: 'embed',
   // Stop a load or a generation early; `target` is its request id.
   CANCEL: 'cancel',
 });
