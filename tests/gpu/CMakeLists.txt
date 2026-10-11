@@ -20,6 +20,7 @@ add_executable(charlotte_gpu_tests
     norm_test.cpp
     pool_test.cpp
     subsample_test.cpp
+    local_attention_test.cpp
     program_test.cpp
     rope_test.cpp
     mapping_test.cpp

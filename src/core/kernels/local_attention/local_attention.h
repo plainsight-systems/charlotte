@@ -45,12 +45,15 @@ namespace bllm::kernels {
 //     1. Scores: lanes 0 to 11 each take distance l of their head: a_l and
 //        b_l, 2 × 128 multiply-adds, reading q's head (512 bytes, every lane
 //        of the head the same), k's at row r − l and P's row w − l; then the
-//        cap. Lanes 12 to 15 compute nothing. Each writes its score, or −∞
-//        past row 0, to workgroup memory, 8 × 12 floats; one barrier.
-//     2. Weights: lane 0 of each head reads its head's 12 scores, takes the
-//        max, the exponentials and their sum in j order, and writes the 12
-//        weights back in their place; a second barrier. 12 exponentials a
-//        head a row, once.
+//        cap, its argument held to ±10, past which tanh is ±1 in f32: WGSL
+//        states tanh's accuracy as sinh / cosh's, a form that is NaN past
+//        about 89. Lanes from the row's distances, min(w, r + 1), to 15
+//        compute nothing. Each writes its score to workgroup memory, 8 × 16
+//        floats, a head's lanes; one barrier.
+//     2. Weights: lane 0 of each head reads its head's scores, at most 12,
+//        takes the max, the exponentials and their sum in j order, and
+//        writes the weights back in their place; a second barrier. 12
+//        exponentials a head a row, once.
 //     3. Output: lane l writes dimensions 8l to 8l + 7 of its head, 2 vec4s:
 //        Σ_j p_j v[r − j], j in order, the weights read from workgroup
 //        memory, the values from the 12 rows' 32 bytes each.
