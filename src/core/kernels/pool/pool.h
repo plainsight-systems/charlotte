@@ -18,11 +18,14 @@ namespace bllm::kernels {
 //     (kernels/interface.h, Rows::LastToken). Mean pooling over every token,
 //     the text's ends included, as sentence-transformers' Pooling with
 //     include_prompt and llama.cpp's LLAMA_POOLING_TYPE_MEAN take it.
-//     One workgroup of W / 4 invocations, at most 1,024 — W at most 4,096 —
-//     invocation c owning vec4 c of the row: it adds the rows' vec4s at c in
-//     row order, one chain of N adds from zero, then multiplies by 1 / N,
-//     computed once in f32. No reduction crosses invocations, so it needs no
-//     workgroup memory and no barrier.
+//     One workgroup of 256 invocations, WebGPU's default
+//     maxComputeInvocationsPerWorkgroup, which the harness keeps
+//     (gpu/device_requirements.h): invocation c owns the row's vec4s c, c +
+//     256, …, at most 4 for W at most 4,096 — one for EmbeddingGemma 2's 512,
+//     half the invocations idle. Each adds its vec4s down the rows in row
+//     order, one chain of N adds from zero a vec4, then multiplies by 1 /
+//     N, computed once in f32. No reduction crosses invocations, so it needs
+//     no workgroup memory and no barrier.
 //   - `unit`: row 0 of `projected`, D floats, divided by its Euclidean
 //     length into `embedding` — llama.cpp's common_embd_normalize with its
 //     default, the L2 norm, and sentence-transformers' Normalize. A row of
@@ -50,7 +53,7 @@ namespace bllm::kernels {
 //
 // What it costs, counted, at N tokens, for W = 512 and D = 768:
 //   - `mean`: reads N × W × 4 bytes — 1 MiB at N = 512 — writes 2 KiB; 128
-//     invocations each a chain of N dependent adds, 512 at N = 512, the
+//     working invocations each a chain of N dependent adds, 512 at N = 512, the
 //     launch's latency: about the time of 512 dependent loads and adds, a
 //     few microseconds, against an encode of tens of milliseconds
 //     (runtime/embedder.h).
@@ -86,6 +89,8 @@ namespace bllm::kernels {
 // The pooling launches, `mean` then `unit`. Preconditions: `normed` and
 // `pooled` hold kPrefillBlock rows of `width` floats, `projected` and
 // `embedding` one row of `dimensions`; both at most 4,096 and multiples of 4.
+// Each launch is one workgroup of 256 invocations, within WebGPU's default
+// limit at every width allowed.
 [[nodiscard]] Launch mean_launch(const residency::BufferRange& normed, const residency::BufferRange& pooled,
                                  std::uint32_t width);
 [[nodiscard]] Launch unit_launch(const residency::BufferRange& projected, const residency::BufferRange& embedding,

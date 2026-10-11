@@ -69,10 +69,14 @@ namespace bllm::tokenizer::bpe {
 //     16 MiB, as Gemma 3's derived merges take. No merge is derived from
 //     scores, so the load skips sentencepiece_merges.h's search over every
 //     split of every token.
-//   - An encode: about sentencepiece_bpe.h's 43 ns a byte, a piece being a
-//     line where Gemma 3's stretch runs from one special token to the next,
-//     so a piece is no longer and the merge's heap no larger; a whole
-//     context's text in under 1 ms at the embedder's 512 tokens.
+//   - An encode: about sentencepiece_bpe.h's 43 ns a byte of normalized
+//     text, a piece being a line where Gemma 3's stretch runs from one
+//     special token to the next, so a piece is no longer and the merge's
+//     heap no larger. What is merged is bounded by admission, not by the
+//     tokens it makes: text admitted under a limit of T tokens is at most T
+//     × longest_cover() normalized bytes (tokenizer.h), so an encode under
+//     the embedder's 510 costs at most 43 ns × 510 × the cover — the cover
+//     found at load, over this vocabulary.
 //   - Memory during an encode: within tokenizer.h's bound for
 //     kMaxEncodeBytes, whose count covers SentencePiece's escaped text, the
 //     larger.

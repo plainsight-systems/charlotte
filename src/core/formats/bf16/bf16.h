@@ -30,7 +30,7 @@ namespace bllm::formats {
 //     (format.h), and the cache stays F16 (logical-overview.md, cache
 //     precision).
 //
-// What it costs: two words read a pair of weights, half F32's bytes — the
+// What it costs: one word read a pair of weights, half F32's bytes — the
 // projection's 12.6 MB against 25.2 MB at F32 — and a shift and a mask a
 // pair, where F16's unpack2x16float converts. The products read it as any
 // format (kernels/matmul/matmul.h); nothing else does.
