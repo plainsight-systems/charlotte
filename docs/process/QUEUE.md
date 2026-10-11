@@ -4,7 +4,19 @@ This file tracks active and accepted work.
 
 ## Active
 
-- None.
+- **Embedding in the browser** — EmbeddingGemma 2's text encode path,
+  designed in its file headers (`runtime/embedder.h`, `graph/encoder.h`,
+  `arch/embedding_gemma2`).
+
+  In: the module loads the model, encodes a text of up to 512 tokens with
+  its ends as one step, and answers the worker's EMBED with the unit
+  vector. Each pinned text's embedding falls within llama.cpp's own
+  CPU-to-Metal spread of its Metal output, natively
+  (`tests/gpu/embedder_test.cpp`) and through the worker in the app's
+  Chromium; a swapped RoPE pairing falls 30 to 60 times outside it.
+
+  Open: the page — `web/task_prompt.js`, the catalog entry and a view that
+  embeds — and the encode's time, measured as a page measurement is.
 
 ## Accepted
 
