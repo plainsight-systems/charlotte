@@ -6,9 +6,12 @@
 // passages are ranked by their vectors' dot product with the query's, the
 // best five shown with their scores.
 //
-// createSearch(root, { embed, onSearch }) returns
-// { open(model, loaded), close() }. `embed(text)` sends one EMBED and
-// returns its reply, { vector, tokens }; `loaded` is the load's answer,
+// createSearch(root, { embed, prepareImage, companion, onSearch }) returns
+// { open(model, loaded), close(), showCompanion(state) }. `embed(text,
+// image)` sends one EMBED and returns its reply, { vector, tokens };
+// `prepareImage(file)` sends one PREPARE_IMAGE; `companion` is
+// companion.js's, whose onChange the page points at showCompanion; `loaded`
+// is the load's answer,
 // { contextOffered, embeddingLength }, which the panel's heading states:
 // "768 numbers a text, up to 512 tokens". `onSearch(step, detail)`, if
 // given, follows the indexing and each query for the diagnostics
@@ -46,22 +49,28 @@
 //     (catalog.js, runtime/vision.h): photos chosen or dropped beside the
 //     document join the same index, each embedded alone as `<|image|>`
 //     with no prompt, as the card says, so one query ranks paragraphs and
-//     photos together — the point of a shared space. Each photo is decoded
-//     in the worker as it is added (image_input.js): one the browser cannot
-//     decode, or larger than a canvas holds, is named and not added. The
+//     photos together — the point of a shared space. Each photo is checked
+//     as it is added (photos.js): one the browser cannot decode, or larger
+//     than a canvas holds, is named and not added. Adding or removing one
+//     discards the index, as an edit does. The
 //     first photo indexed loads the companion (companion.js), with its own
 //     progress and its own refusals by stage, as a model's are: 226 MB the
 //     first time, then from the cache. Indexing sends each photo's bands
 //     and its EMBED, and begins the next photo's bands as soon as that
-//     EMBED is accepted, while its passes run (runtime/vision.h); a photo's
+//     EMBED is sent, while its passes run (runtime/vision.h): the worker
+//     reads its messages in order and an EMBED reaches the module before the
+//     worker reads the next, and the module copies the slot's pixels when it
+//     submits the step, so the next photo may fill the slot; a photo's
 //     failure ends the indexing as a passage's does, whole or not at all. A
 //     photo's result is its thumbnail, the file shown by the page
-//     (URL.createObjectURL, released with the index), and its score.
+//     (URL.createObjectURL, released with the photo), and its score.
+//     Stopping leaves a companion's download or load running, so the next
+//     indexing finds it further on.
 //     Under ?fake-runtime=embedder a photo's vector is a hash of its pixels
 //     (dev/fake_runtime.js), never shown as a model's.
 //   - Closing the panel, as choosing another model does, abandons an
 //     indexing in progress: no further passage is sent, and an answer still
-//     on its way is ignored. The next load cancels an encode still running
+//     on its way is ignored. The companion is released with it. The next load cancels an encode still running
 //     (src/wasm/bindings.cpp).
 //
 // What it costs, counted, for EmbeddingGemma 2 on the target; a passage of
@@ -118,53 +127,77 @@
 // overlapped with the last photo's encode; the vision step, 0.4 to 0.5 s;
 // the text step, about 29 ms; the vector's 3 KiB as a passage's. About half
 // a second a photo once preparing overlaps encoding, so a hundred photos
-// index in under a minute.
+// index in under a minute. Measured in the app's Chromium on an Apple M3
+// Max: a 4,032 × 3,024 JPEG alone, 270 tokens, 0.49 s with nothing to
+// overlap; 300 × 300 drawings of 80 tokens about 0.09 s each.
 //
 // Verification: in the app's Chromium with EmbeddingGemma 2, the document
 // in tests/fixtures/search/ — paragraphs on unrelated subjects, one of them
 // past the context — is indexed, the long paragraph cut and its pieces
 // indexed, and each of the fixture's queries ranks the paragraph written to
 // answer it first; Stop and an edit each discard the index. With the four
-// photographs of tests/fixtures/vision/ added, each of its queries ranks
-// its own photograph first, among the photos and the paragraphs. On a phone
+// scenes of tests/fixtures/vision/ added as PNGs
+// (tools/make_vision_photos.py), each query of
+// tests/fixtures/reference/vision_embeddings.inc ranks its own scene first,
+// among the photos and the paragraphs, each score llama.cpp's to three
+// places; a file that is not an image is refused by name. On a phone
 // screen, in iOS Safari under
 // ?fake-runtime=embedder (dev/fake_runtime.js), the panel with the
 // on-screen keyboard up.
 
+import { describeCompanion } from './companion.js';
 import { h } from './dom.js';
 import { passagesOf, piecesOf } from './passages.js';
+import { createPhotos } from './photos.js';
 import { createIndex } from './search_index.js';
 import { taskPrompt } from './task_prompt.js';
 
 const kResults = 5;
+// What a photo is embedded as: the image alone, with no task prompt, as the
+// model card gives it.
+const kPhotoText = '<|image|>';
 
-export function createSearch(root, { embed, onSearch }) {
+export function createSearch(root, { embed, prepareImage, companion, onSearch }) {
   let active = null;
 
   const close = () => {
-    if (active !== null) active.closed = true;
+    if (active !== null) {
+      active.closed = true;
+      active.release();
+      companion?.release();
+    }
     active = null;
     root.replaceChildren();
   };
 
   const open = (model, loaded) => {
     close();
-    active = { closed: false };
-    root.replaceChildren(searchPanel(model, loaded, active, { embed, onSearch }));
+    active = { closed: false, release: () => {}, showCompanion: () => {} };
+    root.replaceChildren(searchPanel(model, loaded, active, { embed, prepareImage, companion, onSearch }));
   };
 
-  return { open, close };
+  return { open, close, showCompanion: (state) => active?.showCompanion(state) };
 }
 
-function searchPanel(model, { contextOffered, embeddingLength }, session, { embed: request, onSearch }) {
+function searchPanel(model, { contextOffered, embeddingLength }, session,
+  { embed: request, prepareImage, companion, onSearch }) {
   const prompts = model.prompts ?? null;
+  const sees = model.vision !== undefined && companion !== undefined;
   // Each EMBED waits for the one before to answer, even one whose run was
   // stopped: the embedder refuses a second while one runs.
   let previous = Promise.resolve();
   const embed = (text) => {
-    const reply = previous.then(() => request(text));
+    const reply = previous.then(() => request(text, false));
     previous = reply.catch(() => {});
     return reply;
+  };
+  // A photo's EMBED, sent now, once every EMBED before has answered, so the
+  // caller knows it has reached the worker before it prepares the next.
+  const embedPhoto = async () => {
+    await previous;
+    const reply = request(kPhotoText, true);
+    previous = reply.catch(() => {});
+    return { reply };
   };
   // The index once built; the indexing running, if one is; a query running.
   let ready = null;
@@ -174,15 +207,23 @@ function searchPanel(model, { contextOffered, embeddingLength }, session, { embe
   const documentInput = h('textarea', { rows: 5, 'aria-label': 'Document',
     placeholder: 'Paste a document. Each paragraph, between blank lines, becomes a passage.' });
   const documentFacts = h('span', { className: 'message-facts' });
-  const indexButton = h('button', { type: 'submit', className: 'action primary', text: 'Embed passages' });
-  const queryInput = h('input', { type: 'search', 'aria-label': 'Query', placeholder: 'Search the passages' });
+  const indexLabel = sees ? 'Embed' : 'Embed passages';
+  const indexButton = h('button', { type: 'submit', className: 'action primary', text: indexLabel });
+  const queryInput = h('input', { type: 'search', 'aria-label': 'Query',
+    placeholder: sees ? 'Search the passages and photos' : 'Search the passages' });
   const queryButton = h('button', { type: 'submit', className: 'action primary', text: 'Search' });
   const error = h('p', { className: 'chat-error', 'aria-live': 'assertive' });
   const results = h('ol', { className: 'search-results', 'aria-live': 'polite' });
   const queryFacts = h('p', { className: 'message-facts' });
+  const companionFacts = h('p', { className: 'message-facts', 'aria-live': 'polite' });
+  session.showCompanion = (state) => { companionFacts.textContent = describeCompanion(state); };
+  const photos = sees ? createPhotos({ onChange: () => {
+    if (indexing !== null || ready !== null) discard('Photos changed: embed again.');
+  } }) : null;
+  session.release = () => photos?.release();
 
   const settle = () => {
-    indexButton.textContent = indexing === null ? 'Embed passages' : 'Stop';
+    indexButton.textContent = indexing === null ? indexLabel : 'Stop';
     indexButton.disabled = querying;
     queryButton.disabled = ready === null || indexing !== null || querying;
   };
@@ -197,16 +238,17 @@ function searchPanel(model, { contextOffered, embeddingLength }, session, { embe
 
   const index = async () => {
     const passages = passagesOf(documentInput.value);
+    const pictures = photos?.photos() ?? [];
     error.textContent = '';
-    if (passages.length === 0) {
-      error.textContent = 'The document has no paragraphs to embed.';
+    if (passages.length === 0 && pictures.length === 0) {
+      error.textContent = sees ? 'Add a document or photos to embed.' : 'The document has no paragraphs to embed.';
       return;
     }
     const run = {};
     indexing = run;
     ready = null;
     clearResults();
-    documentFacts.textContent = `0 of ${passages.length} passages embedded`;
+    documentFacts.textContent = `0 of ${passages.length + pictures.length} embedded`;
     settle();
     const built = createIndex(embeddingLength);
     const queue = [...passages];
@@ -230,14 +272,37 @@ function searchPanel(model, { contextOffered, embeddingLength }, session, { embe
         if (!current(run)) return;
         built.add(passage, reply.vector);
         tokens += reply.tokens;
-        const progress = `${built.size()} of ${built.size() + queue.length}`;
-        documentFacts.textContent = `${progress} passages embedded`;
+        const progress = `${built.size()} of ${built.size() + queue.length + pictures.length}`;
+        documentFacts.textContent = `${progress} embedded`;
         onSearch?.('progress', progress);
+      }
+      const kept = built.size();
+      if (pictures.length > 0) {
+        await companion.ensure(model);
+        if (!current(run)) return;
+        // Each photo's bands go in while the one before is encoded.
+        let prepared = prepareImage(pictures[0].file);
+        for (let i = 0; i < pictures.length; i++) {
+          await prepared;
+          if (!current(run)) return;
+          const { reply } = await embedPhoto();
+          prepared = i + 1 < pictures.length ? prepareImage(pictures[i + 1].file) : null;
+          prepared?.catch(() => {});   // its failure is met when it is awaited
+          const { vector, tokens: made } = await reply;
+          if (!current(run)) return;
+          built.add(pictures[i], vector);
+          tokens += made;
+          const progress = `${built.size()} of ${kept + pictures.length}`;
+          documentFacts.textContent = `${progress} embedded`;
+          onSearch?.('progress', progress);
+        }
       }
       ready = built;
       const seconds = (performance.now() - started) / 1000;
-      documentFacts.textContent =
-        `${built.size()} passages embedded · ${tokens} tokens · ${seconds.toFixed(2)} s`;
+      const count = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
+      const counted = [kept > 0 || pictures.length === 0 ? count(kept, 'passage') : null,
+        pictures.length > 0 ? count(pictures.length, 'photo') : null].filter(Boolean).join(' and ');
+      documentFacts.textContent = `${counted} embedded · ${tokens} tokens · ${seconds.toFixed(2)} s`;
       onSearch?.('done');
     } catch (failure) {
       if (!current(run)) return;
@@ -275,8 +340,11 @@ function searchPanel(model, { contextOffered, embeddingLength }, session, { embe
       if (session.closed || ready !== ranking) return;
       const milliseconds = performance.now() - started;
       results.replaceChildren(...ranking.rank(vector, kResults).map(({ passage, score }) =>
-        h('li', {}, h('span', { className: 'score', text: score.toFixed(3) }), h('p', { text: passage }))));
-      queryFacts.textContent = `${tokens} tokens · ${milliseconds.toFixed(1)} ms · ${ranking.size()} passages ranked`;
+        h('li', {}, h('span', { className: 'score', text: score.toFixed(3) }),
+          typeof passage === 'string'
+            ? h('p', { text: passage })
+            : h('img', { className: 'result-photo', src: passage.url, alt: passage.file.name }))));
+      queryFacts.textContent = `${tokens} tokens · ${milliseconds.toFixed(1)} ms · ${ranking.size()} ranked`;
       onSearch?.('done');
     } catch (failure) {
       if (session.closed) return;
@@ -313,8 +381,10 @@ function searchPanel(model, { contextOffered, embeddingLength }, session, { embe
   const about = `${embeddingLength} numbers a text, up to ${contextOffered} tokens` +
     (prompts === null ? ' · no task prompts are known for this model: texts are embedded as written' : '');
   settle();
-  return h('div', { className: 'conversation search-panel' },
+  const panel = h('div', { className: 'conversation search-panel' },
     h('p', { className: 'chat-heading', text: model.measured ? model.name : `${model.name} · unmeasured` }),
     h('p', { className: 'message-facts', text: about }),
-    documentForm, queryForm, error, results, queryFacts);
+    documentForm, photos?.element, companionFacts, queryForm, error, results, queryFacts);
+  photos?.dropOnto(panel);
+  return panel;
 }

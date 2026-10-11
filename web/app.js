@@ -4,11 +4,15 @@
 // The main panel is the chat (chat.js) or, for a model whose load answered
 // with an embedding's length, the search panel (search.js); each owns its
 // own element, and one shows at a time. Choosing a model closes both and
-// shows the chat's empty state.
+// shows the chat's empty state. A model that embeds images has its
+// companion (companion.js) loaded by the search panel when it first needs
+// it, its state shown there and its file listed in the cache with the
+// models.
 
 import { renderCache } from './cache_view.js';
 import { loadCatalog } from './catalog.js';
 import { createChat } from './chat.js';
+import { createCompanion } from './companion.js';
 import { createRecorder } from './diagnostics_recorder.js';
 import { createDiagnosticsView } from './diagnostics_view.js';
 import { showDevice, showStarting, showUnavailable } from './device_status.js';
@@ -98,8 +102,14 @@ if (!('gpu' in navigator)) {
     onChooseModel: () => drawer.open(),
   });
 
+  const loadPolicyOf = (model) => loadPolicyFor(model.policy?.load, platform);
+  const companion = createCompanion({ client, cache, loadPolicyOf,
+    onChange: (state) => search.showCompanion(state),
+    onCacheChanged: () => refreshCache() });
   const search = createSearch(page.search, {
-    embed: (text) => client.request(Request.EMBED, { text }),
+    embed: (text, image) => client.request(Request.EMBED, { text, image }),
+    prepareImage: (image) => client.request(Request.PREPARE_IMAGE, { image }),
+    companion,
     onSearch: (step, detail) => recorder.search(step, detail),
   });
   // The main panel shown: the chat, or the search panel.
@@ -136,7 +146,7 @@ if (!('gpu' in navigator)) {
     cache,
     onCacheChanged: refreshCache,
     onState: (state) => recorder.modelState(state),
-    loadPolicyOf: (model) => loadPolicyFor(model.policy?.load, platform),
+    loadPolicyOf,
     onLoaded: (model, verdict, loaded) => {
       drawer.close();   // the panel, once there is one to have
       if (loaded.embeddingLength !== null) {

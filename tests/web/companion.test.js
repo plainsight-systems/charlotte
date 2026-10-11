@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 
-import { CompanionError, createCompanion } from '../../web/companion.js';
+import { CompanionError, createCompanion, describeCompanion } from '../../web/companion.js';
 import { Request } from '../../web/protocol.js';
 
 // The companion's published file: 5,000 bytes, a header of 600 in its first
@@ -143,4 +143,14 @@ test('release mid-load cancels the load, and its late answer changes nothing', a
   finishLoad({ imageTokens: 280 });
   await again;
   assert.equal(companion.state.phase, 'loaded');
+});
+
+test('each state reads as the search panel shows it', () => {
+  assert.equal(describeCompanion(null), '');
+  assert.equal(describeCompanion({ phase: 'checking' }), 'Checking the image encoder');
+  assert.equal(describeCompanion({ phase: 'downloading', received: 81e6, total: 226e6 }),
+    'Downloading the image encoder: 81 MB of 226 MB');
+  assert.equal(describeCompanion({ phase: 'loading', received: 0, total: null }), 'Loading the image encoder');
+  assert.equal(describeCompanion({ phase: 'loaded' }), 'Image encoder loaded');
+  assert.equal(describeCompanion({ phase: 'failed', message: 'x' }), 'The image encoder did not load');
 });

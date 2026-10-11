@@ -68,6 +68,20 @@ import { cachedFileName } from './opfs.js';
 import { preflight, rangesOfFile, withinFirstRange } from './preflight.js';
 import { Request } from './protocol.js';
 import { nextStage, offersDownload } from './stages.js';
+import { formatBytes } from './units.js';
+
+// What a state says where the search panel shows it. Pure.
+export function describeCompanion(state) {
+  const part = (received, total) => (total ? `${formatBytes(received)} of ${formatBytes(total)}` : '');
+  switch (state?.phase) {
+    case 'checking': return 'Checking the image encoder';
+    case 'downloading': return `Downloading the image encoder: ${part(state.received, state.total)}`;
+    case 'loading': return `Loading the image encoder${state.total ? `: ${part(state.received, state.total)}` : ''}`;
+    case 'loaded': return 'Image encoder loaded';
+    case 'failed': return 'The image encoder did not load';
+    default: return '';
+  }
+}
 
 // A companion this build or device cannot run, with the verdict that says why.
 export class CompanionError extends Error {
