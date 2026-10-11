@@ -29,6 +29,7 @@ const runtimeModule = flags.has('fake-runtime') ? './dev/fake_runtime.js' : './w
 const runtimePromise = import(runtimeModule)
   .then(({ createRuntime }) => createRuntime({ onDevice: postDevice, onDeviceEvent: postDeviceEvent,
     runBench: flags.has('bench'),
+    fake: flags.get('fake-runtime'),
     profileSteps: flags.has('profile') }));
 runtimePromise.catch((error) =>
   postDevice({ ok: false, stage: 'runtime', error: String(error?.message ?? error) }));

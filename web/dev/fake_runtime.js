@@ -26,8 +26,13 @@ import { createRuntime as createWasmRuntime } from '../wasm_runtime.js';
 const REPLY = 'This reply comes from the fake runtime, not from a model. ' +
   'It streams a word at a time so the chat can be exercised. ';
 const WORD_DELAY_MS = 40;
+// What it claims as a model that embeds.
+const kDimensions = 768;
+const kContext = 512;
+const kBytesPerToken = 4;
 
-export async function createRuntime({ onDevice, onDeviceEvent, runBench }) {
+export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake }) {
+  const embeds = fake === 'embedder';
   const real = await createWasmRuntime({
     onDevice: (device) => onDevice({ ...device, fake: true }),
     onDeviceEvent,
@@ -44,9 +49,11 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench }) {
 
     // Loads nothing, and says so: no check is made.
     canCheck: false,
-    loadFromCache: async () => ({ check: null, contextOffered: 0, embeddingLength: null }),
+    loadFromCache: async () => ({ check: null, contextOffered: embeds ? kContext : 0,
+      embeddingLength: embeds ? kDimensions : null }),
 
     generate: async ({ id, prompt, onText }) => {
+      if (embeds) throw new Error('the model embeds; it does not generate');
       const text = `${REPLY}The rendered prompt was ${prompt.length} characters.`;
       let tokens = 0;
       for (const word of text.split(/(?<= )/)) {
@@ -58,9 +65,16 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench }) {
       return { stopReason: 'stop', tokens, promptTokens: 0, reusedTokens: 0 };
     },
 
-    // A stand-in for a model that generates: it embeds nothing, and says so.
-    embed: async () => {
-      throw new Error('the stand-in runtime does not embed');
+    // Standing in for a model that generates, it embeds nothing, and says so.
+    embed: async (text) => {
+      if (!embeds) throw new Error('the model generates; it does not embed');
+      const bytes = new TextEncoder().encode(text).length;
+      const tokens = Math.ceil(bytes / kBytesPerToken);
+      if (tokens > kContext) {
+        throw Object.assign(new Error('the text is longer than the context'),
+          { code: 'text-too-long', counts: { textTokens: tokens, contextTokens: kContext } });
+      }
+      return { vector: trigramVector(text), tokens };
     },
 
     cancel: (target) => {
@@ -68,4 +82,20 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench }) {
       return true;
     },
   };
+}
+
+// The text's character trigrams, lowercased, each hashed (FNV-1a) into one of
+// kDimensions places and counted, then scaled to unit length. No model's
+// vector: the same text gives the same one, and texts sharing words score
+// higher, which is all the search panel needs to be exercised.
+function trigramVector(text) {
+  const vector = new Float32Array(kDimensions);
+  const characters = [...` ${text.toLowerCase()} `];
+  for (let i = 0; i + 3 <= characters.length; i++) {
+    let hash = 0x811c9dc5;
+    for (const c of characters.slice(i, i + 3).join('')) hash = Math.imul(hash ^ c.codePointAt(0), 0x01000193);
+    vector[(hash >>> 0) % kDimensions] += 1;
+  }
+  const norm = Math.hypot(...vector) || 1;
+  return vector.map((v) => v / norm);
 }
