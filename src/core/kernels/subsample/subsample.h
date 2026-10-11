@@ -55,9 +55,9 @@ namespace bllm::kernels {
 //     row r's floats 32f to 32f + 31.
 //   - ε the file's, 10⁻⁶, in the constants; the gain bound beside the
 //     weights.
-//   - Constants (binding 1): struct Subsample { epsilon: f32, frames: u32 },
-//     T₂ for `second`'s bound, T for `first`'s — the step's `columns` is T,
-//     and each form takes its own bound from it.
+//   - Constants (binding 1): struct Subsample { epsilon: f32 }. The bound
+//     in time is the clip's, so the step's: its `columns` is T, the first's
+//     bound, and the second takes T₂ = ⌈T / 2⌉ from it.
 //   - Bindings: 2 the convolution's weights, 3 its gain, F32, read-only; 4
 //     the input, read-only; 5 the output, written.
 //

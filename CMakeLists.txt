@@ -69,6 +69,7 @@ add_library(charlotte_core STATIC
     src/core/kernels/attention/attention.cpp
     src/core/kernels/block_attention/block_attention.cpp
     src/core/kernels/pool/pool.cpp
+    src/core/kernels/subsample/subsample.cpp
     src/core/kernels/rope/rope.cpp
     src/core/kernels/schedule.cpp
     src/core/kernels/topk/topk.cpp
@@ -113,6 +114,7 @@ bllm_embed_shaders(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/block_attention/block_attention.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/block_attention/block_attention_stream.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/pool/pool.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/subsample/subsample.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope_cache.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope_encode.wgsl"
