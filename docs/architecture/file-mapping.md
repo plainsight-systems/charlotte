@@ -97,7 +97,7 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/sampler/` | F | sampling methods; settings and seed are passed in |
 | `src/core/runtime/runtime`, `generator`, `stops` | M (generate) | the turn loop: diff, prefill, decode, sample; and the tokens that stop it |
 | `src/core/runtime/embedder`, `ends` | M (encode) | the encode path: wrap a text in the file's ends, one step, read back a vector |
-| `src/core/runtime/vision` | M (encode) | an encode's image stage: the image's slots, the vision step, its rows placed in the text step |
+| `src/core/runtime/vision` | M (encode) | an encode's image stage: the image's staging slot, the vision step, its rows placed in the text step |
 
 Rows marked *contract* carry no axis. A contract header changes only
 when the contract itself changes, which is cross-cutting by definition: every
@@ -367,7 +367,10 @@ Four rules hold for every contract:
    the regime from the number of tokens in the step. A step's parameters
    carry, beside its position and tokens, a vision step's grid columns and a
    text step's rows that an image's rows fill; a vision step's tokens are its
-   patches, more than a prefill block, with no identifiers.
+   patches, more than a prefill block, with no identifiers. A launch may
+   cover the step's tokens over a divisor — a vision step's pooled rows,
+   its patches over k² — counting its rows, tiles and token ranges in
+   those.
 8. **KV cache** — `core/cache/kv`, for a model that generates. Full length
    for full-attention layers; a ring of the planned slots for sliding-window
    layers. Truncation resets a
@@ -393,8 +396,8 @@ Four rules hold for every contract:
     that embeds, embed a text, its vector crossing once as a view of the
     module's memory; for a model with a companion, preflight and load the
     companion, its ranges carried once at begin and each chunk at its file
-    offset, and prepare an image in one of two slots, its pixels a band of
-    rows a crossing, before an embed names the slot. The rendered prompt
+    offset, and prepare an image in the module's one slot, its pixels a
+    band of rows a crossing, before an embed encodes it. The rendered prompt
     crosses twice a turn: to the worker as a string, then into the module's
     memory as UTF-8 bytes. The reply's text crosses twice a piece it
     completes, from the module to the worker and from the worker to the page

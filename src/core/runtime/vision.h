@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -22,15 +21,14 @@ namespace bllm::runtime {
 // placeholder stood, so one embedding represents the text and the image
 // together, comparable with any other (docs/research/
 // 2026-10-11-embeddinggemma2-vision.md). The embedder runs it; it owns the
-// vision encoder's program and the two staging slots an image is prepared
-// in.
+// vision encoder's program and the staging slot an image is prepared in.
 //
 // An encode with an image, end to end:
 //   1. Prepare (before the encode, and while another runs): the page
 //      decodes the image and hands the module its pixels, a band of rows at
-//      a time, into one of two staging slots (web/image_input.js); the slot
-//      sizes the grid for the budget, resamples and cuts the patches
-//      (media/image.h). A slot holds one image's patches, 3 P² × the
+//      a time, into the staging slot (web/image_input.js); the slot sizes
+//      the grid for the budget, resamples and cuts the patches
+//      (media/image.h). The slot holds one image's patches, 3 P² × the
 //      budget's most patches floats, 7.7 MB, allocated at load.
 //   2. The text, UTF-8, with `<|image|>` exactly once where the image goes —
 //      the card's placeholder; the page writes it alone for an image alone,
@@ -44,8 +42,10 @@ namespace bllm::runtime {
 //      context, 512: an image of 280 leaves 230 for the text and the ends.
 //   3. The vision step: position 0, N = M × k² patches, `columns` the grid's;
 //      the slot's patches written into the vision program's `pixels` in one
-//      write; one pass (graph/vision.h). The slot is free once the write is
-//      made, so the page may prepare the next image into it.
+//      write; one pass (graph/vision.h). wgpuQueueWriteBuffer copies the
+//      bytes before it returns, so the slot is free once start() has
+//      returned, and the page prepares the next image into it while this
+//      one's passes run.
 //   4. The text step, with its media rows: `media_first` the row after
 //      `<|image>`, `media_rows` M. Before its pass, one copy of rows 0 ..
 //      M − 1 of the vision program's `soft_tokens` into those rows of the
@@ -106,7 +106,8 @@ namespace bllm::runtime {
 //   - kernels/gather/gather.h: an invocation whose row lies in the step's
 //     media rows returns before reading its identifier: those rows are the
 //     copy's.
-//   - runtime/embedder.h: start(text, slot), the slot optional; the text
+//   - runtime/embedder.h: start(text, image), the image the slot's, and
+//     optional; the text
 //     without an image refused, Placeholder, where it holds `<|image|>`;
 //     the context check counting M rows; the vision stage optional,
 //     attached once the companion loads.
@@ -122,10 +123,10 @@ namespace bllm::runtime {
 //                                 ranges…, policy…)
 //       bllm_companion_load_chunk(request, file_offset, length)
 //       bllm_companion_load_finish(request)
-//       bllm_image_begin(request, slot, width, height) → the grid, or the
-//                                                         refusal
-//       bllm_image_rows(request, slot, first_row, pointer, rows)
-//       bllm_embed(request, text, text_length, slot), slot −1 for none
+//       bllm_image_begin(request, width, height) → the grid, or the refusal
+//       bllm_image_rows(request, first_row, pointer, rows)
+//       bllm_embed(request, text, text_length, image), image 1 to encode
+//                                                       the slot's image
 //     The pixels cross once a band, as a view of the worker's band copied
 //     into the module's memory; the grid crosses back once an image; the
 //     vector once an encode, as now (WASM.2).
@@ -136,8 +137,8 @@ namespace bllm::runtime {
 //     for a 12-megapixel photo by estimate, and one crossing a band — a
 //     4,032-pixel-wide photo in bands of 4 MiB is 260 rows a band, 12
 //     crossings. It overlaps the GPU's work on the image before: the worker
-//     is free while a pass runs, and the second slot lets the page prepare
-//     image k + 1 while image k encodes (GPU.7).
+//     is free while a pass runs, and the slot is free once start() returns,
+//     so the page prepares image k + 1 while image k encodes (GPU.7).
 //   - The vision step: 133 launches, 5.4 × 10¹¹ multiply-adds, about 0.4 to
 //     0.5 s on the target by estimate (graph/vision.h); the patches' write,
 //     7.7 MB, one call.
@@ -145,13 +146,14 @@ namespace bllm::runtime {
 //   - The text step: about 284 rows, 29 ms by the measured 26.0 at 254 and
 //     33.5 at 336 (docs/research/2026-10-11-chrome-encode-benchmark.md).
 //   - The readback: 3 KiB, about 0.5 ms, as for a text.
-//   - Memory: the two slots, 15.5 MB of the module's heap at load; on the
+//   - Memory: the slot, 7.7 MB of the module's heap at load; on the
 //     device, the encoder's 226 MB and its working set's 98 MB.
 // Optimization (browser): the companion's audio encoder never fetched,
 // cached or uploaded (residency/file_ranges.h).
-// Optimization (browser): two staging slots, so a page indexing photos
-// keeps the single-threaded worker preparing one while the GPU encodes the
-// last (GPU.7); one slot would serialize them.
+// Optimization (browser): the next photo prepared while the last encodes,
+// the single-threaded worker otherwise idle during a pass; one slot is
+// enough, since the patches' write ends the slot's part in an encode
+// before start() returns (GPU.7).
 // Optimization not taken: writing the vision encoder's projection straight
 // into the text program's `hidden`, which would bind one upload's buffer in
 // another's program; the copy costs under 2 µs and keeps each program to its
@@ -173,8 +175,8 @@ namespace bllm::runtime {
 //     and the feed-forward run with GELU-quick, each fall outside.
 //   - The tokens: each fixture text's identifiers, the image tokens placed,
 //     as llama.cpp's server tokenized them.
-//   - On the GPU: the same image embedded twice gives the same bits; an
-//     image prepared in another slot, the same bits; a text encode after an
+//   - On the GPU: the same image embedded twice gives the same bits, and
+//     the same when prepared while another encodes; a text encode after an
 //     image's gives the bits a fresh embedder gives; each refusal named.
 //   - In the app's Chromium, the page: each of the fixtures' four queries
 //     ranks its own photograph first among the four and the search
@@ -183,7 +185,7 @@ namespace bllm::runtime {
 // Guidelines, by corpus:
 //   C++ Core Guidelines
 //     I.11   Never transfer ownership by a raw pointer — the program and the
-//            slots owned, by unique_ptr and value.
+//            slot owned, by unique_ptr and value.
 //     E.27   Use error codes systematically — each refusal named.
 //     SL.io.2 When reading, always consider ill-formed input — the text's
 //            placeholders counted, the image's bands checked.
@@ -191,10 +193,11 @@ namespace bllm::runtime {
 //   C++ performance guidelines
 //     GPU.1  Keep data on the device — the image's rows go from one program
 //            to the other on the GPU; only the vector comes back.
-//     GPU.7  Pipeline CPU and GPU work — two slots.
+//     GPU.7  Pipeline CPU and GPU work — the next image prepared during a
+//            pass.
 //     WASM.2 Batch work across the JS boundary — a band a crossing, the
 //            grid once, the vector once.
-//     MEM.9  Allocate at init — the slots at load.
+//     MEM.9  Allocate at init — the slot at load.
 
 enum class SlotState {
     Empty,
@@ -210,9 +213,7 @@ struct ImageSlot {
     SlotState state = SlotState::Empty;
 };
 
-inline constexpr std::size_t kImageSlots = 2;
-
-// The vision encoder, loaded beside the text model, and its slots.
+// The vision encoder, loaded beside the text model, and its slot.
 class Vision {
 public:
     // Preconditions: `program` was built from the vision encoder's graph,
@@ -222,16 +223,16 @@ public:
     Vision(std::unique_ptr<kernels::Program> program, std::unique_ptr<kernels::ProgramLink> link,
            media::ImageBudget budget, std::uint32_t patch, std::uint32_t pooling);
 
-    // Starts an image of `width` × `height` in `slot`, discarding whatever
-    // the slot held: its grid, or the image's refusal. Any slot may be
-    // begun at any time: an encode's start() writes its slot's patches to
-    // the GPU before it returns, so no encode holds a slot after.
-    [[nodiscard]] media::ImageError begin(std::size_t slot, std::uint32_t width, std::uint32_t height);
+    // Starts an image of `width` × `height` in the slot, discarding whatever
+    // it held: its grid, or the image's refusal. May be called at any time:
+    // an encode's start() writes the slot's patches to the GPU before it
+    // returns, so no encode holds the slot after.
+    [[nodiscard]] media::ImageError begin(std::uint32_t width, std::uint32_t height);
 
-    // The next band of `slot`'s image; the last band writes its patches.
-    [[nodiscard]] media::ImageError rows(std::size_t slot, std::uint32_t first_row, std::span<const std::uint8_t> rgba);
+    // The next band of the slot's image; the last band writes its patches.
+    [[nodiscard]] media::ImageError rows(std::uint32_t first_row, std::span<const std::uint8_t> rgba);
 
-    [[nodiscard]] const ImageSlot& slot(std::size_t slot) const noexcept;
+    [[nodiscard]] const ImageSlot& slot() const noexcept;
 
     ~Vision();
     Vision(const Vision&) = delete;
@@ -240,7 +241,7 @@ public:
 private:
     std::unique_ptr<kernels::Program> program_;
     std::unique_ptr<kernels::ProgramLink> link_;
-    std::array<ImageSlot, kImageSlots> slots_;
+    ImageSlot slot_;
     media::ImageBudget budget_;
     std::uint32_t patch_;
     std::uint32_t pooling_;

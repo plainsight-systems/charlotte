@@ -87,10 +87,11 @@ namespace bllm::graph {
 //       3. The projection: `pooled` times the projection (W to the text
 //          width, 512) into `soft_tokens`: one product. Its rows are the
 //          rows the text step reads (runtime/vision.h).
-//     The pooled grid has M = N / k² rows. Steps 2 and 3 run over the
-//     step's N rows, every launch's geometry being by the step's token
-//     count, and rows M .. N − 1 are computed and never read; the cost
-//     is counted below.
+//     The pooled grid has M = N / k² rows, and steps 2 and 3 run over those
+//     rows alone: each launch's geometry carries a row divisor, k², so it
+//     covers N / k² rows, and its kernel bounds its rows by the same
+//     division (kernels/interface.h, below). The add in step 1 covers all
+//     N.
 //
 // Names, for a profile: "patch.embed", "patch.positions"; per layer
 // "attention.norm", "attention.qkv", "attention.rope", "attention.stream",
@@ -117,8 +118,12 @@ namespace bllm::graph {
 // 2,520: `pixels` R × 3 P², 7.7 MB, which the program writes each image;
 // `hidden`, `normed`, `output`, `query`, `key`, `value` and `attention`, R ×
 // W, 7.7 MB each; `activation` R × F, 31.0 MB; `soft_tokens` R × the
-// projection's width, 5.2 MB; `range_sums` one float, since no product of a
-// step of 2,520 rows splits along K (kernels/matmul/matmul.h's gate);
+// projection's width, 5.2 MB; `range_sums` one float, so no product
+// splits along K: none over N patches would, and the projection over M
+// rows, which the gate would split at 192 or fewer, is at most 7.5 × 10⁷
+// multiply-adds, where splitting would save tens of microseconds for 12.6
+// MB of range sums; the buffer's capacity keeps it tiled
+// (kernels/matmul/matmul.h);
 // `pooled` is `normed`, below. About 98 MB, beside the encoder's 226 MB of
 // weights; no cache.
 //
@@ -131,11 +136,11 @@ namespace bllm::graph {
 //   - Multiply-adds: the patch embedding 1.5 × 10⁹; the layers' products
 //     9.44 × 10⁶ a patch a layer — QKV 1,769,472, output 589,824, gate and
 //     up 4,718,592, down 2,359,296 — 3.81 × 10¹¹; attention 2 × 12 × N² ×
-//     64 a layer, 1.56 × 10¹¹ (block_attention.h); the projection over N
-//     rows 9.9 × 10⁸, of which M rows' 1.1 × 10⁸ are read. 5.4 × 10¹¹ in
-//     all: about 0.37 s at the 2.9 TFLOPS Qwen3's 951-token prefill reached
-//     on the target, an estimate from a measured rate; attention's rate is
-//     its own kernel's, not yet measured.
+//     64 a layer, 1.56 × 10¹¹ (block_attention.h); the projection over M
+//     rows, 1.1 × 10⁸. 5.4 × 10¹¹ in all: about 0.37 s at the 2.9 TFLOPS
+//     Qwen3's 951-token prefill reached on the target, an estimate from a
+//     measured rate; attention's rate is its own kernel's, not yet
+//     measured.
 //   - Bytes: the layers' 160 MB of Q8_0 weights read once a 32-patch tile,
 //     79 tiles — from the GPU's caches at best, as matmul.h counts a prefill
 //     step; the norms, W × N × 4 bytes a row's read and write, 7.7 MB, 33
@@ -150,13 +155,20 @@ namespace bllm::graph {
 // Optimization (practice): `pooled` is `normed`, whose last reader is the
 // last layer's feed-forward and whose rows the pooling writes after it, so
 // one 7.7 MB buffer serves both; their lifetimes do not overlap (GPU.9).
-// Optimization not taken: the norm and projection after pooling over M
-// rows, not N. That needs a launch geometry by pooled rows, and every
-// kernel the rows run through to know it — a change to the launch contract
-// for 8.8 × 10⁸ multiply-adds, about 0.6 ms an image of 400 or more.
+// Optimization (practice): the pooling and the projection after it over
+// the M pooled rows, not the step's N patches: a row divisor in the
+// launch's geometry, where running them over N would compute 8 rows in 9
+// that nothing reads — 8.8 × 10⁸ multiply-adds, about 0.6 ms an image
+// (GDSA.6).
 //
 // What it asks of the other contracts:
-//   - kernels/interface.h, contract 7: the step's head grows from 48 bytes
+//   - kernels/interface.h, contract 7: a launch's geometry gains a row
+//     divisor, 1 by default: it covers the step's tokens over the divisor
+//     — rows, tiles and token ranges all counted in those rows — and its
+//     kernel takes the same divisor as an override and bounds its rows by
+//     tokens / divisor. The step's tokens are a multiple of every divisor
+//     its launches carry, which a vision step's N = M k² is. And the step's
+//     head grows from 48 bytes
 //     to 64, its padding word becoming `columns`, followed by `media_first`
 //     and `media_rows` (runtime/vision.h) and two words of padding; a step's
 //     `tokens` may exceed kPrefillBlock where it writes no identifiers — a
@@ -177,15 +189,18 @@ namespace bllm::graph {
 //     base^(−2k / (d / 2)) for k < d / 4, so the angle tables hold d / 4
 //     pairs an axis, d / 2 in all, the size the 1-D form's are. With the
 //     value norm and QK-norm as the encode form has them.
-//   - kernels/pool/pool.h: a `grid` entry point: one workgroup of 256 a
-//     pooled row, rows below M; its k² source rows read in order, their
+//   - kernels/pool/pool.h: a `grid` entry point, its rows M by the
+//     divisor: one workgroup of 256 a pooled row; its k² source rows read in order, their
 //     mean an invocation's vec4s, then norm.h's reduction and an RMS norm
 //     without a gain at the launch's ε. Constants: the grid's pooled
 //     columns come from the step (columns / k); k, the width and ε the
 //     launch's.
 //   - kernels/norm/norm.h: nothing new — the add-only form is encoder.h's.
 //   - kernels/matmul/matmul.h: F32 weights, which its unpack composition
-//     already covers; the GPU test adds them.
+//     already covers; and the row divisor, its tiles and token ranges taken
+//     over the launch's rows — the projection over M. The GPU
+//     test adds both, the divided product's bits equal to the same product
+//     over M rows undivided.
 //
 // Verification the implementation is held to:
 //   - On the CPU, EmbeddingGemma 2's vision graph over its mmproj's pinned

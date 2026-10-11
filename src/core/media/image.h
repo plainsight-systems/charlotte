@@ -30,7 +30,15 @@ namespace bllm::media {
 //      both sides scaled by 1 / √(area / most) and floored to a multiple of a,
 //      at least a; if under its least, scaled up and ceiled. The budget is
 //      the model's policy, the card's default of 280 tokens at most — 2,520
-//      patches — and llama.cpp's 70 at least (policy/policy.h).
+//      patches — and llama.cpp's 70 at least (policy/policy.h). The rule
+//      does not keep every image within the budget: with one side floored to
+//      a, the least it may be, the other is as long as the area allows, and
+//      past an aspect of the budget's most to 1 — 280 to 1 — the grid holds
+//      more tokens than the budget. llama.cpp would run such a grid; here it
+//      is refused, OverBudget, before a row is read, since the step's
+//      buffers hold the budget's most patches and no more (SL.con.3). No
+//      photograph comes near it: a 10 to 1 panorama of 4,000 × 400 is 260
+//      tokens.
 //   2. The pixels: Pillow's separable resampler as llama.cpp adapts it
 //      (resize_pillow), bicubic with a = −0.5. For each axis, once an image,
 //      each output pixel's taps: its centre (o + 0.5) × s in source pixels, s
@@ -67,7 +75,8 @@ namespace bllm::media {
 //     memory (WASM.9, WASM.1). The horizontal pass needs nothing but its own
 //     row, and the vertical pass runs once every row is in.
 //   - Refusals, named, before anything is read: an image with no pixels; a
-//     side over kMaxSide, 16,384, the largest a canvas promises; a band out
+//     side over kMaxSide, 16,384, the largest a canvas promises; a grid past
+//     the budget, OverBudget, above; a band out
 //     of order, of the wrong width, or past the last row; patches asked for
 //     before the last row is in.
 //
@@ -98,7 +107,8 @@ namespace bllm::media {
 // Verification the implementation is held to (tests/media_image_test.cpp):
 //   - image_grid against llama.cpp's calc_size_preserved_ratio over a table
 //     of sizes — square, wide, tall, tiny, panoramic, at both limits — kept
-//     as a fixture by the vision reference tool (runtime/vision.h).
+//     as a fixture by the vision reference tool (runtime/vision.h); 280 to 1
+//     taking the budget's most, and 16,384 × 1 refused, OverBudget.
 //   - The resampled bytes of each reference image equal llama.cpp's, which
 //     the tool dumps after its resize; and the patches equal its
 //     normalized floats scaled as the graph scales them, within one unit in
@@ -113,6 +123,8 @@ namespace bllm::media {
 //            their inputs alone.
 //     SL.io.2 When reading, always consider ill-formed input — sizes and
 //            bands checked before a pixel is read.
+//     SL.con.3 Avoid bounds errors — a grid past the budget refused before
+//            it could outgrow the step's buffers.
 //     I.5    State preconditions — each function's, below.
 //     F.24   Use a span to designate a half-open sequence — pixels and
 //            patches as spans.
@@ -146,6 +158,7 @@ enum class ImageError {
     Ok,
     Empty,        // a side of 0
     TooLarge,     // a side over kMaxSide
+    OverBudget,   // the grid holds more tokens than the budget's most: an aspect past most to 1
     BadBand,      // a band out of order, of the wrong width, or past the last row
     Incomplete,   // patches asked for before every row arrived
 };
@@ -161,9 +174,10 @@ class ImageResampler {
 public:
     // Starts an image of `source_width` × `source_height` toward `grid`, a
     // grid image_grid gave for it: computes both axes' taps and sizes the
-    // intermediate. Refuses Empty and TooLarge.
+    // intermediate. Refuses Empty, TooLarge, and OverBudget for a grid of
+    // more tokens than `most`, before anything is allocated.
     [[nodiscard]] ImageError begin(std::uint32_t source_width, std::uint32_t source_height, const ImageGrid& grid,
-                                   std::uint32_t patch);
+                                   std::uint32_t patch, std::uint32_t most);
 
     // Takes the next band: whole RGBA rows from `first_row`, which is the row
     // after the last band's. Filters it horizontally and keeps nothing of

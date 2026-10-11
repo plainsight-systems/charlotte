@@ -52,8 +52,8 @@
 //     first photo indexed loads the companion (companion.js), with its own
 //     progress and its own refusals by stage, as a model's are: 226 MB the
 //     first time, then from the cache. Indexing sends each photo's bands
-//     into one of two slots and its EMBED, and begins the next photo's
-//     bands while that encode runs, the second slot the one free; a photo's
+//     and its EMBED, and begins the next photo's bands as soon as that
+//     EMBED is accepted, while its passes run (runtime/vision.h); a photo's
 //     failure ends the indexing as a passage's does, whole or not at all. A
 //     photo's result is its thumbnail, the file shown by the page
 //     (URL.createObjectURL, released with the index), and its score.
@@ -117,8 +117,8 @@
 // bands, 12 for a 12-megapixel photo — the module's resample, 0.1 to 0.2 s,
 // overlapped with the last photo's encode; the vision step, 0.4 to 0.5 s;
 // the text step, about 29 ms; the vector's 3 KiB as a passage's. About half
-// a second a photo once the slots overlap, so a hundred photos index in
-// under a minute.
+// a second a photo once preparing overlaps encoding, so a hundred photos
+// index in under a minute.
 //
 // Verification: in the app's Chromium with EmbeddingGemma 2, the document
 // in tests/fixtures/search/ — paragraphs on unrelated subjects, one of them
