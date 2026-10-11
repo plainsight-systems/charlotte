@@ -9,6 +9,7 @@ Newest first:
 
 | Date | Note | What it found | Status |
 |---|---|---|---|
+| 2026-10-11 | [Chrome encode benchmark](2026-10-11-chrome-encode-benchmark.md) | EmbeddingGemma 2 in Chrome: 13.9 ms for a query, 38.5 ms for 418 tokens; 11 to 13 ms an encode that does not scale with tokens, unaccounted for; the worker's hops under 0.1 ms | current |
 | 2026-10-09 | [WebKit's shader compiler](2026-10-09-webkit-shader-compiler.md) | Three WebKit compiler faults kept every kernel off the iPhone; how they were found, fixed in the main path, and shown to cost nothing; desktop Safari then runs end to end, matching Chromium token for token at about 43% of its decode rate | current |
 | 2026-10-09 | [Experimental phone support](2026-10-09-experimental-phone-support.md) | What it takes to run on Chrome for Android and Safari on iOS 26, and a capture-first plan; its outcome heads it: WebKit's compiler first, then memory, and Qwen3 0.6B running at 512 MiB | current |
 | 2026-10-07 | [Chrome page benchmark](2026-10-07-chrome-page-benchmark.md) | Qwen3 0.6B in Chrome: 21 ms to a short prompt's first token, 270 tok/s decoding | current |

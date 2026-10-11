@@ -77,21 +77,21 @@
 //     with it: in the worker, it would save the hops and the vector's clone
 //     each passage, but the worker would hold an index across requests, a
 //     second owner of state beside the module in the file contract 11 keeps
-//     to crossings. The hops are the one per-call cost here with no figure
-//     on the target; the page measurement of indexing calibrates them
-//     against the steps' estimates, and a share of the indexing that
-//     matters moves the loop.
+//     to crossings. Measured in Chrome, the two hops take under 0.1 ms,
+//     under 1% of the cheapest encode
+//     (docs/research/2026-10-11-chrome-encode-benchmark.md).
 //   - The copies are kept: encoding into the module's memory directly
 //     (encodeInto) saves B bytes of a send, a few KiB, and is the
 //     boundary's choice for generate as for embed; transferring the vector
 //     instead of cloning it saves 3 KiB. Beside a 6 ms step, neither is
 //     worth a change to the boundary.
-//   - One passage a step, as the embedder takes them. Several in one step
-//     would share the mapping, about 0.5 ms of the 6.1 a 60-token paragraph
-//     takes, and the padding of each passage's last tile; the products and
-//     the weights' reads scale with tokens either way. The embedder would
-//     have to mask attention and pool by passage (GPU.6), a change to the
-//     encode path's design, not to this page.
+//   - One passage a step, as the embedder takes them. By the estimates
+//     above, several in one step would share only the mapping, about 0.5 ms
+//     of 6.1. Measured in Chrome, a 70-token paragraph takes 15.6 ms, 11 to
+//     13 of them not scaling with its tokens and not yet accounted for
+//     (the same note): if that cost is the step's, a batch would share most
+//     of it. The embedder would have to mask attention and pool by passage
+//     (GPU.6), a change to the encode path's design, not to this page.
 //
 // Verification: in the app's Chromium with EmbeddingGemma 2, the document
 // in tests/fixtures/search/ — paragraphs on unrelated subjects, one of them

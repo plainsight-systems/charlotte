@@ -21,9 +21,11 @@ This file tracks active and accepted work.
   fixture's seven queries (`tests/fixtures/search/`) ranks its own
   paragraph first.
 
-  Open: the encode's time and an indexing's, measured as a page
-  measurement is, which also calibrates the worker's message hops
-  (`web/search.js`); the panel with an iPhone's on-screen keyboard up.
+  In Chrome a query encodes in 13.9 ms and 418 tokens in 38.5 ms; the
+  worker's hops take under 0.1 ms
+  (`research/2026-10-11-chrome-encode-benchmark.md`).
+
+  Open: the panel with an iPhone's on-screen keyboard up.
 
 ## Accepted
 
@@ -79,3 +81,7 @@ Speed, none of it a correctness gap:
 - Prefill's workgroups for short prompts.
 - The re-prefill when the chat template rewrites history, as after a
   reasoning turn.
+- The encode's 11 to 13 ms that does not scale with its tokens, against
+  about 1 ms counted: 7 times the estimate for a short query
+  (`research/2026-10-11-chrome-encode-benchmark.md`). A native step
+  profile would place it, and whether batching passages would share it.

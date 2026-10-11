@@ -113,6 +113,11 @@ namespace bllm::runtime {
 //   - Its result waits on the one step and its 3 KiB mapping, about 0.5 ms
 //     median on the target (sampler/sampler.h's map): about 2 ms for a
 //     16-token query and 60 ms for 512 tokens, by the estimates above.
+//     Measured on the page in Chrome: 13.9 ms for 21 tokens, 15.6 ms for
+//     70 and 38.5 ms for 418 — the long text on its estimate, the short
+//     ones carrying 11 to 13 ms that does not scale with tokens, which this
+//     count does not account for and the worker's hops do not explain
+//     (docs/research/2026-10-11-chrome-encode-benchmark.md).
 //
 // What it asks of the other contracts:
 //   - kernels/program.h: a readback of up to kMaxReadback, 4 KiB, so a
