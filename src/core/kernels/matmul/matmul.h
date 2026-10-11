@@ -248,15 +248,24 @@ namespace bllm::kernels {
 //     - activated: Write applies the activation to each output last — the
 //       ungated feed-forward's up projection through SiLU, its e^x as the
 //       gated epilogue takes it, explicit arithmetic.
-//     The split form clamps its input in split_ranges' staging and leaves
-//     the rest to combine_write, which clamps, biases and activates the
-//     total; the decode form does all three as Write does. The fused QKV
-//     epilogue takes none of them: an audio encoder's Q, K and V each have
-//     bounds of their own.
+//     A product with any of them does not split along K: the combine reads
+//     no weights, so the bounds and the bias, which lie in the weights'
+//     binding, are not its to read. The decode form does all three as Write
+//     does. The fused QKV epilogue takes none of them: an audio encoder's Q,
+//     K and V each have bounds of their own.
+//     Optimization not taken: a short clip's clamped products split along K.
+//     A clip of 75 rows, 3 s, runs a 1,024-wide product as 48 workgroups,
+//     where the text encoder's split took 70 tokens from 15.6 ms to 11.0;
+//     binding the weights to the combine, a third binding of every combine,
+//     would buy it back. A 20 s clip's 500 rows make 256 workgroups a
+//     product, and a recording is cut into equal clips, so most are long.
 //   And one form of the gated activation, for a Conformer's GLU: its two
-//   members the two halves of one weight — a member's first word and first
-//   row anywhere in a tensor, as the constants already give them — gate the
-//   rows W to 2W − 1 and up the rows 0 to W − 1, the activation a sigmoid:
+//   members the two halves of one weight — each member the whole weight,
+//   whose format's streams are laid out across all its rows
+//   (device_layout.h), so a half is not a range of words but a first row:
+//   a gated product's member constant z is that row, 0 for a gate and an up
+//   that are weights of their own — gate the rows W to 2W − 1 and up the
+//   rows 0 to W − 1, the activation a sigmoid:
 //   σ(b) × a, the GLU of the convolution module's first pointwise
 //   projection, written W wide. It takes `clipped`, both totals clamped to
 //   the weight's output bounds before the sigmoid and the product, as
@@ -279,10 +288,11 @@ namespace bllm::kernels {
 //     activation are override constants, so indices fold when the pipeline
 //     is built.
 //   - Constants (binding 1): struct Matmul { members: array<vec4<u32>, 3>,
-//     gate_input: vec4<u32> } — for each member of the product, or its one
-//     piece: its first word within the binding, its blocks, for unpack, and
-//     its first output row and row count; and GatedByInput's stride and
-//     first column. 64 bytes.
+//     gate_input: vec4<u32>, clip: vec4<u32>, bias: vec4<u32> } — for each
+//     member of the product, or its one piece: its first word within the
+//     binding, its blocks, for unpack, and its first output row and row
+//     count; GatedByInput's stride and first column; the options' bounds'
+//     and bias's first words. 96 bytes.
 //   - Bindings: 2 the weights (`weights`, unpack's): one piece, or the range
 //     spanning a fused group's members; 3 the input; then the outputs,
 //     written — one, or query, key and value; then, for GatedByInput, its
@@ -606,6 +616,19 @@ struct MatmulLaunch {
     residency::BufferRange gate_input = {};
     std::uint32_t gate_input_stride = 0;
     std::uint32_t gate_input_column = 0;
+    // The options (above), for a Write or a GatedActivation of one weight.
+    // `span` is the weight's product span (residency/plan.h), the binding the
+    // bounds and the bias are read from, and set exactly when one of them is.
+    const residency::BufferRange* span = nullptr;
+    // Clipped: the input's least and most, then the output's; all or none.
+    std::array<const residency::WeightView*, 4> bounds{};
+    // Biased Write: its bias, F32, one an output row.
+    const residency::WeightView* bias = nullptr;
+    // Write: each output through `activation`.
+    bool activated = false;
+    // GatedActivation over weights[0] alone: its first half of rows is up,
+    // its second half the gate (a Conformer's GLU, σ(gate) × up).
+    bool halves = false;
 };
 
 // When a prefill product splits along K: the tiled form's workgroups W at

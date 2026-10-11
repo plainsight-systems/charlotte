@@ -77,6 +77,8 @@ enum class RotaryPairing {
 enum class FeedForwardActivation {
     SiLU,
     GeluTanh,
+    // A GLU's gate, σ(x): a Conformer's convolution module (graph/audio.h).
+    Sigmoid,
 };
 
 // Which keys a query reads: those behind it, a decoder's, or those either

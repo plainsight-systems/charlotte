@@ -21,12 +21,20 @@
 // workgroupBarrier as below are WGSL built-ins.
 
 // Each member: x its first word in the binding, y its blocks, z its first
-// output row, w its rows.
+// output row, w its rows. For a gated product, z is instead the member's
+// first row within its weight: 0 for a gate and an up that are weights of
+// their own, the second half's first row for a GLU's gate over one weight's
+// halves (matmul.h).
 struct Matmul {
     members: array<vec4<u32>, 3>,
     // GatedByInput's input u: x its row stride, y its first column, in
     // floats; 0 for every other epilogue.
     gate_input: vec4<u32>,
+    // A clipped product's bounds, each one F32 word of the weights binding:
+    // x the input's least, y its most, z the output's least, w its most.
+    clip: vec4<u32>,
+    // A biased Write's bias: x its first word in the weights binding.
+    bias: vec4<u32>,
 }
 
 // The program sets workgroup_size and last_token; the launcher the rest.
@@ -36,7 +44,14 @@ override workgroup_size: u32 = 64;
 override last_token: bool = false;
 override columns: u32 = 1024;        // K
 override out_width: u32 = 1024;      // a write's output row width
-override activation: u32 = 0;       // 0 SiLU, 1 GELU in its tanh form
+override activation: u32 = 0;       // 0 SiLU, 1 GELU in its tanh form, 2 the sigmoid
+// A product's options (matmul.h): its input and outputs clamped to the
+// bounds `clip` names; a Write's bias added; a Write's outputs through the
+// activation. None splits along K, so the combine, which binds no weights,
+// never needs the bounds or the bias.
+override clipped: bool = false;
+override biased: bool = false;
+override activated: bool = false;
 override tile_tokens: u32 = 32;     // a prefill tile's tokens: 8, 16 or 32
 override set_rows: u32 = 4;         // a decode set's rows, Write and QKV: 1 to 4
 
@@ -92,6 +107,28 @@ fn mac(acc: f32, w: f32, x: f32) -> f32 {
 
 fn groups() -> u32 {
     return columns / 32u;
+}
+
+// An F32 word of the weights binding: a bound or a bias.
+fn word_f32(w: u32) -> f32 {
+    return bitcast<f32>(weights[w]);
+}
+
+// The input as the product reads it: clamped to its bounds where clipped.
+// A clamp is exact, so it adds no rounding.
+fn clamp_input(x: vec4<f32>) -> vec4<f32> {
+    if (!clipped) {
+        return x;
+    }
+    return clamp(x, vec4<f32>(word_f32(matmul.clip.x)), vec4<f32>(word_f32(matmul.clip.y)));
+}
+
+// A total clamped to the output's bounds where clipped.
+fn clamp_output(v: f32) -> f32 {
+    if (!clipped) {
+        return v;
+    }
+    return clamp(v, word_f32(matmul.clip.z), word_f32(matmul.clip.w));
 }
 
 // Range r's first group; range r is groups range_lo(r) .. range_lo(r + 1).
@@ -155,6 +192,11 @@ fn activate(g: f32) -> f32 {
         let r = 1.0 / (1.0 + e);
         return g * select(e * r, r, g >= 0.0);
     }
+    if (activation == 2u) {
+        let e = exp_nonpositive(-abs(g));
+        let r = 1.0 / (1.0 + e);
+        return select(e * r, r, g >= 0.0);
+    }
     let z = 0.7978845608028654 * fma(0.044715 * g * g, g, g);
     let e = exp_nonpositive(-2.0 * abs(z));
     let t = sign(z) * ((1.0 - e) * (1.0 / (1.0 + e)));
@@ -173,7 +215,7 @@ fn decode_ranges(lane: u32, slots: u32, members: vec4<u32>, rows: vec4<u32>, liv
     for (var g = range_lo(lane); g < range_lo(lane + 1u); g++) {
         var x: array<vec4<f32>, 8>;
         for (var v = 0u; v < 8u; v++) {
-            x[v] = input[token * (columns / 4u) + g * 8u + v];
+            x[v] = clamp_input(input[token * (columns / 4u) + g * 8u + v]);
         }
         for (var j = 0u; j < slots; j++) {
             if (live[j]) {
@@ -227,13 +269,28 @@ fn row_slot(t: u32) -> u32 {
     return (t / set_rows) * 4u + t % set_rows;
 }
 
+// A Write's output o from its total: clamped, biased and activated as the
+// product's options ask, in that order — llama.cpp's clamp after the
+// product, its bias added after, the feed-forward's activation last.
+fn finish(total: f32, o: u32) -> f32 {
+    var y = clamp_output(total);
+    if (biased) {
+        y = y + word_f32(matmul.bias.x + o);
+    }
+    if (activated) {
+        y = activate(y);
+    }
+    return y;
+}
+
 @compute @workgroup_size(workgroup_size)
 fn decode_write(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
     decode_rows(wg.x, t);
     if (t < 2u * set_rows) {
         let at = locate(wg.x * 2u * set_rows + t);
         if (at.z == 1u) {
-            out0[matmul.members[at.x].z + at.y] = slot_total(row_slot(t));
+            let o = matmul.members[at.x].z + at.y;
+            out0[o] = finish(slot_total(row_slot(t)), o);
         }
     }
 }
@@ -265,7 +322,10 @@ fn decode_gated(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_
     let p = wg.x * 4u + team * 2u;
     let width = matmul.members[0].w;
     let live = vec4<bool>(p < width, p + 1u < width, p < width, p + 1u < width);
-    let sums = decode_ranges(lane, 4u, vec4<u32>(0u, 0u, 1u, 1u), vec4<u32>(p, p + 1u, p, p + 1u), live);
+    let gate_at = matmul.members[0].z;
+    let up_at = matmul.members[1].z;
+    let rows = vec4<u32>(gate_at + p, gate_at + p + 1u, up_at + p, up_at + p + 1u);
+    let sums = decode_ranges(lane, 4u, vec4<u32>(0u, 0u, 1u, 1u), rows, live);
     for (var j = 0u; j < 4u; j++) {
         partials[(team * 4u + j) * kRanges + lane] = sums[j];
     }
@@ -275,8 +335,8 @@ fn decode_gated(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_
         let k = t % 2u;
         let row = wg.x * 4u + s * 2u + k;
         if (row < width) {
-            let gate = slot_total(s * 4u + k);
-            let up = slot_total(s * 4u + 2u + k);
+            let gate = clamp_output(slot_total(s * 4u + k));
+            let up = clamp_output(slot_total(s * 4u + 2u + k));
             out0[row] = activate(gate) * up;
         }
     }
@@ -310,7 +370,8 @@ fn slot_row(out_tile: u32, slot: u32, gated: bool) -> vec3<u32> {
     if (gated) {
         let j = slot / kOutputLanes;
         let row = out_tile * (kTileRows / 2u) + (slot % kOutputLanes) * 2u + j % 2u;
-        return vec3<u32>(j / 2u, row, select(0u, 1u, row < matmul.members[0].w));
+        let member = j / 2u;
+        return vec3<u32>(member, matmul.members[member].z + row, select(0u, 1u, row < matmul.members[0].w));
     }
     return locate(out_tile * kTileRows + slot);
 }
@@ -373,7 +434,7 @@ fn tile_range(at: TilePlace, t: u32, r: u32) -> array<vec4<f32>, 4> {
             let token = token_tile * tile_tokens + q / 8u;
             var x = vec4<f32>(0.0);
             if (token < step_rows()) {
-                x = input[token * (columns / 4u) + g * 8u + q % 8u];
+                x = clamp_input(input[token * (columns / 4u) + g * 8u + q % 8u]);
             }
             x_tile[q] = x;
         }
@@ -464,7 +525,8 @@ fn prefill_write(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation
         for (var i = 0u; i < kMicro; i++) {
             let token = first + i;
             if (token < step_rows() && at.z == 1u) {
-                out0[token * out_width + matmul.members[at.x].z + at.y] = totals[i][j];
+                let o = matmul.members[at.x].z + at.y;
+                out0[token * out_width + o] = finish(totals[i][j], o);
             }
         }
     }
@@ -505,7 +567,7 @@ fn prefill_gated(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation
         for (var i = 0u; i < kMicro; i++) {
             let token = first + i;
             if (token < step_rows() && row < width) {
-                out0[token * width + row] = activate(totals[i][j]) * totals[i][j + 2u];
+                out0[token * width + row] = activate(clamp_output(totals[i][j])) * clamp_output(totals[i][j + 2u]);
             }
         }
     }

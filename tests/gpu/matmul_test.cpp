@@ -535,3 +535,119 @@ TEST_CASE("a product over the step's tokens divided writes those rows' bits, as 
         }
     }
 }
+
+namespace {
+
+// A product's four bounds, scalars beside its weight as the file stores
+// them: `prefix` in_min, in_max, out_min, out_max.
+std::array<const residency::WeightView*, 4> bounds_of(const Uploaded& u, const std::string& prefix) {
+    return {&u.view(prefix + "in_min"), &u.view(prefix + "in_max"), &u.view(prefix + "out_min"),
+            &u.view(prefix + "out_max")};
+}
+
+double silu(double x) { return x / (1 + std::exp(-x)); }
+
+}  // namespace
+
+TEST_CASE("a product's options: clamped input and output, a bias, an activation, a GLU of one weight's halves") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_weights(instance.get(), *device);
+    const auto source = source_rows(instance.get(), *device, u);
+    // The whole weights buffer as the product span: the weight, its bounds
+    // and its bias in one binding (residency/plan.h).
+    const residency::BufferRange span{residency::BufferIndex{0}, 0, u.model.plan.buffers[0].size};
+    const std::vector<float> bounds{decoded(u, "clip_in_min")[0], decoded(u, "clip_in_max")[0],
+                                    decoded(u, "clip_out_min")[0], decoded(u, "clip_out_max")[0]};
+    const double in_min = bounds[0], in_max = bounds[1], out_min = bounds[2], out_max = bounds[3];
+    std::vector<float> clamped_source(source.begin(), source.end());
+    for (float& x : clamped_source) x = std::clamp(x, bounds[0], bounds[1]);
+    const auto splits = [](const std::vector<kernels::Launch>& launches) {
+        return std::count_if(launches.begin(), launches.end(),
+                             [](const kernels::Launch& l) { return l.entry_point == "split_ranges"; });
+    };
+    const auto clipped = [&](kernels::MatmulLaunch m) {
+        m.span = &span;
+        m.bounds = bounds_of(u, "clip_");
+        return m;
+    };
+
+    SUBCASE("a Write clamped, biased and activated, decoded and prefilled alike, never split") {
+        const residency::WeightView& w = u.view("w_q8_0");
+        const auto weights = decoded(u, "w_q8_0");
+        const auto bias = decoded(u, "bias_q8_0");
+        kernels::MatmulLaunch m = clipped(single(u, w, kernels::Rows::EveryToken));
+        m.bias = &u.view("bias_q8_0");
+        m.activated = true;
+        const auto launches = kernels::matmul_launches(m, kAlways, u.range_sums);
+        CHECK(splits(launches) == 0);
+        const auto prefilled = run(instance.get(), *device, u, 1024, launches, 33, 0, {48});
+        std::size_t inputs_clamped = 0, outputs_clamped = 0;
+        for (const float x : std::span(source).first(33 * 1024)) inputs_clamped += x < in_min || x > in_max;
+        for (std::uint32_t t = 0; t < 33; ++t) {
+            for (std::uint32_t r = 0; r < 48; ++r) {
+                CAPTURE(t);
+                CAPTURE(r);
+                const Want p = reference(weights, clamped_source, 1024, r, t);
+                outputs_clamped += p.value < out_min || p.value > out_max;
+                const double y = std::clamp(p.value, out_min, out_max) + bias[r];
+                // The clamp is exact and moves the error no further; SiLU's
+                // slope is at most 1.1, its f32 evaluation within 2⁻¹⁶.
+                const double bound = 1.1 * (p.bound + std::ldexp(std::abs(y), -23)) +
+                                     std::ldexp(std::abs(silu(y)), -16) + std::ldexp(1.0, -30);
+                CHECK(std::abs(prefilled[0][std::size_t{t} * 48 + r] - silu(y)) <= bound);
+            }
+        }
+        // The bounds bind on both sides of the product.
+        CHECK(inputs_clamped > 0);
+        CHECK(outputs_clamped > 0);
+        const auto alone = run(instance.get(), *device, u, 1024, launches, 1, 7, {48});
+        CHECK(std::equal(alone[0].begin(), alone[0].end(), prefilled[0].begin() + 7 * 48));
+    }
+
+    SUBCASE("bounds no value reaches give the unclamped product's bits") {
+        const residency::WeightView& w = u.view("w_q8_0");
+        const auto plain = run(instance.get(), *device, u, 1024,
+                               kernels::matmul_launches(single(u, w, kernels::Rows::EveryToken), kNever, u.range_sums),
+                               21, 0, {48});
+        kernels::MatmulLaunch m = single(u, w, kernels::Rows::EveryToken);
+        m.span = &span;
+        m.bounds = bounds_of(u, "wide_");
+        const auto clamped = run(instance.get(), *device, u, 1024, kernels::matmul_launches(m, kNever, u.range_sums),
+                                 21, 0, {48});
+        CHECK(std::equal(clamped[0].begin(), clamped[0].end(), plain[0].begin()));
+    }
+
+    SUBCASE("a GLU over one weight's halves: σ(gate) × up, each clamped first") {
+        const residency::WeightView& w = u.view("w_glu");
+        const auto weights = decoded(u, "w_glu");
+        kernels::MatmulLaunch m = clipped({{&w, nullptr, nullptr},
+                                           1,
+                                           u.input,
+                                           {u.out[0], u.out[1], u.out[2]},
+                                           kernels::Epilogue::GatedActivation,
+                                           model::FeedForwardActivation::Sigmoid,
+                                           kernels::Rows::EveryToken});
+        m.halves = true;
+        const auto launches = kernels::matmul_launches(m, kAlways, u.range_sums);
+        CHECK(splits(launches) == 0);
+        const auto prefilled = run(instance.get(), *device, u, 1024, launches, 33, 0, {72});
+        for (std::uint32_t t = 0; t < 33; ++t) {
+            for (std::uint32_t r = 0; r < 72; ++r) {
+                CAPTURE(t);
+                CAPTURE(r);
+                const Want up = reference(weights, clamped_source, 1024, r, t);
+                const Want gate = reference(weights, clamped_source, 1024, 72 + r, t);
+                const double a = std::clamp(up.value, out_min, out_max);
+                const double g = std::clamp(gate.value, out_min, out_max);
+                const double sigma = 1 / (1 + std::exp(-g));
+                // σ's slope is at most 1/4.
+                const double bound = 0.25 * gate.bound * std::abs(a) + sigma * up.bound +
+                                     std::ldexp(std::abs(sigma * a), -16) + std::ldexp(1.0, -30);
+                CHECK(std::abs(prefilled[0][std::size_t{t} * 72 + r] - sigma * a) <= bound);
+            }
+        }
+        const auto alone = run(instance.get(), *device, u, 1024, launches, 1, 32, {72});
+        CHECK(std::equal(alone[0].begin(), alone[0].end(), prefilled[0].begin() + 32 * 72));
+    }
+}

@@ -191,7 +191,7 @@ TEST_CASE("a product gated by an input binds the input after its output and carr
         CHECK(l.bindings[2].buffer == kQ.buffer);
         CHECK(l.bindings[3].buffer == u.buffer);
         CHECK(l.bindings[3].offset == u.offset);
-        REQUIRE(l.constants.size() == 64);
+        REQUIRE(l.constants.size() == 96);
         std::uint32_t gate[2];
         std::memcpy(gate, l.constants.data() + 48, sizeof gate);
         CHECK(gate[0] == 12288);
@@ -349,4 +349,83 @@ TEST_CASE("a split launch is the tiled one's workgroups 32 times, writing range 
          kernels::Rows::LastToken},
         kAlways, kSums);
     CHECK(head.size() == 1);
+}
+
+namespace {
+
+// A one-float F32 tensor at `offset` of buffer 0: a clamp bound or a bias.
+residency::WeightView f32(std::uint64_t elements, std::uint64_t offset) {
+    gguf::TensorShape shape{};
+    shape.dimension_count = 1;
+    shape.dimensions[0] = elements;
+    shape.element_count = elements;
+    return residency::WeightView(gguf::TensorType::F32, shape,
+                                 {{residency::BufferIndex{0}, offset, elements * 4, 0, 1}});
+}
+
+double override_of(const kernels::Launch& l, std::string_view name) {
+    for (const auto& o : l.overrides) {
+        if (o.name == name) return o.value;
+    }
+    return -1;
+}
+
+}  // namespace
+
+TEST_CASE("a product's options bind its span, read its bounds and bias by word, and never split") {
+    // As the plan places a clamped weight: its bounds around it, one span.
+    const residency::BufferRange span{residency::BufferIndex{0}, 4096, 1 << 20};
+    const auto in_max = f32(1, 4096), in_min = f32(1, 4096 + 256);
+    const auto w = q4_0(1024, 512, 4096 + 512);
+    const auto out_max = f32(1, 4096 + 512 + 512 * 576 + 256), out_min = f32(1, 4096 + 512 + 512 * 576 + 512);
+    const auto bias = f32(512, 4096 + 512 + 512 * 576 + 768);
+    kernels::MatmulLaunch m{{&w, nullptr, nullptr}, 1, kIn, {kQ, kK, kV}, Epilogue::Write,
+                            model::FeedForwardActivation::SiLU, kernels::Rows::EveryToken};
+    m.span = &span;
+    m.bounds = {&in_min, &in_max, &out_min, &out_max};
+    m.bias = &bias;
+    m.activated = true;
+    const auto launches = kernels::matmul_launches(m, kAlways, kSums);
+    for (const kernels::Launch& l : launches) {
+        CAPTURE(l.entry_point);
+        CHECK(l.entry_point != "split_ranges");
+        CHECK(l.bindings[0].offset == span.offset);
+        CHECK(l.bindings[0].size == span.length);
+        CHECK(override_of(l, "clipped") == 1.0);
+        CHECK(override_of(l, "biased") == 1.0);
+        CHECK(override_of(l, "activated") == 1.0);
+        REQUIRE(l.constants.size() == 96);
+        std::uint32_t words[16];
+        std::memcpy(words, l.constants.data() + 16 * 4, sizeof(std::uint32_t) * 8);
+        // The weight's first word, then the bounds' and the bias's, each from
+        // the span's start.
+        CHECK(members_of(l)[0] == 512 / 4);
+        CHECK(words[0] == 256 / 4);
+        CHECK(words[1] == 0);
+        CHECK(words[2] == (512 + 512 * 576 + 512) / 4);
+        CHECK(words[3] == (512 + 512 * 576 + 256) / 4);
+        CHECK(words[4] == (512 + 512 * 576 + 768) / 4);
+    }
+}
+
+TEST_CASE("a GLU over one weight's halves reads both from the weight's start, the gate from the second half's first row") {
+    const residency::BufferRange span{residency::BufferIndex{0}, 0, 1 << 20};
+    const auto w = q4_0(1024, 2048, 0);
+    kernels::MatmulLaunch m{{&w, nullptr, nullptr}, 1, kIn, {kQ, kK, kV}, Epilogue::GatedActivation,
+                            model::FeedForwardActivation::Sigmoid, kernels::Rows::EveryToken};
+    m.span = &span;
+    m.halves = true;
+    const auto launches = kernels::matmul_launches(m, kAlways, kSums);
+    for (const kernels::Launch& l : launches) {
+        CHECK(override_of(l, "activation") == 2.0);
+        const auto members = members_of(l);
+        // Gate: the whole weight's blocks, from row 1,024; up: from row 0.
+        CHECK(members[0] == 0);
+        CHECK(members[1] == 2048 * 1024 / 32);
+        CHECK(members[2] == 1024);
+        CHECK(members[3] == 1024);
+        CHECK(members[4] == 0);
+        CHECK(members[6] == 0);
+        CHECK(members[7] == 1024);
+    }
 }

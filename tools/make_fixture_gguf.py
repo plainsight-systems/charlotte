@@ -275,6 +275,17 @@ def matmul_rows(seed=0x85EBCA6B):
         # tensor before it keeps its bytes (graph/vision.h).
         (b"w_f32", [768, 40], T_F32,
          floats(((u32() >> 8) % 2001 - 1000) / 20000.0 for _ in range(768 * 40))),
+        # An audio encoder's product options (kernels/matmul/matmul.h), after
+        # every tensor before them: a GLU's weight, up rows then gate rows;
+        # clamp bounds that bind on the test's inputs and products — the
+        # input's least and most, the output's — and a bias a w_q8_0 row.
+        weight("w_glu", T_Q8_0, 1024, 144),
+        *[(f"clip_{name}".encode(), [1], T_F32, floats([value]))
+          for name, value in [("in_min", -0.6), ("in_max", 0.55), ("out_min", -2.0), ("out_max", 1.5)]],
+        (b"bias_q8_0", [64], T_F32, floats(((u32() >> 8) % 2001 - 1000) / 1000.0 for _ in range(64))),
+        # Bounds no value reaches: clamping by them changes no bit.
+        *[(f"wide_{name}".encode(), [1], T_F32, floats([value]))
+          for name, value in [("in_min", -1e30), ("in_max", 1e30), ("out_min", -1e30), ("out_max", 1e30)]],
     ]
     return build(tensors)
 

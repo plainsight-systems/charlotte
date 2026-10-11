@@ -45,8 +45,25 @@ struct Constants {
     std::array<Member, 3> members;
     // GatedByInput's input: its row stride and first column, in floats.
     std::uint32_t gate_input[4];
+    // The options' words in the weights binding: the bounds, and the bias.
+    std::uint32_t clip[4];
+    std::uint32_t bias[4];
 };
-static_assert(sizeof(Constants) == 64);
+static_assert(sizeof(Constants) == 96);
+
+// Whether the product takes any of the options (matmul.h).
+bool has_options(const MatmulLaunch& m) {
+    return m.bounds[0] != nullptr || m.bias != nullptr || m.activated;
+}
+
+double activation_of(model::FeedForwardActivation a) {
+    switch (a) {
+        case model::FeedForwardActivation::SiLU: return 0.0;
+        case model::FeedForwardActivation::GeluTanh: return 1.0;
+        case model::FeedForwardActivation::Sigmoid: return 2.0;
+    }
+    return 0.0;
+}
 
 // The split form's one entry point, for every epilogue it takes: it writes
 // range sums alone (matmul.h, split along K).
@@ -114,7 +131,10 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     std::vector<Override> overrides{
         {"columns", static_cast<double>(columns)},
         {"out_width", static_cast<double>(outputs_of(head.shape()))},
-        {"activation", m.activation == model::FeedForwardActivation::GeluTanh ? 1.0 : 0.0}};
+        {"activation", activation_of(m.activation)}};
+    if (m.bounds[0] != nullptr) overrides.push_back({"clipped", 1.0});
+    if (m.bias != nullptr) overrides.push_back({"biased", 1.0});
+    if (m.activated) overrides.push_back({"activated", 1.0});
     const Entry entry = entry_of(m.epilogue);
     const formats::Format* format = capability::find_format(head.format());
 
@@ -147,7 +167,8 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     // each launch in its part of the width's steps (matmul.h, split along K).
     // The gate's steps, held to those whose range sums fit the buffer.
     const std::uint64_t fits = range_sums.length / 4 / (rows * kRanges);
-    const std::uint32_t split = static_cast<std::uint32_t>(
+    // A product with options never splits: the combine binds no weights.
+    const std::uint32_t split = has_options(m) ? 1u : static_cast<std::uint32_t>(
         std::min<std::uint64_t>(split_tokens(m.epilogue, rows, columns, gate), fits));
     const std::uint32_t out_tiles = gated ? ceil_div(rows / 2, kTilePairs) : ceil_div(rows, kTileOutputs);
     for (const auto [tile, steps] : kTiles) {
@@ -234,6 +255,36 @@ std::vector<Launch> matmul_launches(const MatmulLaunch& m, SplitGate gate, resid
     const std::uint64_t block = gguf::format_layout(head.format())->block_elements;
     std::vector<Launch> out;
 
+    if (m.span != nullptr) {
+        // A product with options: one weight, one piece, the binding its
+        // product span, the bounds and the bias read from it by word.
+        const residency::BufferRange& span = *m.span;
+        const residency::WeightPiece& p = head.pieces().front();
+        const auto word = [&](const residency::WeightView& view) {
+            return static_cast<std::uint32_t>((view.pieces().front().offset - span.offset) / 4);
+        };
+        const auto base = static_cast<std::uint32_t>((p.offset - span.offset) / 4);
+        Constants members{};
+        if (m.halves) {
+            // Both members the whole weight, its streams laid out across
+            // all its rows (device_layout.h): the gate from the second
+            // half's first row, up from row 0 (matmul.wgsl, gated).
+            const std::uint64_t half = p.row_count / 2;
+            const auto blocks = static_cast<std::uint32_t>(p.row_count * columns / block);
+            members.members[0] = {base, blocks, static_cast<std::uint32_t>(half), static_cast<std::uint32_t>(half)};
+            members.members[1] = {base, blocks, 0, static_cast<std::uint32_t>(half)};
+        } else {
+            members.members[0] = {base, static_cast<std::uint32_t>(p.row_count * columns / block),
+                                  static_cast<std::uint32_t>(p.first_row), static_cast<std::uint32_t>(p.row_count)};
+        }
+        if (m.bounds[0] != nullptr) {
+            for (std::size_t i = 0; i < 4; ++i) members.clip[i] = word(*m.bounds[i]);
+        }
+        if (m.bias != nullptr) members.bias[0] = word(*m.bias);
+        add_launches(m, {span.buffer, span.offset, span.length}, members, p.row_count, gate, range_sums, out);
+        return out;
+    }
+
     if (m.members == 1) {
         // One weight: a launch pair a piece, each binding its piece.
         for (const residency::WeightPiece& p : head.pieces()) {
@@ -241,7 +292,9 @@ std::vector<Launch> matmul_launches(const MatmulLaunch& m, SplitGate gate, resid
                                             static_cast<std::uint32_t>(p.first_row),
                                             static_cast<std::uint32_t>(p.row_count)},
                                      Member{}, Member{}},
-                                    {m.gate_input_stride, m.gate_input_column, 0, 0}};
+                                    {m.gate_input_stride, m.gate_input_column, 0, 0},
+                                    {},
+                                    {}};
             add_launches(m, {p.buffer, p.offset, p.length}, members, p.row_count, gate, range_sums, out);
         }
         return out;
@@ -259,9 +312,12 @@ std::vector<Launch> matmul_launches(const MatmulLaunch& m, SplitGate gate, resid
     std::uint64_t rows = 0;
     for (std::uint32_t i = 0; i < m.members; ++i) {
         const residency::WeightPiece& p = m.weights[i]->pieces().front();
+        // A gated product's members each read from their own row 0
+        // (matmul.wgsl); every other's z is its first output row.
+        const bool gated = m.epilogue == Epilogue::GatedActivation;
         members.members[i] = {static_cast<std::uint32_t>((p.offset - begin) / 4),
-                      static_cast<std::uint32_t>(p.row_count * columns / block), static_cast<std::uint32_t>(rows),
-                      static_cast<std::uint32_t>(p.row_count)};
+                              static_cast<std::uint32_t>(p.row_count * columns / block),
+                              gated ? 0u : static_cast<std::uint32_t>(rows), static_cast<std::uint32_t>(p.row_count)};
         rows += p.row_count;
     }
     add_launches(m, {head.pieces().front().buffer, begin, end - begin}, members, rows, gate, range_sums, out);
