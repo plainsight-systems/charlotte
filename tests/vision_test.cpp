@@ -21,6 +21,8 @@
 #include "core/gguf/byte_source.h"
 #include "core/gguf/reader.h"
 #include "core/graph/vision.h"
+#include "core/media/image.h"
+#include "core/preflight/preflight.h"
 #include "core/residency/plan.h"
 #include "core/residency/routes.h"
 #include "support/model_headers.h"
@@ -226,4 +228,45 @@ TEST_CASE("the vision graph: 133 launches a step at every grid, a layer's 8 in o
     for (const kernels::Launch& l : launches) {
         if (l.role == "pool.project") CHECK(l.row_divisor == 9);
     }
+}
+
+TEST_CASE("a companion's verdict: Run beside EmbeddingGemma 2, each stage it cannot reach named") {
+    const Header h = read_mmproj();
+    const testing::ReadHeader text = testing::read_model_header("embeddinggemma-2-q8_0");
+    model::ModelDescription embedder{};
+    REQUIRE(capability::find_architecture("gemma-embedding2")->describe(text.index, embedder).ok());
+    gguf::MemoryByteSource source{std::as_bytes(std::span{text.bytes}), text.file_size};
+    std::unique_ptr<tokenizer::Tokenizer> t;
+    REQUIRE(preflight::load_tokenizer(source, text.index, t).empty());
+    const media::ImageBudget budget{70, 280};
+    const preflight::CompanionHost host{embedder, "gemma-embedding2", t->vocabulary(), 384ull << 20};
+
+    const auto verdict = preflight::preflight_companion(h.index, kVisionRanges, kFileSize, 58'656, kDefaults,
+                                                        policy::LoadPolicy{}, budget, host);
+    for (const auto& b : verdict.blockers) MESSAGE(preflight::to_string(b.stage) << ": " << b.detail);
+    CHECK(verdict.reached() == preflight::Stage::Run);
+    REQUIRE(verdict.fit);
+    CHECK(verdict.fit->context_offered == 2520);
+    CHECK(verdict.fit->total_bytes < 330'000'000);
+
+    // The whole file: the audio encoder's tensors would be uploaded, its
+    // conv weights' rows of 3 refused.
+    const residency::FileRange whole[] = {{0, kFileSize}};
+    const auto all = preflight::preflight_companion(h.index, whole, kFileSize, 58'656, kDefaults, policy::LoadPolicy{},
+                                                    budget, host);
+    CHECK(all.reached() == preflight::Stage::Fit);
+
+    // Ranges that miss the header; a budget the model leaves too little of;
+    // a model it does not serve.
+    const residency::FileRange late[] = {{1, 58'656}};
+    CHECK(preflight::preflight_companion(h.index, late, kFileSize, 58'656, kDefaults, policy::LoadPolicy{}, budget, host)
+              .reached() == preflight::Stage::Read);
+    policy::LoadPolicy tight{};
+    tight.memory_budget = 500ull << 20;
+    CHECK(preflight::preflight_companion(h.index, kVisionRanges, kFileSize, 58'656, kDefaults, tight, budget, host)
+              .reached() == preflight::Stage::Describe);
+    const preflight::CompanionHost other{embedder, "qwen3", t->vocabulary(), 384ull << 20};
+    CHECK(preflight::preflight_companion(h.index, kVisionRanges, kFileSize, 58'656, kDefaults, policy::LoadPolicy{},
+                                         budget, other)
+              .reached() == preflight::Stage::Upload);
 }

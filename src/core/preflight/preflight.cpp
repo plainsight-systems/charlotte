@@ -5,10 +5,12 @@
 #include <vector>
 
 #include "core/arch/architecture.h"
+#include "core/arch/vision_encoder.h"
 #include "core/capability/capability.h"
 #include "core/formats/format.h"
 #include "core/graph/encoder.h"
 #include "core/graph/graph.h"
+#include "core/graph/vision.h"
 #include "core/kernels/interface.h"
 #include "core/model/model_description.h"
 #include "core/runtime/ends.h"
@@ -178,7 +180,8 @@ void check_fit(const gguf::TensorIndex& index, const Described& d, const residen
 // Upload needs every weight format: routes refuse a format the capability
 // table does not list before any buffer is made. One blocker per unsupported
 // format, naming how many tensors use it and the first of them.
-void check_formats(const gguf::TensorIndex& index, Verdict& verdict) {
+void check_formats(const gguf::TensorIndex& index, Verdict& verdict,
+                   std::span<const residency::FileRange> ranges = {}) {
     struct Unsupported {
         gguf::TensorType type;
         std::size_t users;
@@ -186,6 +189,10 @@ void check_formats(const gguf::TensorIndex& index, Verdict& verdict) {
     };
     std::vector<Unsupported> found;
     for (const gguf::TensorEntry& tensor : index.tensors()) {
+        // A load of part of a file uploads only what lies in its ranges.
+        if (!ranges.empty() && !residency::within(ranges, tensor.data_offset, tensor.data_offset + tensor.data_length)) {
+            continue;
+        }
         if (capability::find_format(tensor.type) != nullptr) continue;
         auto it = std::find_if(found.begin(), found.end(),
                                [&](const Unsupported& u) { return u.type == tensor.type; });
@@ -206,10 +213,13 @@ void check_formats(const gguf::TensorIndex& index, Verdict& verdict) {
 
 // Upload needs every row a whole number of unpack's groups (format.h), as
 // routes does; one blocker, naming how many tensors fall short and the first.
-void check_rows(const gguf::TensorIndex& index, Verdict& verdict) {
+void check_rows(const gguf::TensorIndex& index, Verdict& verdict, std::span<const residency::FileRange> ranges = {}) {
     std::size_t short_rows = 0;
     const gguf::TensorEntry* first = nullptr;
     for (const gguf::TensorEntry& tensor : index.tensors()) {
+        if (!ranges.empty() && !residency::within(ranges, tensor.data_offset, tensor.data_offset + tensor.data_length)) {
+            continue;
+        }
         if (formats::steps_by_groups(tensor) || formats::is_scalar(tensor)) continue;
         if (first == nullptr) first = &tensor;
         ++short_rows;
@@ -333,6 +343,115 @@ Verdict preflight(gguf::ByteSource& source, const gguf::TensorIndex& index, cons
         const auto stage = static_cast<Stage>(s);
         verdict.blockers.push_back(
             {stage, "the " + std::string(to_string(stage)) + " stage is not implemented in this build"});
+    }
+    return verdict;
+}
+
+namespace {
+
+// A companion's vision encoder, found by its projector type and described.
+struct DescribedVision {
+    const arch::VisionEncoder* encoder;
+    std::string_view projector;
+    model::ModelDescription description;
+};
+
+std::optional<DescribedVision> check_vision(const gguf::TensorIndex& index, Verdict& verdict) {
+    constexpr std::string_view kKey = "clip.vision.projector_type";
+    std::string_view name;
+    if (const auto e = index.read_string(kKey, name); e != gguf::MetadataError::Ok) {
+        verdict.blockers.push_back({Stage::Describe, unreadable_key(e, kKey)});
+        return std::nullopt;
+    }
+    const arch::VisionEncoder* encoder = capability::find_vision_encoder(name);
+    if (encoder == nullptr) {
+        verdict.blockers.push_back({Stage::Describe, "vision encoder " + quoted(name) + " is not supported"});
+        return std::nullopt;
+    }
+    model::ModelDescription description{};
+    if (const auto r = encoder->describe(index, description); !r.ok()) {
+        verdict.blockers.push_back({Stage::Describe, "vision encoder " + quoted(name) + " cannot read this file: " +
+                                                         std::string(to_string(r.error)) + " (" + r.subject + ")"});
+        return std::nullopt;
+    }
+    return DescribedVision{encoder, name, std::move(description)};
+}
+
+// The budget a companion is planned in: what the model it serves leaves.
+policy::LoadPolicy companion_policy(const policy::LoadPolicy& policy, const CompanionHost& host) {
+    policy::LoadPolicy p = policy;
+    p.memory_budget = policy.memory_budget > host.text_bytes ? policy.memory_budget - host.text_bytes : 0;
+    return p;
+}
+
+void check_vision_fit(const gguf::TensorIndex& index, const DescribedVision& d,
+                      std::span<const residency::FileRange> ranges, const residency::DeviceLimits& limits,
+                      const policy::LoadPolicy& policy, media::ImageBudget budget, Verdict& verdict,
+                      residency::ResidencyPlan& plan) {
+    const std::uint32_t pooling = d.description.vision->pooling;
+    const std::uint32_t rows = budget.most * pooling * pooling;
+    if (const auto r = residency::plan_residency(index, d.description, limits, policy,
+                                                 graph::vision_working_set(d.description, rows), plan, ranges);
+        !r.ok()) {
+        verdict.blockers.push_back({Stage::Fit, r.error == residency::PlanError::ExceedsBudget
+                                                    ? "needs " + mebibytes(plan.total_bytes) + "; the budget left beside the model is " +
+                                                          mebibytes(policy.memory_budget)
+                                                    : fit_failure(r, plan, policy)});
+        return;
+    }
+    verdict.fit = FitSummary{plan.weight_bytes,  plan.cache_bytes,         plan.scratch_bytes,
+                             plan.total_bytes,   policy.memory_budget,     plan.context_offered,
+                             0,                  plan.buffers.size(),      {}};
+}
+
+}  // namespace
+
+std::string plan_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,
+                           const residency::DeviceLimits& limits, const policy::LoadPolicy& policy,
+                           media::ImageBudget budget, const CompanionHost& host, model::ModelDescription& description,
+                           residency::ResidencyPlan& plan) {
+    Verdict verdict;
+    const auto described = check_vision(index, verdict);
+    if (!described) return verdict.blockers.front().detail;
+    check_vision_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, verdict, plan);
+    if (!verdict.fit) return verdict.blockers.front().detail;
+    description = described->description;
+    return {};
+}
+
+Verdict preflight_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,
+                            std::uint64_t file_size, std::uint64_t index_end, const residency::DeviceLimits& limits,
+                            const policy::LoadPolicy& policy, media::ImageBudget budget, const CompanionHost& host) {
+    Verdict verdict;
+    if (const residency::RangesResult r = residency::check_ranges(ranges, file_size, index_end); !r.ok()) {
+        verdict.blockers.push_back({Stage::Download, "the catalog's ranges are not ones a load can read (range " +
+                                                         std::to_string(r.range) + ")"});
+        return verdict;
+    }
+    if (const auto described = check_vision(index, verdict)) {
+        residency::ResidencyPlan plan;
+        check_vision_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, verdict, plan);
+        if (verdict.fit) {
+            std::vector<kernels::Launch> launches;
+            if (const auto r = described->encoder->graph(described->description, plan, launches); !r.ok()) {
+                verdict.blockers.push_back({Stage::Run, "vision encoder " + quoted(described->projector) +
+                                                            " cannot run this file: " + std::string(to_string(r.error)) +
+                                                            " (" + r.subject + ")"});
+            }
+        }
+        if (const auto r = described->encoder->pairs(described->description, host.text, host.text_architecture);
+            !r.ok()) {
+            verdict.blockers.push_back({Stage::Run, "vision encoder " + quoted(described->projector) +
+                                                        " does not serve the model loaded (" + r.subject + ")"});
+        }
+    }
+    check_formats(index, verdict, ranges);
+    check_rows(index, verdict, ranges);
+    for (const std::string_view token : {std::string_view{"<|image|>"}, std::string_view{"<|image>"},
+                                         std::string_view{"<image|>"}}) {
+        if (!host.vocabulary.find(token)) {
+            verdict.blockers.push_back({Stage::Run, "the model loaded has no " + quoted(token) + " token"});
+        }
     }
     return verdict;
 }

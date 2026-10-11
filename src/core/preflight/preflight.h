@@ -4,15 +4,19 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "core/gguf/byte_source.h"
 #include "core/gguf/index.h"
+#include "core/media/image.h"
+#include "core/model/model_description.h"
 #include "core/policy/policy.h"
 #include "core/residency/plan.h"
 #include "core/tokenizer/tokenizer.h"
+#include "core/tokenizer/vocabulary.h"
 
 namespace bllm::preflight {
 
@@ -73,8 +77,8 @@ enum class Stage {
 // exist. Advanced when the next stage is built.
 inline constexpr Stage kImplementedThrough = Stage::Run;
 
-// What stops `stage`. Never Read or Download: those depend only on the
-// reader.
+// What stops `stage`. Never Read, and Download only for a companion whose
+// catalog ranges a load cannot read: a model's depend only on the reader.
 struct Blocker {
     Stage stage;
     std::string detail;
@@ -149,5 +153,35 @@ struct Verdict {
 [[nodiscard]] Verdict preflight(gguf::ByteSource& source, const gguf::TensorIndex& index,
                                 const residency::DeviceLimits& limits,
                                 const policy::LoadPolicy& policy);
+
+// The model a companion file is loaded beside (runtime/vision.h): what its
+// encoder must pair with, the vocabulary its image tokens must be in, and
+// the bytes its plan holds, which the companion's shares the budget with.
+struct CompanionHost {
+    const model::ModelDescription& text;
+    std::string_view text_architecture;
+    const tokenizer::Vocabulary& vocabulary;
+    std::uint64_t text_bytes;
+};
+
+// A companion's verdict, judged stage by stage as a model's is: Download,
+// its ranges (residency/file_ranges.h); Describe, its encoder found by
+// clip.vision.projector_type and described; Fit, planned against its ranges
+// within what the budget leaves beside the model, its step's rows the image
+// budget's most patches; Upload, the formats and rows of the tensors inside
+// the ranges; Run, its graph building, pairs accepting the model, and the
+// three image tokens in the model's vocabulary. `index_end` is where the
+// header and index end.
+[[nodiscard]] Verdict preflight_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,
+                                          std::uint64_t file_size, std::uint64_t index_end,
+                                          const residency::DeviceLimits& limits, const policy::LoadPolicy& policy,
+                                          media::ImageBudget budget, const CompanionHost& host);
+
+// What a companion's load carries out: its description and the plan its
+// verdict judged Fit. Returns what stops it, or an empty string.
+[[nodiscard]] std::string plan_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,
+                                         const residency::DeviceLimits& limits, const policy::LoadPolicy& policy,
+                                         media::ImageBudget budget, const CompanionHost& host,
+                                         model::ModelDescription& description, residency::ResidencyPlan& plan);
 
 }  // namespace bllm::preflight
