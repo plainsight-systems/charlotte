@@ -24,6 +24,7 @@ files. It does not list the files; that is [`file-mapping.md`](file-mapping.md).
 | **K** | a new tokenization algorithm or pre-tokenizer | that algorithm, or that pre-tokenizer's split pattern |
 | **L** | a browser network or storage API, or how we download | fetch transport, OPFS model cache |
 | **M** | a new stage in a model's loop | the runtime that sequences it: diff, prefill, decode and sample for a generator; encode, one step and read back for an embedder |
+| **N** | a new kind of media input, or how one is prepared for its encoder | that preparation: an image's size, resample and patches in the module, its decode in the page |
 
 Every file maps to exactly one row. Two rows means it splits. Two files that
 always change together means they merge — unless they cannot, for a reason
@@ -103,7 +104,23 @@ M(encode), the embedder and its ends.
 
 The test is E's: **a stage added to one loop must produce a diff that touches
 no other loop's files.** What the two share is below them — the program, the
-tokenizer, the plan — each on its own axis.
+tokenizer, the plan — each on its own axis. An image's stage is M(encode)'s:
+the vision step run and its rows placed in the text step add to the encode
+loop and touch nothing of generate's.
+
+## N is not K
+
+Preparing an image is to a vision encoder what tokenizing is to a text
+model: the input made into what the first kernel reads, on the CPU. It is
+still not K. A new tokenizer touches no image's preparation, and a new
+resampler, a new token budget rule or a new media kind touches no
+tokenizer; their tests are separate oracles, token identifiers against
+llama-tokenize and bytes against llama.cpp's resampled image. Nor is it the
+vision encoder's A: the same preparation would serve another encoder that
+takes the same patches, and a change to how an encoder computes leaves how
+its input is prepared alone. The test is the usual one: a resampler fixed
+for one image size touches no graph, and a graph changed touches no
+resampler.
 
 ## The boxes that are already one axis
 
@@ -111,7 +128,8 @@ tokenizer, the plan — each on its own axis.
 it renders a template it does not interpret), `Graph` (A — one per
 architecture), `Tokenize` (K — one per tokenization algorithm, with pre-tokenizer split
 patterns selected by name), `Wrap` (M(encode) — the file's ends around a
-text), `Pool` (E), and each kernel (E).
+text), `Pool` (E), `Prepare` (N — an image's size, resample and patches),
+and each kernel (E).
 
 ## The boxes that are compound
 
@@ -124,6 +142,7 @@ text), `Pool` (E), and each kernel (E).
 | **Pick** | H, J | picker interface · the curated list, which is measured policy |
 | **Working buffers** | A, D | each graph's working set — which buffers it binds, how large · the planner's placement of them |
 | **Encode** | M, A, E, D | the embedder · the architecture's graph, composed from the encoder's blocks · the kernels · the program |
+| **Encode an image** | N, M, A, E, D | the image's preparation, in the page and the module · the vision stage, which places the image's rows in the text step · the vision encoder's graph, composed from the vision blocks · the kernels · the program and its link between two programs |
 
 **Diff and KV cache** is the split worth insisting on.
 `longest_common_prefix(old, new) → length` is a pure function over two integer
@@ -210,6 +229,32 @@ change to one should never re-verify the other.
 and the draw and bind a cache; an encoder's end in a pooled vector and bind
 none. A builder serving both would change whenever either did. They share the
 kernels and the residual convention, not code.
+
+**A vision encoder is not an architecture.** Both describe a file and
+build a graph, and an architecture's entry could have held a third kind of
+graph. But an architecture is found by `general.architecture`, and a
+companion file's says only `clip`: the identifier that selects the
+encoder is its projector type. A vision encoder is never loaded alone,
+always beside a model it must be checked against, and its graph ends in
+rows for another model's step, not in logits or a vector. So it is its own
+contract and its own lookup, and the architectures' entries never change
+for one.
+
+**Reading part of a file is the loader's business, not the encoder's.**
+The vision encoder's tensors are one span of a file that also holds an
+audio encoder. Which bytes a load reads is D: the ranges, the plan placing
+only the tensors inside them, the piece writer accepting chunks across the
+gaps. The encoder's describe names its tensors as if the file were whole,
+and a whole file is a load of one range, so neither the text model's load
+nor any architecture changes for it.
+
+**Block attention's streaming form is a form, not a kernel.** It computes
+what the written form computes — every row of a step against the step's
+own keys, both directions, within a window — and differs in where the
+scores live: written between two launches for heads of 256 and 512,
+streamed through workgroup memory for heads of 64. A form selected by
+shape, as rope's encode form is, each with its own entry point, so tuning
+one touches no other.
 
 ## How to apply this
 

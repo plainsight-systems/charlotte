@@ -42,6 +42,23 @@
 //   - A model with no task prompts, named by a pasted URL, has its texts
 //     embedded as written, and the panel says so beside the heading's
 //     "unmeasured", as the chat labels such a model.
+//   - Photos, for a model whose catalog entry names a vision companion
+//     (catalog.js, runtime/vision.h): photos chosen or dropped beside the
+//     document join the same index, each embedded alone as `<|image|>`
+//     with no prompt, as the card says, so one query ranks paragraphs and
+//     photos together — the point of a shared space. Each photo is decoded
+//     in the worker as it is added (image_input.js): one the browser cannot
+//     decode, or larger than a canvas holds, is named and not added. The
+//     first photo indexed loads the companion (companion.js), with its own
+//     progress and its own refusals by stage, as a model's are: 226 MB the
+//     first time, then from the cache. Indexing sends each photo's bands
+//     into one of two slots and its EMBED, and begins the next photo's
+//     bands while that encode runs, the second slot the one free; a photo's
+//     failure ends the indexing as a passage's does, whole or not at all. A
+//     photo's result is its thumbnail, the file shown by the page
+//     (URL.createObjectURL, released with the index), and its score.
+//     Under ?fake-runtime=embedder a photo's vector is a hash of its pixels
+//     (dev/fake_runtime.js), never shown as a model's.
 //   - Closing the panel, as choosing another model does, abandons an
 //     indexing in progress: no further passage is sent, and an answer still
 //     on its way is ignored. The next load cancels an encode still running
@@ -95,11 +112,21 @@
 //     by passage (GPU.6), a change to the encode path's design, not to this
 //     page.
 //
+// A photo, for EmbeddingGemma 2 on the target, by runtime/vision.h's
+// estimates: decoding by the browser, its pixels a band a crossing — 4 MiB
+// bands, 12 for a 12-megapixel photo — the module's resample, 0.1 to 0.2 s,
+// overlapped with the last photo's encode; the vision step, 0.4 to 0.5 s;
+// the text step, about 29 ms; the vector's 3 KiB as a passage's. About half
+// a second a photo once the slots overlap, so a hundred photos index in
+// under a minute.
+//
 // Verification: in the app's Chromium with EmbeddingGemma 2, the document
 // in tests/fixtures/search/ — paragraphs on unrelated subjects, one of them
 // past the context — is indexed, the long paragraph cut and its pieces
 // indexed, and each of the fixture's queries ranks the paragraph written to
-// answer it first; Stop and an edit each discard the index. On a phone
+// answer it first; Stop and an edit each discard the index. With the four
+// photographs of tests/fixtures/vision/ added, each of its queries ranks
+// its own photograph first, among the photos and the paragraphs. On a phone
 // screen, in iOS Safari under
 // ?fake-runtime=embedder (dev/fake_runtime.js), the panel with the
 // on-screen keyboard up.

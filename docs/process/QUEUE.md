@@ -27,6 +27,16 @@ This file tracks active and accepted work.
 
   Open: the panel with an iPhone's on-screen keyboard up.
 
+- **Images, through EmbeddingGemma 2's vision encoder** — photos embedded
+  into the same space as text, so one query ranks paragraphs and photos
+  together; the companion file read in part, its vision span alone
+  (`research/2026-10-11-embeddinggemma2-vision.md`). Designed in its file
+  headers (`media/image.h`, `arch/gemma4v`, `graph/vision.h`,
+  `runtime/vision.h`, `residency/file_ranges.h`, block attention's
+  streaming form, `web/companion.js`, `web/image_input.js`). Audio and
+  video follow it, each its own design, before EmbeddingGemma 2 is
+  announced as multimodal.
+
 ## Accepted
 
 - **Generation in the browser** — accepted 2026-10-07, designed in its file

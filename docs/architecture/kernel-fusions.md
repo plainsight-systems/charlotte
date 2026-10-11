@@ -155,6 +155,47 @@ in a step of up to 32 tokens.
 |---|---|---|---|---|---|---|---|
 | EmbeddingGemma 2 | 24 | 2 | 2 | 288 | 4 | 296 | 0.44 ms |
 
+## A vision encoder's step
+
+A vision encoder runs one step over an image's patches
+(`core/graph/vision.h`). The rules above hold, with three more:
+
+- **The learned positions ride in the first norm's add.** One gather sums
+  each patch's column row and row row into the block output the first
+  layer's attention norm adds into X anyway, so the positions cost no pass
+  over X and no launch of their own to add.
+- **Attention is one launch, streamed.** At a head of 64 the online
+  softmax's tile fits the default 16 KiB, and at thousands of patches the
+  scores could not be written in any case: 305 MB a layer at 2,520
+  patches, over a binding (`core/kernels/block_attention/block_attention.h`).
+- **Pooling and the norm after it are one launch,** a workgroup a pooled
+  row, the √W scale folded into the norm's ε.
+
+For one layer, in order:
+
+| # | Launch | Fused into it |
+|---|---|---|
+| 1 | norm | the positions, or the last layer's output through its post-norm, added into X; the attention norm and its gain |
+| 2 | matmul | the Q, K and V projections |
+| 3 | rope, encode form, axial | QK-norm, the value norm, each head's halves rotated by the patch's column and row, all in place |
+| 4 | block attention, streaming | scores, softmax and the weighted sum over every patch, the scores never written |
+| 5 | matmul | the output projection |
+| 6 | norm | that output added into X through its post-norm; the feed-forward norm and its gain |
+| 7 | matmul | the gate and up projections, and the activation of their product |
+| 8 | matmul | the down projection |
+
+Around the layers: before them the patch embedding and the positions'
+gather; after them the last layer's output added into X, the pooling with
+its norm, and the projection to the text width. No product of a step this
+long splits along K.
+
+| Model | Layers | Patches, positions | Layers × 8 | Add, pool, projection | Launches a step | At 1.5 µs each |
+|---|---|---|---|---|---|---|
+| EmbeddingGemma 2's vision encoder | 16 | 2 | 128 | 3 | 133 | 0.20 ms |
+
+The image's rows then reach the text step by one copy between the two
+programs before the text step's pass, not a launch.
+
 ## Levers not taken
 
 - **The norm folded into the matmul after it.** Each matmul workgroup would

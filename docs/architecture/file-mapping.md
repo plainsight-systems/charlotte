@@ -49,6 +49,8 @@ module's own header, and contract 11 in the two boundary files.
 | `web/search.js` | H | the search panel, for a model that embeds: a document's passages embedded one at a time, a query embedded and the passages ranked against it |
 | `web/passages.js` | H | a document cut into passages, and a passage the runtime refused cut into pieces that fit |
 | `web/search_index.js` | H | the passages' vectors, and a query ranked against them by dot product |
+| `web/companion.js` | H | a loaded model's companion file: checked, its ranges downloaded and verified, loaded, the first time the page needs it |
+| `web/image_input.js` | N | a photo decoded in the worker and handed to the module a band of rows at a time |
 | `web/fetch.js` | L | range and streaming fetch, with progress |
 | `web/preflight.js` | L | fetching the front of a file until the reader has its whole index |
 | `web/opfs.js` | L | the model file cache; a file is listed only once complete and verified |
@@ -70,13 +72,18 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/arch/architecture.h` | contract | what every architecture supplies, and which kind of graph: a generator's or an embedder's |
 | `src/core/arch/describe` | C | what describing shares: GGUF's `<arch>.<key>` and `blk.<layer>.<suffix>` naming, and the shape each role's weight has |
 | `src/core/arch/<arch>/` | A | reading its numbers into the model description, and its graph |
+| `src/core/arch/vision_encoder.h` | contract | what every vision encoder supplies: describe, its graph, and whether a text model reads its rows |
+| `src/core/arch/<projector>/` | A | a vision encoder: reading its numbers, its graph, the text models it pairs with |
 | `src/core/graph/graph` | A | the blocks a generator's graph composes — embed, attention against the cache, gated feed-forward, output — and the working buffers they bind |
 | `src/core/graph/encoder` | A | the blocks an embedder's graph composes — embed, per-layer inputs, attention both ways, gated feed-forward, per-layer block, pooled output — and the working buffers they bind |
+| `src/core/graph/vision` | A | the blocks a vision encoder's graph composes — patch embedding, positions, attention over every patch, gated feed-forward, pooled projection — and the working buffers they bind |
+| `src/core/media/` | N | an image's preparation: its size for the budget, its resample, its patches |
 | `src/core/formats/format.h` | contract | what every weight format supplies |
 | `src/core/formats/<format>/` | B | device layout, pack and unpack in WGSL |
 | `src/core/residency/plan` | D | the planner, pure: where the weights, a generator's cache and the working set a graph declares lie, and the context offered |
 | `src/core/residency/weight_view` | contract | what a kernel is given for a weight |
 | `src/core/residency/routes`, `piece_writer` | D | pure: where each byte of the file goes, and the writes each chunk completes |
+| `src/core/residency/file_ranges` | D | pure: the ranges of a file a load reads, and their rules |
 | `src/core/residency/upload` | D | creating planned buffers and carrying out the writes |
 | `src/core/gpu/` | D | device, handles, dispatch geometry |
 | `src/core/kernels/<kernel>/` | E | one WGSL file and its launcher per regime |
@@ -90,6 +97,7 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/sampler/` | F | sampling methods; settings and seed are passed in |
 | `src/core/runtime/runtime`, `generator`, `stops` | M (generate) | the turn loop: diff, prefill, decode, sample; and the tokens that stop it |
 | `src/core/runtime/embedder`, `ends` | M (encode) | the encode path: wrap a text in the file's ends, one step, read back a vector |
+| `src/core/runtime/vision` | M (encode) | an encode's image stage: the image's slots, the vision step, its rows placed in the text step |
 
 Rows marked *contract* carry no axis. A contract header changes only
 when the contract itself changes, which is cross-cutting by definition: every
@@ -125,6 +133,11 @@ and production never materialises a dequantized weight.
 | **Encode** | `core/runtime/embedder` M · `core/arch/<arch>` A · `core/graph/encoder` A · `core/kernels/*` E · `core/kernels/program` D | yes |
 | **Pool** | `core/kernels/pool` E · `core/kernels/matmul` E | no |
 | **Read back** | `core/kernels/program` D · the boundary | yes |
+| **Image**, decoded | `web/image_input.js` N | no |
+| **Prepare** | `core/media` N | no |
+| **Vision step** | `core/runtime/vision` M · `core/arch/<projector>` A · `core/graph/vision` A · `core/kernels/*` E · `core/kernels/program` D | yes |
+| **Place** | `core/runtime/vision` M · `core/kernels/program` D, its link · `core/kernels/gather` E | yes |
+| **Companion load** | `web/companion.js` H · `web/download.js` L · `web/load.js` L · `core/residency/file_ranges` D · `core/residency/plan` D · `core/preflight` I · `core/capability` I | yes |
 
 ## Inside a pass, block to files
 
@@ -174,6 +187,29 @@ the matrix product that its graph selects.
 | **Per-layer block**: the gate times the layer's input, the projection back | `core/kernels/matmul` E, an epilogue reading the input · `core/kernels/norm` E |
 | **Pool**: mean of every row, projection, unit length | `core/kernels/pool` E · `core/kernels/matmul` E, over one row as the head runs |
 
+## Inside a vision step, block to files
+
+The **Vision step** box, opened up as the encode above is: each block of
+the vision encoder in [`logical-overview.md`](logical-overview.md), with the
+files that implement it. The kernels are the shared ones, in forms the
+vision graph selects: gather's position form, rope's axial form, block
+attention's streaming form and pooling's grid form.
+
+| Block | Files, with axis |
+|---|---|
+| Order of every block below, per vision encoder | `core/arch/<projector>` A, composing `core/graph/vision` A |
+| Step parameters: position 0, the patches, the grid's columns | `core/kernels/interface` contract · `core/runtime/vision` M |
+| The patches written, the step launched, its rows copied to the text step | `core/kernels/program` D |
+| Working buffers: pixels, hidden, normed, query, key, value, attention, output, activation, soft tokens | declared by `core/graph/vision` A · placed by `core/residency/plan` D |
+| **Patch embedding** | `core/kernels/matmul` E · `core/formats/f32` B |
+| **Positions**: the column's row and the row's row of the learned table | `core/kernels/gather` E, its position form · `core/formats/f32` B |
+| **Norms**, each with the residual add and its post-norm | `core/kernels/norm` E · `core/formats/f32` B |
+| **Projections**: Q, K and V together, the output; gate and up together, down | `core/kernels/matmul` E · `core/formats/<format>` B |
+| **QK-norm, value norm, rotation by column and row**, in place | `core/kernels/rope` E, its encode form, axial |
+| **Attention**: every patch, scores streamed | `core/kernels/block_attention` E, its streaming form |
+| **Pool**: k × k patches a soft token, normalized | `core/kernels/pool` E, its grid form |
+| **Project** to the text width | `core/kernels/matmul` E · `core/formats/<format>` B |
+
 ## Files that serve several boxes
 
 A file used by two boxes is where its interface matters most. Each still
@@ -192,7 +228,10 @@ changes on exactly one axis.
 - **`web/fetch.js`** serves Preflight, which reads the header prefix, and Fetch,
   which downloads the whole file.
 - **`kernels/program`** serves Prefill · Decode and Encode, and the read back
-  of each: a generator's drawn token, an embedder's vector.
+  of each: a generator's drawn token, an embedder's vector. For an image it
+  also writes the patches into the vision step and copies the vision step's
+  rows into the text step, between two programs on one device, holding both
+  buffers so neither program binds the other's.
 - **The shared kernels** — gather, norm, rope, the matrix products — serve a
   generator's pass and an embedder's. A form one of them needs, such as rope's
   encode form, is a variant its graph selects; the kernel never learns which
@@ -257,8 +296,8 @@ Four rules hold for every contract:
    decodes them from the byte source. A short array of numbers, a value a
    layer, is decoded too, so describe reads it from the index alone.
 3. **Capability** — `core/capability`. One table from each identifier a file
-   carries — architecture, weight format, tokenization algorithm, pre-tokenizer
-   — to the implementation that runs it. Supported means present in the table;
+   carries — architecture, weight format, tokenization algorithm, pre-tokenizer,
+   a companion's projector type — to the implementation that runs it. Supported means present in the table;
    there is no second list.
 4. **Model description** — `core/model`. Every number the planner, cache and
    graph need, per layer where the model varies per layer, and each layer's
@@ -266,7 +305,10 @@ Four rules hold for every contract:
    identifier; no tensor name reaches them. Whether attention is causal or
    runs both ways is in it, and for a model that embeds, what its encoder
    adds: the per-layer inputs, the output projection, the embedding's length
-   and the pooling.
+   and the pooling; and for a vision encoder, what it adds: the patch
+   embedding and size, the learned position table, the grid's pooling and
+   the projection to the text model's width. A vision encoder's description
+   has no token embedding, output norm or vocabulary.
 5. **Residency plan** — `core/residency/plan`. A pure function: tensor index,
    model description, granted limits and policy in; buffers, each weight's
    place in them, the cache, the working buffers and the context offered, out.
@@ -302,7 +344,14 @@ Four rules hold for every contract:
      slots. A full-attention layer holds the whole context offered.
    - The context offered is the largest the memory budget allows, capped at
      the context the model was trained for. A model that keeps no cache offers
-     a prefill block, capped the same way: the most one step holds.
+     a prefill block, capped the same way: the most one step holds. A vision
+     encoder's step holds the most patches the image budget allows, its most
+     tokens times the pooling's square.
+   - A load reads ranges of its file: a model the whole file, one range; a
+     companion its header and the span of its encoder's tensors. The plan
+     places only the tensors inside the ranges and refuses, by name, one its
+     description needs that lies outside them. A companion is planned
+     within what the budget leaves beside the model it serves.
    - An output head stored as a byte-for-byte copy of the token embedding is
      marked a candidate duplicate and given buffers of its own. The page
      compares the two in the cached file before upload, and upload shares only
@@ -315,7 +364,10 @@ Four rules hold for every contract:
    way: the step's parameters, shared by every launch; the launch's constants,
    written at load; then weights, then activations. Bind groups are built at
    load; a token costs one uniform write and its dispatches. The runtime picks
-   the regime from the number of tokens in the step.
+   the regime from the number of tokens in the step. A step's parameters
+   carry, beside its position and tokens, a vision step's grid columns and a
+   text step's rows that an image's rows fill; a vision step's tokens are its
+   patches, more than a prefill block, with no identifiers.
 8. **KV cache** — `core/cache/kv`, for a model that generates. Full length
    for full-attention layers; a ring of the planned slots for sliding-window
    layers. Truncation resets a
@@ -339,7 +391,10 @@ Four rules hold for every contract:
     prefix and load a chunk, each under the model's load policy; generate
     from a rendered prompt and the turn's policy; cancel; or, for a model
     that embeds, embed a text, its vector crossing once as a view of the
-    module's memory. The rendered prompt
+    module's memory; for a model with a companion, preflight and load the
+    companion, its ranges carried once at begin and each chunk at its file
+    offset, and prepare an image in one of two slots, its pixels a band of
+    rows a crossing, before an embed names the slot. The rendered prompt
     crosses twice a turn: to the worker as a string, then into the module's
     memory as UTF-8 bytes. The reply's text crosses twice a piece it
     completes, from the module to the worker and from the worker to the page

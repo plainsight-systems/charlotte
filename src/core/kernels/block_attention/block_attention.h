@@ -40,7 +40,12 @@ namespace bllm::kernels {
 // is its own kernel (logical-overview.md, principle 6), and tuning one never
 // touches the other (change-axes.md, the E test).
 //
-// The shape of the computation: two launches, the scores and then their
+// Two forms, chosen by the head dimension, each its own entry point: the
+// written form below, for heads of 256 and 512 — the text encoder's — and
+// the streaming form after it, for heads of 64 — a vision encoder's
+// (graph/vision.h), whose 2,520 patches' scores no binding holds.
+//
+// The written form's shape: two launches, the scores and then their
 // weighted sum, with the scores written out between them.
 //
 //   1. `scores_of`: S = Q Kᵀ × scale × log2(e), a tiled product of two
@@ -123,6 +128,87 @@ namespace bllm::kernels {
 // already the size the caches hold gains little from tiling, and its
 // consumer here needs it whole, row by row.
 //
+// The streaming form, for a head of 64: one launch, `stream`, the scores
+// never written — FlashAttention's online softmax (GDSA.16, CDSA.23). At N
+// = 2,520 patches and 12 heads the written form's scores would be 305 MB a
+// layer, over the default 128 MiB binding and 256 MiB buffer; and at d = 64
+// the reason above against streaming is gone: a tile's outputs, 32 query
+// vectors × 64, are 16 floats an invocation of 128, matmul.h's micro-tile.
+//   - A workgroup takes one key-value head and a tile of 32 query vectors —
+//     32 / G rows × the G query heads sharing that key-value head, as the
+//     written form's tiles are — and walks every key of the step in order,
+//     16 at a time. Its 128 invocations are 4 a query vector: invocation t
+//     serves vector q = t / 4, lane c = t mod 4.
+//   - Workgroup memory: the tile's queries, staged once, 32 vectors × 64
+//     floats padded to 17 vec4s a vector, 8.5 KiB, so the 8 vectors a read's
+//     lanes take spread over the banks; one slot for 16 keys, padded the same,
+//     4.25 KiB, which holds the step's keys and then its values; and the
+//     weights, 32 vectors × 16 keys, 2 KiB. 14.75 KiB, under the 16 KiB the
+//     harness keeps.
+//   - Each step of 16 keys, j0 .. j0 + 15:
+//       1. Stage the 16 keys' 64 dimensions, 2 vec4s an invocation; barrier.
+//       2. Scores: invocation (q, c) forms s for its vector and keys j0 +
+//          4c .. j0 + 4c + 3, four chains of fmas along d in order from 0,
+//          × scale × log2(e), and writes them to its four weight slots;
+//          barrier.
+//       3. Its vector's tile maximum over the tile's live keys, read from
+//          the 16 slots in order — the same bits in each of the 4 lanes —
+//          and the running maximum m' = max(m, that). Its own four weights
+//          p = 2^(s − m'), 0 for a key not live, written over its scores.
+//          Meanwhile the slot is free — every score read the keys before
+//          the barrier — so each invocation stages 2 vec4s of the 16
+//          values; barrier.
+//       4. Rescale: o and l times 2^(m − m'), where m' rose. Then for each
+//          key in order, l += p_j and o += p_j × v_j, o its vector's 16
+//          dimensions 16c .. 16c + 15, 4 vec4 accumulators: the 4 lanes of a
+//          vector keep the same l, the same bits; barrier, before the next
+//          step stages over the slot and the weights.
+//     At the end, o / l to `attention`, at query head h's columns of row i.
+//   - Liveness as the written form's: from positions, j < N and |i − j| <=
+//     h, never a value. A vector whose tile has no live key changes nothing
+//     in that step: its maximum is carried with a flag that it has seen a
+//     live key, so no infinity and no sentinel is ever compared (GDSA.16's
+//     example). Every row has a live key, itself, so l > 0 at the end.
+//   - Override constants `head_dimension`, `query_heads`, `key_value_heads`
+//     and `group`, as the written form's; the tile is the same shape at
+//     every group, so no workgroup array is sized by one.
+//   - Constants (binding 1): the written form's struct. Bindings: 2 the
+//     queries, 3 the keys, 4 the values, read-only; 5 the attention
+//     buffer, written. Four storage buffers.
+//   - The tile sizes are named, kStreamVectors 32 and kStreamKeys 16: a
+//     measured parameter of the target, not of the operation (CDSA.21).
+//
+// What the streaming form costs, at N rows, for a vision layer of 12 heads,
+// d = 64, G = 1, at N = 2,520:
+//   - Multiply-adds: H_q × N² × d for the scores and as many for the sum,
+//     1.56 × 10¹¹ over 16 layers (graph/vision.h).
+//   - Workgroups: ceil(N G / 32) × H_kv, 79 × 12 = 948; steps a workgroup
+//     ceil(N / 16), 158; barriers 4 a step, 632.
+//   - exp2: 4 a step an invocation for the weights, and one rescale, 790 an
+//     invocation at N = 2,520.
+//   - Workgroup-memory loads a multiply-add: the scores read a query vec4
+//     and 4 key vec4s for 16 fmas; the sum reads 4 weight vec4s and 64
+//     value vec4s for 256: about 3.5 fmas a load.
+//   - Bytes: each workgroup reads its head's keys and values, N × d × 8,
+//     1.29 MB, from the GPU's caches — 1.22 GB a layer, over keys and values
+//     of 7.7 MB each in device memory, read from it about once — and writes
+//     its outputs once, 7.7 MB a layer. Against the written form's 305 MB of
+//     scores written and read a layer, which no binding could hold.
+//   - Workgroup memory zero-filled at launch, 14.75 KiB, about 29 stores an
+//     invocation.
+// Optimization (practice): FlashAttention's streaming softmax, the score
+// matrix never leaving the workgroup (GDSA.16, CDSA.23).
+// Optimization not taken, a lever to measure: the queries in registers, 16
+// vec4s an invocation, which would free 8.5 KiB for a step of 32 keys and
+// halve the barriers, at a register budget that could cost occupancy
+// (GPU.3); the tile sizes are named so it can be tried by measurement.
+//
+// Accuracy, against f64 from the same queries, keys and values: the written
+// form's margin, and the rescales': each step can multiply o and l by one
+// rounded exp2, at most 158 at N = 2,520, each within 3 + 2|x| units in the
+// last place, both by the same factor, so the ratio carries at most 2 units
+// a rescale. A margin the GPU test checks on the target, not a proof.
+//
 // What it costs, counted, at N tokens; at N = 512 for EmbeddingGemma 2:
 //   - Multiply-adds: H_q × N² × d for the scores and as many for the sum —
 //     2,048 N² a sliding layer, 4,096 N² a global one; 57,344 N² a step,
@@ -191,7 +277,12 @@ namespace bllm::kernels {
 // first; windows of 32 and 1,024 beside a full layer's, so keys either side
 // are masked; every output within the margin; the same step run twice
 // giving the same bits. Each launch's entry point, split and workgroups at
-// 65 and 512 tokens.
+// 65 and 512 tokens. The streaming form the same way at the vision
+// encoder's shape, d = 64 with G = 1 and 12 heads: N of 2, 15, 16, 17, 33,
+// 630 and 2,520, a step of 16 keys partly live in each; a window of 32
+// beside the whole, so a tile with no live key for a row is crossed; and
+// against the written form at d = 64 and N = 130, each within its margin of
+// f64. Its workgroups at 2,520 rows, 948.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -201,6 +292,10 @@ namespace bllm::kernels {
 //            returned.
 //     I.4    Make interfaces precisely and strongly typed.
 //   C++ performance guidelines
+//     CDSA.23 Keep streaming state small and mergeable, with a fixed combine
+//            order — the streaming form's maximum, sum and outputs, keys in
+//            order.
+//     CDSA.21 Measured, named thresholds — the streaming tile's sizes.
 //     GDSA.16 Stream through on-chip tiles; never materialize the large
 //            intermediate — weighed, and its caveat taken, above.
 //     GDSA.2 Declare each floating-point reduction's determinism level —
@@ -231,5 +326,25 @@ struct BlockAttentionLaunch {
 // query heads a key-value head serves divide 32; the buffers are the plan's,
 // sized for kPrefillBlock rows; every step is at position 0.
 [[nodiscard]] std::array<Launch, 2> block_attention_launches(const BlockAttentionLaunch& attention);
+
+// The streaming form's tile: query vectors a workgroup, keys a step.
+inline constexpr std::uint32_t kStreamVectors = 32;
+inline constexpr std::uint32_t kStreamKeys = 16;
+
+// One layer's block attention in the streaming form: no scores bound.
+struct StreamedAttentionLaunch {
+    model::LayerDescription layer;            // heads, head dimension, window
+    float scale;                              // the model's attention scale
+    residency::BufferRange query;             // normalized and rotated, rope's
+    residency::BufferRange key;
+    residency::BufferRange value;
+    residency::BufferRange attention;         // the output
+};
+
+// The layer's one streaming launch. Preconditions: the head dimension is
+// 64; the query heads a key-value head serves divide 32; the buffers hold
+// the step's rows, which may exceed kPrefillBlock; every step is at
+// position 0.
+[[nodiscard]] Launch streamed_attention_launch(const StreamedAttentionLaunch& attention);
 
 }  // namespace bllm::kernels

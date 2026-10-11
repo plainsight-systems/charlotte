@@ -85,6 +85,39 @@ compares with others by dot product. A longer text is refused with its token
 count, so the page can cut it into pieces that fit.
 
 ```mermaid
+flowchart LR
+    img["Image<br/>decoded by the page"] --> prep["Prepare<br/>size, resample, patches"]
+    prep --> vis["Vision step<br/>every patch, once"]
+    vis --> soft["Soft tokens<br/>rows of the text width"]
+    txt["Text<br/>with its placeholder"] --> tok["Tokenize<br/>and wrap"]
+    tok --> place["Place<br/>rows where the<br/>placeholder stood"]
+    soft --> place
+    place --> step["Encode<br/>one step"]
+    step --> pool["Pool<br/>mean, project, unit length"]
+    classDef default fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    classDef fork fill:#FAECE7,stroke:#D85A30,color:#993C1D
+    classDef policy fill:#EEEDFE,stroke:#534AB7,color:#3C3489
+    classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
+    class prep,vis,tok fork
+    class soft policy
+    class step regime
+```
+
+**Encode an image**, for a model whose images an encoder in a companion
+file turns into rows its text model reads. The image is prepared on the CPU
+— sized for the model's token budget, resampled, cut into patches — and the
+vision encoder runs one step over every patch, ending in soft tokens: rows
+of the text model's width, as many as the budget allows. The text names
+where the image goes with a placeholder token; the soft tokens stand in the
+text step in its place, between two tokens that open and close an image,
+and from there the encode is the text's: one step, every row attending to
+every other, pooled into one vector. A vector for an image and one for a
+text are in the same space, so a page ranks photos and paragraphs by one
+query. The companion is loaded the first time it is needed, and only the
+part of its file the encoder reads: an encoder for audio beside it in the
+same file is neither fetched nor uploaded.
+
+```mermaid
 flowchart TD
     sched["Graph<br/>per architecture"]
     sched --> mm["matmul<br/>GEMM · GEMV"]
@@ -203,6 +236,33 @@ token, the mean pools them into one row, and only that row is projected,
 since a mean and a projection commute. The vector is then scaled to unit
 length, so a dot product between two is their cosine.
 
+```mermaid
+flowchart TD
+    px["Patches<br/>one row each"] --> pe["Patch embedding<br/>a product"]
+    pe --> posn["Learned positions<br/>column and row"]
+    subgraph layer["Each layer, in order"]
+        att["Attention<br/>every patch,<br/>rotated by column and row"] --> ffn["Feed-forward<br/>each row alone"]
+    end
+    posn --> att
+    ffn --> grid["Pool<br/>k × k patches a row,<br/>normalized"]
+    grid --> proj["Project<br/>to the text width"]
+    classDef default fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
+    class att,ffn,proj regime
+```
+
+**Inside the vision encoder.** The text encoder's block at other sizes,
+with position entering twice. Each patch is a row: its pixels times the
+patch embedding, a convolution of the patch's own stride, which is a matrix
+product. A learned table adds its column's row and its row's row. Then in
+every layer the attention block rotates each head in two halves, the first
+by the patch's column and the second by its row, so a score depends on how
+far apart two patches are across and down; every patch attends to every
+other, and with thousands of patches the scores are never stored, only
+streamed through workgroup memory. After the last layer the patches are
+averaged over squares of the grid into the image's soft tokens, each
+normalized and projected to the text model's width.
+
 ## Principles
 
 These decide how any difference between models is handled. Each was tested
@@ -218,7 +278,9 @@ against real files, but none is specific to the files tested.
    `general.architecture` selects a graph. A tensor's type selects its device
    layout, pack and unpack. `tokenizer.ggml.model` selects a
    tokenization algorithm, and `tokenizer.ggml.pre`, where present, selects the
-   pre-tokenizer that splits text before the algorithm runs. These are
+   pre-tokenizer that splits text before the algorithm runs.
+   `clip.vision.projector_type` selects a vision encoder in a companion
+   file, whose `general.architecture` names no encoder. These are
    independent: families share algorithms without sharing pre-tokenizers,
    formats cross families, and any combination can appear in a file. The
    mapping is many-to-one — several identifier values may select the same
@@ -299,6 +361,10 @@ and which principle handles it.
 | Per-layer inputs | Gemma 4's, or none | graph |
 | Layer output scale | present or absent | graph; applied in the next norm's add |
 | Pooling | mean, or another | file parameter, and a shared kernel (3, 6) |
+| Media input | text alone, or images through an encoder in a companion file | the encoder found by its projector type (2); the image prepared on the CPU, as text is tokenized |
+| Position in two dimensions | a learned table by column and row; rotary halves by column and row | a shared kernel's form and the encoder's convention (6) |
+| Grid pooling | k × k patches to a soft token | file parameter, and a shared kernel's form (3, 6) |
+| Feed-forward activation the file does not state | GELU's tanh form for Gemma 4's vision encoder, where llama.cpp's default differs | the encoder's convention, from its trained configuration (3) |
 
 Two consequences are worth stating outright:
 
@@ -413,8 +479,10 @@ and the file's declared context: the most one step holds.
 
 **Where policy lives.** The curated model list is a list of measured
 configurations — file, hash, cache precision, memory budget, sampling per
-mode, affordances, and for a model that embeds the task prompts its card
-gives — not a list of URLs. It changes when a model is measured. The capability table
+mode, affordances, for a model that embeds the task prompts its card
+gives, and for one whose images a companion file encodes, that file's
+ranges, their hash and the image token budget its card gives — not a list
+of URLs. It changes when a model is measured. The capability table
 changes when code is written. Different reasons, so they are two things. A
 model loaded from a pasted URL gets defaults and is shown as unmeasured;
 presenting an untested model as tuned would claim something nobody checked.
@@ -442,6 +510,13 @@ before it:
 | Fit | the residency plan fits the **granted** device limits and the budget |
 | Upload | its weights reach the GPU and read back identical |
 | Run | the graph, every weight format, the tokenizer and pre-tokenizer; a generator's stop set, an encoder's begin and end tokens |
+
+A companion file is judged the same way, stage by stage, beside the model
+it serves: its encoder found by projector type, planned within what the
+budget leaves beside that model, its rows read by that model, and the image
+tokens in that model's vocabulary. Its Download is the part of the file its
+encoder reads, verified against a hash of those bytes pinned in the curated
+list, as a whole file is against its own.
 
 Every check that can run does, so a verdict lists everything a model still
 needs, each item tagged with the stage it stops; the stage reached is the one

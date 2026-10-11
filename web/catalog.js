@@ -6,6 +6,18 @@
 // defaults. `prompts`, for a model that embeds, is { query, document }, the
 // task prompts its card gives (task_prompt.js), each a string, or the entry
 // is refused naming the one at fault; a pasted URL's model has none.
+//
+// `vision`, for a model whose images are encoded by a companion file
+// (runtime/vision.h), is { url, sizeBytes, ranges, rangesSha256, tokens }:
+// the companion's published file and size; the byte ranges a load reads,
+// [begin, end) pairs in order, the first from 0 holding its header
+// (residency/file_ranges.h); the SHA-256 of those ranges' bytes in order,
+// which the download checks in place of the whole file's; and the image
+// budget, { least, most } soft tokens, the card's (policy/policy.h). Pinned
+// by tools/pin_ranges.py from the published file. Each field is checked, as
+// the prompts are, and the entry refused naming the one at fault: ranges
+// that are not in order, or whose first does not begin at 0. A pasted URL's
+// model has none.
 
 export class CatalogError extends Error {
   constructor(message) {
