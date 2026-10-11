@@ -31,16 +31,31 @@ namespace bllm::media {
 //      trims to and Google's mask keeps. A clip of fewer than 161 samples has
 //      none, and is refused, TooShort.
 //   2. Each frame times a periodic Hann window of 320, w[j] = 0.5 − 0.5
-//      cos(2πj / 320) in f32, zero-padded to 512 — the window at the frame's
+//      cos(2πj / 320), zero-padded to 512 — the window at the frame's
 //      start, as both llama.cpp's and Google's are.
-//   3. A real FFT of 512: radix-2, iterative, in f32, its twiddles
-//      cos and sin of 2πk / 512 tabulated once; the magnitude of each of the
-//      257 bins, √(re² + im²), not the power.
+//   3. A real FFT of 512 in f32, its twiddles cos and sin of 2πk / 512
+//      tabulated once: llama.cpp's own (mtmd-audio.cpp's fft_impl), radix-2
+//      by recursion, the evens' and odds' halves combined with the same
+//      operations in the same order — a pure tone's quiet bins lie near the
+//      floor, where another order's rounding moves the log by up to 2 ×
+//      10⁻³. The magnitude of each of the 257 bins, √(re² + im²), not the
+//      power.
+//   Determinism across builds: the window and the twiddles are computed in
+//   f64 and rounded once to f32, where llama.cpp computes them with f32
+//   sinf and cosf — whose last bit differs between math libraries, the
+//   browser's and the system's, and between separate calls and the fused
+//   sincos an optimizer substitutes — and no multiply-add is fused, which
+//   WebAssembly cannot do and a native optimizer would. So every build of
+//   this file, the module's and the tests', gives the same bits, and those
+//   are not llama.cpp's where a twiddle's last bit differs.
 //   4. 128 triangular filters on the HTK mel scale, 2595 log₁₀(1 + f / 700),
 //      from 0 to 8,000 Hz, unnormalized, their edges and weights computed in
 //      f64 as llama.cpp's fill_mel_filterbank_matrix computes them, held as
 //      f32. Each filter is nonzero over a few adjacent bins, so a filter is
-//      its first bin and its weights; a bin's sum is taken in f64 over them.
+//      its first bin and its weights. Its sum as llama.cpp takes it: the bins
+//      in groups of four from bin 0, each group's four products added in f32,
+//      each group's total added to an f64 sum, bin 256 alone last — over the
+//      groups the filter touches, a weight outside its span being zero.
 //   5. log(sum + 0.001), natural: Google's form. llama.cpp at the pin takes
 //      log(max(sum, 0.001)), which differs by up to ln 2 where a bin's energy
 //      is near the floor — a pure tone's spectrum almost everywhere; the
@@ -74,15 +89,14 @@ namespace bllm::media {
 // frames are read from the clip in place, windowed into one 512-float
 // buffer reused for every frame; the spectrogram is written once, into the
 // slot the caller sized at load. No allocation per clip.
-// Optimization (practice): the window, the twiddles, the bit reversal and
-// the filters' nonzero spans built once, in the constructor, into the order
-// the loops read them (CDSA.32); each frame's FFT then reads tables, never
-// calls cos or sin.
-// Optimization (practice): a filter's sum runs over its nonzero bins alone,
-// about 4 of 257 on average, rather than every bin as llama.cpp's dense
-// filter matrix does. The terms skipped are zero; the sum is f64 term by
-// term, where llama.cpp adds four f32 products then the f64 total, so the
-// two round differently, within the tolerance below.
+// Optimization (practice): the window, the twiddles and the filters'
+// nonzero spans built once, in the constructor, into the order the loops
+// read them (CDSA.32); each frame's FFT then reads tables, never calls cos
+// or sin.
+// Optimization (practice): a filter's sum runs over the groups of four its
+// nonzero bins touch, about 2 of 65, rather than every group as llama.cpp's
+// dense filter matrix does; the groups skipped add exact zeros, so the sum
+// is the same.
 //
 // Verification the implementation is held to:
 //   - The frame and row counts of llama.cpp's preprocessor and gemma4a's
@@ -93,11 +107,16 @@ namespace bllm::media {
 //   - Against the reference: tools/make_reference_audio.sh builds llama.cpp
 //     at the embeddings' pin with the gemma4a preprocessor's mel_floor_add
 //     set — Google's floor, the one change — and writes, as fixtures, every
-//     frame of three half-second clips: a 1 kHz tone, a sweep, and the first
+//     frame of three half-second clips: a 1 kHz tone, a siren, and the first
 //     half second of the countdown recording (tests/fixtures/audio/). Each
-//     bin within 10⁻⁴ of llama.cpp's, absolute. The check discriminates the
-//     floor: llama.cpp's own form differs from Google's by more than 0.1 on
-//     the tone's quiet bins.
+//     bin above log 0.01 — where a bin's energy is well above the floor —
+//     within 10⁻⁴ of llama.cpp's, absolute, and every bin within 5 × 10⁻³,
+//     the quiet bins carrying the twiddles' last bits through the FFT's
+//     rounding: an error of about 2⁻²⁴ of the frame's largest magnitude,
+//     some 50 for these clips, is about 3 × 10⁻⁶ of energy, and against
+//     the floor's 10⁻³ moves the log by about 3 × 10⁻³. The check discriminates the floor: llama.cpp's own form
+//     differs from Google's by more than 0.1 on thousands of the tone's
+//     quiet bins.
 //   - Determinism: the same samples give the same bytes, run to run.
 //
 // Guidelines, by corpus:
@@ -165,13 +184,15 @@ private:
     };
 
     std::array<float, kFrameLength> window_{};
-    std::array<float, kFftLength / 2> cos_{};
-    std::array<float, kFftLength / 2> sin_{};
-    std::array<std::uint16_t, kFftLength> reversed_{};   // bit reversal of 9 bits
+    std::array<float, kFftLength> cos_{};
+    std::array<float, kFftLength> sin_{};
     std::array<Filter, kMelBins> filters_{};
     std::vector<float> weights_;
-    // One frame, windowed and transformed in place: re, im interleaved.
-    std::array<float, 2 * kFftLength> frame_{};
+    // One frame's input and llama.cpp's FFT scratch: the input holds the
+    // recursion's halves past the frame, the output its halves' transforms
+    // past the frame's, as fft_impl lays them out.
+    std::array<float, 2 * kFftLength> input_{};
+    std::array<float, 8 * kFftLength> output_{};
 };
 
 }  // namespace bllm::media

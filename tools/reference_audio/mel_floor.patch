@@ -1,0 +1,12 @@
+diff --git a/tools/mtmd/mtmd-audio.cpp b/tools/mtmd/mtmd-audio.cpp
+index 1b4ea60..14c0b65 100644
+--- a/tools/mtmd/mtmd-audio.cpp
++++ b/tools/mtmd/mtmd-audio.cpp
+@@ -1180,6 +1180,7 @@ bool mtmd_audio_preprocessor_gemma4a::preprocess(const float *                 s
+     params.use_magnitude    = true;
+     params.mel_floor        = 0.001f;
+     params.norm_per_feature = false;
++    params.mel_floor_add    = true;   // Google's log(x + floor): tools/make_reference_audio.sh
+ 
+     // Split into 30-second chunks (model context limit, ~750 tokens each)
+     const size_t chunk_samples = 30 * hparams.audio_sample_rate;

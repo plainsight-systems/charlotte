@@ -61,6 +61,7 @@ add_executable(charlotte_tests
     residency_piece_writer_test.cpp
     residency_routes_test.cpp
     media_image_test.cpp
+    media_audio_test.cpp
     residency_file_ranges_test.cpp
     vision_test.cpp
     main_test.cpp
@@ -74,6 +75,7 @@ target_include_directories(charlotte_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
 target_compile_definitions(charlotte_tests PRIVATE
     BLLM_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../src/shaders"
     BLLM_GGUF_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/gguf"
+    BLLM_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
     # Fetched, not committed: tools/fetch_test_data.py (make test-data).
     BLLM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../.cache/test-data"
 )
