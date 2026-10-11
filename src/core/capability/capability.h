@@ -4,7 +4,7 @@
 
 #include "core/gguf/types.h"
 
-namespace bllm::arch { struct Architecture; }
+namespace bllm::arch { struct Architecture; struct VisionEncoder; }
 namespace bllm::formats { class Format; }
 namespace bllm::tokenizer { struct Algorithm; struct PreTokenizer; }
 
@@ -26,6 +26,10 @@ namespace bllm::capability {
 
 [[nodiscard]] const arch::Architecture* find_architecture(std::string_view general_architecture) noexcept;
 
+// A companion file's vision encoder, by its clip.vision.projector_type
+// (arch/vision_encoder.h): the identifier that names the encoder, where its
+// general.architecture, "clip", names none.
+[[nodiscard]] const arch::VisionEncoder* find_vision_encoder(std::string_view projector_type) noexcept;
 [[nodiscard]] const formats::Format* find_format(gguf::TensorType type) noexcept;
 
 [[nodiscard]] const tokenizer::Algorithm* find_tokenizer(std::string_view tokenizer_model) noexcept;

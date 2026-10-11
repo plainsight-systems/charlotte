@@ -5,6 +5,7 @@
 
 #include "core/arch/embedding_gemma2/embedding_gemma2.h"
 #include "core/arch/gemma3/gemma3.h"
+#include "core/arch/gemma4v/gemma4v.h"
 #include "core/arch/llama/llama.h"
 #include "core/arch/qwen3/qwen3.h"
 #include "core/formats/bf16/bf16.h"
@@ -48,6 +49,9 @@ constexpr std::array kArchitectures{
     Row<std::string_view, arch::Architecture>{"llama", &arch::kLlama},
     Row<std::string_view, arch::Architecture>{"qwen3", &arch::kQwen3},
 };
+constexpr std::array kVisionEncoders{
+    Row<std::string_view, arch::VisionEncoder>{"gemma4v", &arch::kGemma4Vision},
+};
 constexpr std::array kFormats{
     Row<gguf::TensorType, formats::Format>{gguf::TensorType::F32, &formats::kF32},
     Row<gguf::TensorType, formats::Format>{gguf::TensorType::F16, &formats::kF16},
@@ -79,6 +83,10 @@ constexpr std::array kPreTokenizers{
 
 const arch::Architecture* find_architecture(std::string_view general_architecture) noexcept {
     return lookup<std::string_view, arch::Architecture>(kArchitectures, general_architecture);
+}
+
+const arch::VisionEncoder* find_vision_encoder(std::string_view projector_type) noexcept {
+    return lookup<std::string_view, arch::VisionEncoder>(kVisionEncoders, projector_type);
 }
 
 const formats::Format* find_format(gguf::TensorType type) noexcept {

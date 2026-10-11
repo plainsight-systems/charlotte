@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/arch/describe.h"
+#include "core/graph/vision.h"
 
 namespace bllm::arch {
 namespace {
@@ -232,11 +233,22 @@ DescribeResult pairs(const model::ModelDescription& vision, const model::ModelDe
     return {};
 }
 
+// The patch embedding and the positions; each layer's attention and gated
+// feed-forward block; the pooled projection (graph/vision.h).
+graph::GraphResult vision(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
+                          std::vector<kernels::Launch>& out) {
+    graph::VisionBuilder b(model, plan, out);
+    if (auto r = b.patch_embedding(); !r.ok()) return r;
+    if (auto r = b.positions(); !r.ok()) return r;
+    for (std::uint32_t layer = 0; layer < model.layers.size(); ++layer) {
+        if (auto r = b.attention(layer); !r.ok()) return r;
+        if (auto r = b.gated_feed_forward(layer); !r.ok()) return r;
+    }
+    return b.pooled_projection();
+}
+
 }  // namespace
 
-// The graph is the vision blocks' (graph/vision.h), which this encoder gains
-// with them; until then it is listed in no capability table, so nothing
-// finds it to build.
-const VisionEncoder kGemma4Vision{kProjector, describe, nullptr, pairs};
+const VisionEncoder kGemma4Vision{kProjector, describe, vision, pairs};
 
 }  // namespace bllm::arch

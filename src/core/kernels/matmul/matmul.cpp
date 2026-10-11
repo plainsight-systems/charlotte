@@ -80,13 +80,27 @@ std::uint32_t set_rows_for(std::uint64_t rows) {
     return 1;
 }
 
+// A weight as the product reads it: rows of every dimension but the last
+// (formats/format.h), so a convolution's (16, 16, 3, 768) is 768 rows of
+// 768 — a vision encoder's patch embedding — and a matrix of K × N is N rows
+// of K, as it always was.
+std::uint64_t columns_of(const gguf::TensorShape& shape) {
+    if (shape.dimension_count < 2) return shape.dimensions[0];
+    const std::uint64_t last = shape.dimensions[shape.dimension_count - 1];
+    return last == 0 ? 0 : shape.element_count / last;
+}
+
+std::uint64_t outputs_of(const gguf::TensorShape& shape) {
+    return shape.dimension_count < 2 ? 1 : shape.dimensions[shape.dimension_count - 1];
+}
+
 // The product over one binding: its members, the launches that read them —
 // decode, and each tile width's tiled and split launches with the split's
 // combine — or the head's one launch.
 void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants& members, std::uint64_t rows,
                   SplitGate gate, const residency::BufferRange& range_sums, std::vector<Launch>& out) {
     const residency::WeightView& head = *m.weights[0];
-    const std::uint64_t columns = head.shape().dimensions[0];
+    const std::uint64_t columns = columns_of(head.shape());
     const bool gated = m.epilogue == Epilogue::GatedActivation;
     const auto bytes = std::as_bytes(std::span(&members, 1));
     std::vector<Binding> bindings{weights, {m.input.buffer, m.input.offset, m.input.length}};
@@ -99,7 +113,7 @@ void add_launches(const MatmulLaunch& m, const Binding& weights, const Constants
     }
     std::vector<Override> overrides{
         {"columns", static_cast<double>(columns)},
-        {"out_width", static_cast<double>(head.shape().dimensions[1])},
+        {"out_width", static_cast<double>(outputs_of(head.shape()))},
         {"activation", m.activation == model::FeedForwardActivation::GeluTanh ? 1.0 : 0.0}};
     const Entry entry = entry_of(m.epilogue);
     const formats::Format* format = capability::find_format(head.format());
@@ -216,7 +230,7 @@ std::uint64_t range_sum_floats(Epilogue epilogue, std::uint64_t rows, std::uint6
 
 std::vector<Launch> matmul_launches(const MatmulLaunch& m, SplitGate gate, residency::BufferRange range_sums) {
     const residency::WeightView& head = *m.weights[0];
-    const std::uint64_t columns = head.shape().dimensions[0];
+    const std::uint64_t columns = columns_of(head.shape());
     const std::uint64_t block = gguf::format_layout(head.format())->block_elements;
     std::vector<Launch> out;
 

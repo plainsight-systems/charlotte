@@ -14,6 +14,7 @@ namespace {
 struct Constants {
     std::uint32_t first_row, row_count, groups_per_row, blocks_in_piece;
     float scale;
+    std::uint32_t positions;   // the position form's; 0 for a token gather
 };
 
 Constants constants_of(const kernels::Launch& launch) {

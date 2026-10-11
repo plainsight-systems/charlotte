@@ -7,6 +7,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstring>
+#include <utility>
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -168,4 +170,60 @@ TEST_CASE("a description naming a tensor outside the ranges is refused by name")
                                                    graph::vision_working_set(m, kRows), plan, kVisionRanges);
     CHECK(planned.error == residency::PlanError::MissingTensorBytes);
     CHECK(planned.subject == "a.blk.0.attn_q.weight");
+}
+
+namespace {
+
+std::uint64_t workgroups(const kernels::Launch& l, std::uint32_t tokens) {
+    return kernels::workgroups_for({l.rows, l.invocations_per_row, l.rows_per_tile, l.key_split, l.window, l.tokens,
+                                    l.partial_rows, l.row_divisor},
+                                   l.workgroup_size, 0, tokens, true);
+}
+
+}  // namespace
+
+TEST_CASE("the vision graph: 133 launches a step at every grid, a layer's 8 in order, ε / W to the pooling") {
+    const Header h = read_mmproj();
+    const arch::VisionEncoder* encoder = capability::find_vision_encoder("gemma4v");
+    REQUIRE(encoder == &arch::kGemma4Vision);
+    CHECK(capability::find_vision_encoder("gemma3") == nullptr);
+    const model::ModelDescription m = described(h.index);
+    residency::ResidencyPlan plan;
+    REQUIRE(residency::plan_residency(h.index, m, kDefaults, policy::LoadPolicy{}, graph::vision_working_set(m, kRows),
+                                      plan, kVisionRanges)
+                .ok());
+    std::vector<kernels::Launch> launches;
+    const auto built = encoder->graph(m, plan, launches);
+    REQUIRE_MESSAGE(built.ok(), built.subject);
+
+    for (const auto [columns, rows] : {std::pair{3u, 3u}, std::pair{6u, 9u}, std::pair{21u, 30u}, std::pair{42u, 60u}}) {
+        CAPTURE(columns);
+        const std::uint32_t patches = columns * rows;
+        std::vector<std::string_view> dispatched;
+        for (const kernels::Launch& l : launches) {
+            const std::uint64_t w = workgroups(l, patches);
+            CHECK(w <= 65535);
+            if (w > 0) dispatched.push_back(l.role);
+        }
+        CHECK(dispatched.size() == 133);
+        CHECK(dispatched.front() == "patch.embed");
+        CHECK(dispatched[1] == "patch.positions");
+        const std::vector<std::string_view> layer{"attention.norm", "attention.qkv", "attention.rope", "attention.stream",
+                                                  "attention.output", "ffn.norm", "ffn.gate_up", "ffn.down"};
+        CHECK(std::equal(layer.begin(), layer.end(), dispatched.begin() + 2));
+        CHECK(std::vector<std::string_view>(dispatched.end() - 3, dispatched.end()) ==
+              std::vector<std::string_view>{"pool.add", "pool.grid", "pool.project"});
+    }
+    // The pooling's ε is the file's over W, the √W scale folded in.
+    const auto grid = std::find_if(launches.begin(), launches.end(),
+                                   [](const kernels::Launch& l) { return l.role == "pool.grid"; });
+    REQUIRE(grid != launches.end());
+    float epsilon = 0;
+    std::memcpy(&epsilon, grid->constants.data() + 8, 4);
+    CHECK(epsilon == m.norm_epsilon / 768.0f);
+    CHECK(grid->row_divisor == 9);
+    // The projection's launches run over the pooled rows.
+    for (const kernels::Launch& l : launches) {
+        if (l.role == "pool.project") CHECK(l.row_divisor == 9);
+    }
 }
