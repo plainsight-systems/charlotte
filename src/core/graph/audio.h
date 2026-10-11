@@ -68,13 +68,14 @@ namespace bllm::graph {
 //          Pending: through attn_post_norm, weight 1.
 //   - convolution(layer):
 //       1. Its norm: pending added, normalized with conv_norm.
-//       2. The first pointwise projection, clamped: `normed` into
-//          `pointwise`, R × 2W.
-//       3. The light convolution (kernels/light_conv): the GLU, the causal
-//          depthwise convolution of 5 rows, the norm_conv norm and SiLU, one
-//          launch: `pointwise` into `attention`, free since the output
-//          projection read it.
-//       4. The second pointwise projection, clamped: `attention` into
+//       2. The first pointwise projection, clamped, its GLU in its gated
+//          epilogue — the weight's halves its two members, σ(b) × a
+//          (kernels/matmul/matmul.h): `normed` into `attention`, R × W,
+//          free since the output projection read it.
+//       3. The light convolution (kernels/light_conv): the causal depthwise
+//          convolution of 5 rows, the norm_conv norm and SiLU, one launch:
+//          `attention` into `query`, free since local attention read it.
+//       4. The second pointwise projection, clamped: `query` into
 //          `output`. Pending: added as it is, no post-norm, weight 1.
 //   - The layer's end, in the next block's norm: the second feed-forward's
 //     result added through ffn_post_norm_1 times 0.5, then X replaced by its
@@ -119,15 +120,15 @@ namespace bllm::graph {
 // 508, and T = 4R, 2,032: `mel` T × 128, 1.0 MB, which the program writes
 // each clip; `subsampled` 2R × 64 × 128, 33.3 MB; `hidden`, `normed`,
 // `output`, `query`, `key`, `value` and `attention`, R × W, 2.1 MB each;
-// `activation` R × F, 8.3 MB; `pointwise` R × 2W, 4.2 MB; `projected` R ×
+// `activation` R × F, 8.3 MB; `projected` R ×
 // 1,536, 3.1 MB; `soft_tokens` R × 512, 1.0 MB; `positions` 13 × W, 53 KB;
 // `relative` L × 13 × W, 639 KB; `range_sums` as the gate asks for the step's
 // products (kernels/matmul/matmul.h), the most of theirs — a short clip's
 // products have few tiles, and split along K as the text encoder's do. About
-// 67 MB beside the range sums and the encoder's 328 MB of weights; no cache.
+// 63 MB beside the range sums and the encoder's 328 MB of weights; no cache.
 //
 // What a step costs, counted, for EmbeddingGemma 2's audio encoder at Q8_0
-// and a 20 s clip, T = 2,000 and R = 500:
+// and a 20 s clip, T = 1,999 and R = 500:
 //   - Launches: the subsampling's 3; 16 a layer, 192; the output's 4: 199,
 //     about 0.3 ms at 1.5 µs each (kernels/interface.h), and a combine for
 //     each product the gate splits. The setup: 12, once.
@@ -144,16 +145,18 @@ namespace bllm::graph {
 // output norm and the next norm all in the norm that begins the next block —
 // one launch between a block's last product and the next's first, as the
 // text encoder's (GDSA.6, GPU.6).
-// Optimization (practice): the GLU, the depthwise convolution, its norm and
-// SiLU in one launch, a workgroup a row: three elementwise passes and a
-// reduction that would each read and write R × 2W or R × W floats
-// (kernels/light_conv, GDSA.6).
+// Optimization (practice): the GLU in the first pointwise projection's
+// epilogue, so the product writes R × W where it would write R × 2W, and
+// each sigmoid is computed once; then the depthwise convolution, its norm
+// and SiLU in one launch, a workgroup a row, where three passes would each
+// read and write R × W floats (kernels/light_conv, GDSA.6).
 // Optimization (practice): each layer's relative table computed once, at
 // load: it depends on the weights alone, so a step reads 13 rows a layer
 // where computing them would be 12 more products a step (GDSA.17).
-// Optimization (practice): `attention` reused for the light convolution's
-// output, `normed` for the second convolution's, `activation` for the
-// output's norm; their lifetimes do not overlap (GPU.9).
+// Optimization (practice): `attention` reused for the GLU's rows, `query`
+// for the light convolution's, `normed` for the second convolution's,
+// `activation` for the output's norm; their lifetimes do not overlap
+// (GPU.9).
 // Optimization not taken: the two convolutions fused, so the first's 33 MB
 // never reaches memory. A workgroup's second-convolution outputs would
 // recompute the first's 3 × 3 neighbourhoods, about 1.5 times its work, and
@@ -227,7 +230,7 @@ private:
 
     struct Buffers {
         residency::BufferRange mel, subsampled, hidden, normed, query, key, value, attention, output, activation,
-            pointwise, projected, soft_tokens, positions, relative, range_sums;
+            projected, soft_tokens, positions, relative, range_sums;
     };
 
     const model::ModelDescription* model_;

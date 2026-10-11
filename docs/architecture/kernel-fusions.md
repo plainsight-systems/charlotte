@@ -209,9 +209,10 @@ An audio encoder runs one step over a clip's spectrogram
 - **The clamps ride in the products.** Each product reads its four bounds
   from its own weight's binding and clamps its input as it stages it and
   its output before it writes; no clamp is a pass.
-- **The light convolution is one launch.** The GLU, the depthwise
-  convolution over 5 rows, its norm and SiLU, a workgroup a row, where
-  llama.cpp's graph makes five passes.
+- **The light convolution is two launches.** The GLU rides in the first
+  pointwise product's gated epilogue, the weight's two halves its members;
+  the depthwise convolution over 5 rows, its norm and SiLU are one launch, a
+  workgroup a row, where llama.cpp's graph makes five passes.
 - **Attention is the window alone.** Each row against its 11 predecessors
   and itself, the relative term read from a table computed once at load,
   where llama.cpp's blocked form scores 24 keys a row and masks half.
@@ -228,8 +229,8 @@ For one layer, in order:
 | 8 | local attention | scores, the relative term, the cap, softmax and the weighted sum over the window |
 | 9 | matmul | the output projection, clamped |
 | 10 | norm | that output through its post-norm; the convolution module's norm |
-| 11 | matmul | the first pointwise projection, clamped |
-| 12 | light convolution | GLU, depthwise convolution, norm, SiLU |
+| 11 | matmul | the first pointwise projection, clamped, and the GLU of its halves |
+| 12 | light convolution | depthwise convolution, norm, SiLU |
 | 13 | matmul | the second pointwise projection, clamped |
 | 14 | norm | that output added; the second feed-forward's norm |
 | 15 | matmul | its up projection, clamped, through SiLU |

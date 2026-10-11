@@ -47,11 +47,13 @@ namespace bllm::kernels {
 //        of the head the same), k's at row r − l and P's row w − l; then the
 //        cap. Lanes 12 to 15 compute nothing. Each writes its score, or −∞
 //        past row 0, to workgroup memory, 8 × 12 floats; one barrier.
-//     2. Weights: every lane of a head reads its head's 12 scores and takes
-//        the max, the exponentials and their sum in j order itself — 12
-//        reads and 12 exponentials, where sharing them would cost a barrier.
+//     2. Weights: lane 0 of each head reads its head's 12 scores, takes the
+//        max, the exponentials and their sum in j order, and writes the 12
+//        weights back in their place; a second barrier. 12 exponentials a
+//        head a row, once.
 //     3. Output: lane l writes dimensions 8l to 8l + 7 of its head, 2 vec4s:
-//        Σ_j p_j v[r − j], j in order, from the 12 rows' 32 bytes each.
+//        Σ_j p_j v[r − j], j in order, the weights read from workgroup
+//        memory, the values from the 12 rows' 32 bytes each.
 //     Its values are read once a row by one lane each; q, k and P's head
 //     slices are read by the lanes of a head together, contiguous along i
 //     (GPU.2).
@@ -66,8 +68,7 @@ namespace bllm::kernels {
 //     shader's.
 //
 // Determinism (GDSA.2): run to run — every sum in the order above, each
-// lane's softmax over the same 12 scores in the same order, so a head's 16
-// lanes hold the same weights.
+// head's softmax one lane's, in j order.
 //
 // Accuracy, against f64 from the same inputs: a_j and b_j within γ(128) ×
 // Σ|terms|; the cap's tanh and the exponentials within WGSL's stated
@@ -80,7 +81,10 @@ namespace bllm::kernels {
 //   - Bytes: q once a row, 4 KB; k and v at 12 rows each, 96 KB a row from
 //     the GPU's caches — each row's keys are its 11 neighbours' too, so
 //     about 8 KB a row from memory; P 52 KB a layer, cached.
-//   - 1 barrier a workgroup; 12 launches a step.
+//   - Exponentials: 12 a head a row, 5.8 × 10⁵ a step at R = 500 —
+//     computed once each, where every lane of a head computing its own
+//     softmax would be 16 times as many.
+//   - 2 barriers a workgroup; 12 launches a step.
 // Optimization (practice): the window alone computed, where llama.cpp's
 // blocked form computes a chunk's 12 queries against 24 keys and 13
 // relative rows, then masks half: 2.4 times the scores, and a padded,
@@ -106,8 +110,8 @@ namespace bllm::kernels {
 //            to run.
 //     GPU.2  Shape data for coalesced lane access — a head's lanes read its
 //            slice together.
-//     GPU.8  Synchronize only where data crosses invocations — one barrier,
-//            the scores'.
+//     GPU.8  Synchronize only where data crosses invocations — two
+//            barriers, the scores' and the weights'.
 
 struct LocalAttentionLaunch {
     const residency::WeightView* per_dim_scale;   // F32, the head dimension's

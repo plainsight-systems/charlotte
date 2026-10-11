@@ -106,7 +106,7 @@ namespace bllm::runtime {
 //     its rows cross back once; the vector once an encode (WASM.2).
 //
 // What it costs, counted, for EmbeddingGemma 2 at Q8_0 and a 20 s clip, T =
-// 2,000, R = 500:
+// 1,999, R = 500:
 //   - Preparing, on the CPU: one crossing of 1.28 MB; the spectrogram, a
 //     few milliseconds (media/audio.h). It overlaps the GPU's work on the
 //     clip before, as an image's preparing does (GPU.7).

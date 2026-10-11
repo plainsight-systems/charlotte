@@ -234,13 +234,13 @@ post-norm, re-norm and unit gain.
 | Order of every block below, per audio encoder | `core/arch/<projector>` A, composing `core/graph/audio` A |
 | Step parameters: position 0, the rows, the clip's frames | `core/kernels/interface` contract · `core/runtime/audio` M |
 | The spectrogram written, the step launched, its rows copied to the text step; the setup run once | `core/kernels/program` D |
-| Working buffers: mel, subsampled, hidden, normed, query, key, value, attention, output, activation, pointwise, projected, soft tokens, positions, relative | declared by `core/graph/audio` A · placed by `core/residency/plan` D |
+| Working buffers: mel, subsampled, hidden, normed, query, key, value, attention, output, activation, projected, soft tokens, positions, relative | declared by `core/graph/audio` A · placed by `core/residency/plan` D |
 | **Subsample**: two strided convolutions, layer norms, ReLU | `core/kernels/subsample` E · `core/formats/f32` B |
 | **Norms**, each with the residual add, its post-norm and weight, and the layer's re-norm | `core/kernels/norm` E · `core/formats/f32` B |
-| **Products**, clamped to bounds beside each weight; SiLU on the feed-forward's up; the output's bias | `core/kernels/matmul` E · `core/formats/<format>` B · `core/residency/plan` D, its product spans |
+| **Products**, clamped to bounds beside each weight; SiLU on the feed-forward's up; the GLU of the first pointwise projection's halves; the output's bias | `core/kernels/matmul` E · `core/formats/<format>` B · `core/residency/plan` D, its product spans |
 | **Relative tables**, once at load | `core/kernels/matmul` E, the setup's products |
 | **Local attention**: each row and its 11 before, a term by distance, capped | `core/kernels/local_attention` E |
-| **Light convolution**: GLU, 5 rows back, norm, SiLU | `core/kernels/light_conv` E |
+| **Light convolution**: 5 rows back, norm, SiLU | `core/kernels/light_conv` E |
 | **Project** to the text width, after a norm without a gain | `core/kernels/norm` E · `core/kernels/matmul` E · `core/formats/<format>` B |
 
 ## Files that serve several boxes

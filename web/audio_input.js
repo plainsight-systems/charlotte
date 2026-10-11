@@ -25,7 +25,7 @@
 //     ⌊(i + 1) n / k⌋, so no clip is a sliver: a 25 s recording is two of
 //     12.5 s, not 20 and 5. Each clip a view of the recording, with its
 //     start and end in seconds for the result to show. mostSamples is the
-//     module's, from the companion's load (runtime/audio.h): 325,120 at a
+//     module's, from the companion's load (runtime/audio.h): 325,280 at a
 //     context of 512. A clip under 161 samples, which makes no frame, is
 //     only a recording that short, and the module refuses it by name.
 //   - Each clip crosses to the worker once, its samples copied out of the
@@ -41,7 +41,7 @@
 // 38 MB, and released after.
 //
 // Verification: tests/web/audio_input.test.js — clipsOf at n of 160, 161,
-// 325,120, 325,121 (two clips of 162,560 and 162,561), and 4,800,000 (15
+// 325,280, 325,281 (two clips of 162,640 and 162,641), and 4,800,000 (15
 // clips of 320,000), covering every sample once, in order, each at most
 // mostSamples; mono over 1 and 2 channels. In the app's Chromium, the four
 // fixture WAVs (tests/fixtures/audio/) decode to the samples the reference

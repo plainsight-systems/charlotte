@@ -251,8 +251,18 @@ namespace bllm::kernels {
 //     The split form clamps its input in split_ranges' staging and leaves
 //     the rest to combine_write, which clamps, biases and activates the
 //     total; the decode form does all three as Write does. The fused QKV
-//     and gated epilogues take none of them: an audio encoder's Q, K and V
-//     each have bounds of their own, and its feed-forward is not gated.
+//     epilogue takes none of them: an audio encoder's Q, K and V each have
+//     bounds of their own.
+//   And one form of the gated activation, for a Conformer's GLU: its two
+//   members the two halves of one weight — a member's first word and first
+//   row anywhere in a tensor, as the constants already give them — gate the
+//   rows W to 2W − 1 and up the rows 0 to W − 1, the activation a sigmoid:
+//   σ(b) × a, the GLU of the convolution module's first pointwise
+//   projection, written W wide. It takes `clipped`, both totals clamped to
+//   the weight's output bounds before the sigmoid and the product, as
+//   llama.cpp clamps the 2W outputs before its GLU; a gated product of two
+//   weights still takes none. The gated activation is never split, so the
+//   split form is unchanged.
 //     Constants: `clip: vec4<u32>`, the bounds' first words — in_min,
 //     in_max, out_min, out_max — and `bias: vec4<u32>`, the bias's first
 //     word then padding: 96 bytes for every launch, as gate_input's slot is

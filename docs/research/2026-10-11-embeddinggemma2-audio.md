@@ -158,7 +158,7 @@ separately.
 
 Charlotte's text encoder runs one step of at most 512 rows
 (`runtime/embedder.h`): the ends, `<|audio>`, `<audio|>` and R rows, so R ≤
-508, T ≤ 2,032 frames, n ≤ 325,120 samples: 20.32 s. A longer recording is
+508, T ≤ 2,032 frames, n ≤ 640 R + 160 = 325,280 samples: 20.33 s. A longer recording is
 more than one embedding however it's cut: Charlotte cuts it into pieces of
 equal length, each at most 20 s, and embeds each alone. llama.cpp would
 embed 30 s chunks, which don't fit; a 20 s piece is a valid input of the
@@ -204,12 +204,12 @@ them (`task: search result | query: …`) against clips embedded alone:
 
 ## What a clip costs here, derived
 
-For a 20 s piece: T = 2,000 frames, R = 500 rows, and a text step of about
-504 rows.
+For a 20 s piece: 320,000 samples, T = 1,999 frames, R = 500 rows, and a
+text step of about 504 rows.
 
 | | Multiply-adds |
 |---|---|
-| Subsampling, first convolution, 1,000 × 64 × 128 × 9 | 7.4 × 10⁷ |
+| Subsampling, first convolution, 1,000 × 64 × 128 × 9, computed three times over (`kernels/subsample`) | 2.2 × 10⁸ |
 | Subsampling, second, 500 × 32 × 32 × 1,152 | 5.9 × 10⁸ |
 | Input projection, 500 × 1,024² | 5.2 × 10⁸ |
 | 12 layers' products, 24.1 × 10⁶ a row a layer | 1.45 × 10¹¹ |
@@ -223,9 +223,10 @@ For a 20 s piece: T = 2,000 frames, R = 500 rows, and a text step of about
   query sees 12 keys, so the encoder is its matrix products.
 - The relative position term's projection, 13 positions × 1,024² a layer,
   depends on the weights alone: 1.6 × 10⁸ multiply-adds once, at load.
-- On the CPU, the spectrogram: 2,000 FFTs of 512, about 2,300 butterflies
-  each, and 128 sparse filters, about 0.5 × 10⁷ operations together: a few
-  milliseconds in the module.
+- On the CPU, the spectrogram: 1,999 FFTs of 512, 2,304 butterflies each
+  of about 10 scalar operations, a complex multiply and two complex adds;
+  257 magnitudes, about 514 filter terms and 128 logarithms a frame: about
+  5 × 10⁷ scalar operations, a few milliseconds in the module.
 - The text step after it, about 504 rows: about 45 ms, between the
   measured 39.2 ms at 418 tokens and the estimate at 512
   (`2026-10-11-chrome-encode-benchmark.md`).

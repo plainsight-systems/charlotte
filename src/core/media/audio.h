@@ -54,7 +54,10 @@ namespace bllm::media {
 // subsampling's two stride-2 convolutions, R = ⌈⌈T / 2⌉ / 2⌉ — 25 a second.
 // A clip's rows and the text's tokens are at most the context: for an audio
 // clip alone, R ≤ context − 4, the ends, `<|audio>` and `<audio|>` — 508 at
-// a context of 512, so T ≤ 2,032 frames and n ≤ 325,120 samples, 20.32 s.
+// a context of 512, so T ≤ 2,032 frames and n ≤ 640 R + 160 = 325,280
+// samples, 20.33 s: the frame formula above gives T = 4R for n up to
+// 160 (4R − 1) + 160 + 160, and 4R + 1 frames, one row more, from the next
+// sample.
 // A clip over its most rows is refused, TooLong, before a sample is read; the
 // page cuts a longer recording into pieces of at most clip_samples(most)
 // (web/audio_input.js).
@@ -66,7 +69,8 @@ namespace bllm::media {
 // What it costs, for a clip of T frames: T FFTs of 512, each 2,304
 // butterflies of a complex multiply and two adds; T × 257 magnitudes; the
 // filters' nonzero weights, about 2 × 257 a frame, T × 128 logs. At T =
-// 2,000, about 5 × 10⁷ operations: a few milliseconds in the module. The
+// 1,999, a 20 s clip, about 5 × 10⁷ scalar operations, a butterfly about
+// 10: a few milliseconds in the module. The
 // frames are read from the clip in place, windowed into one 512-float
 // buffer reused for every frame; the spectrogram is written once, into the
 // slot the caller sized at load. No allocation per clip.
@@ -83,7 +87,8 @@ namespace bllm::media {
 // Verification the implementation is held to:
 //   - The frame and row counts of llama.cpp's preprocessor and gemma4a's
 //     n_patches, over a table of lengths: 160 samples (none), 161, 320, 321,
-//     16,000, 48,000, 325,120 and 325,121 (one row past 508), held exactly
+//     16,000, 48,000, 325,280 (508 rows) and 325,281 (509, TooLong at a
+//     most of 508), held exactly
 //     (tests/media_audio_test.cpp).
 //   - Against the reference: tools/make_reference_audio.sh builds llama.cpp
 //     at the embeddings' pin with the gemma4a preprocessor's mel_floor_add
@@ -134,8 +139,9 @@ struct AudioClip {
 // its rows exceed `most_rows`. Pure.
 [[nodiscard]] AudioError audio_clip(std::uint64_t samples, std::uint32_t most_rows, AudioClip& out) noexcept;
 
-// The most samples a clip may hold for at most `most_rows` rows: 4 R frames,
-// 160 (4 R − 1) + 161 samples. Pure.
+// The most samples a clip may hold for at most `most_rows` rows R: 640 R +
+// 160, the last length whose frames make no more than 4 R. Pure.
+// Precondition: R at most 6,710,860, so the result fits 32 bits.
 [[nodiscard]] std::uint32_t clip_samples(std::uint32_t most_rows) noexcept;
 
 // The spectrogram's tables, built once, and its one frame buffer: one

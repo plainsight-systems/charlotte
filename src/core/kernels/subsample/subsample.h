@@ -69,7 +69,7 @@ namespace bllm::kernels {
 // a few units of f32 rounding times its row's spread, which the GPU test
 // measures; ReLU exact. A margin checked on the target, not a proof.
 //
-// What it costs, at T = 2,000 frames, R = 500:
+// What it costs, at T = 1,999 frames, R = 500, a 20 s clip:
 //   - `first`: 1,000 positions in time × 64 × 128 channels × 27
 //     multiply-adds, 2.2 × 10⁸; writes 33 MB once.
 //   - `second`: 500 × 32 × 32 × 1,152, 5.9 × 10⁸; reads 33 MB, each float
