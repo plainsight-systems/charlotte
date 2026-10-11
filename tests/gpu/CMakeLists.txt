@@ -13,8 +13,10 @@ add_executable(charlotte_gpu_tests
     profile_test.cpp
     reference_test.cpp
     attention_test.cpp
+    block_attention_test.cpp
     matmul_test.cpp
     norm_test.cpp
+    pool_test.cpp
     program_test.cpp
     rope_test.cpp
     mapping_test.cpp

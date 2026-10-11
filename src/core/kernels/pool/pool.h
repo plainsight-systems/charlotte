@@ -35,11 +35,12 @@ namespace bllm::kernels {
 //     workgroup memory, 8 levels, as kernels/norm/norm.h reduces a row; the
 //     inverse square root once; each invocation scales the vec4s it read.
 //
-//   - Variants are override constants — `width`, W or D — set on every
-//     launch, as WebKit requires
-//     (docs/research/2026-10-09-webkit-shader-compiler.md).
-//   - Constants (binding 1): none read; a launch binds its slot as every
-//     launch does (interface.h).
+//   - Constants (binding 1): struct Pool { vec4s: u32 }, the row's width over
+//     4 — a loop bound, not a workgroup array's size, so a uniform serves
+//     and one pipeline each for any width.
+//   - Both are launches over the last token (interface.h): one row's
+//     workgroups, one, in a step that asks for logits, as an encoder's
+//     one step does.
 //   - Bindings: `mean` 2 `normed`, read-only, and 3 `pooled`, written;
 //     `unit` 2 `projected`, read-only, and 3 `embedding`, written.
 //

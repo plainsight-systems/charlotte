@@ -61,6 +61,8 @@ add_library(charlotte_core STATIC
     src/core/kernels/matmul/matmul.cpp
     src/core/kernels/norm/norm.cpp
     src/core/kernels/attention/attention.cpp
+    src/core/kernels/block_attention/block_attention.cpp
+    src/core/kernels/pool/pool.cpp
     src/core/kernels/rope/rope.cpp
     src/core/kernels/schedule.cpp
     src/core/kernels/topk/topk.cpp
@@ -98,6 +100,8 @@ bllm_embed_shaders(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/matmul/matmul.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/norm/norm.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/attention/attention.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/block_attention/block_attention.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/pool/pool.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope_cache.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope_encode.wgsl"

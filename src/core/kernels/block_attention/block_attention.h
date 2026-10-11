@@ -43,7 +43,7 @@ namespace bllm::kernels {
 // The shape of the computation: two launches, the scores and then their
 // weighted sum, with the scores written out between them.
 //
-//   1. `scores`: S = Q Kᵀ × scale × log2(e), a tiled product of two
+//   1. `scores_of`: S = Q Kᵀ × scale × log2(e), a tiled product of two
 //      activation matrices. A workgroup takes one key-value head, a tile of
 //      32 query vectors — 32 / G rows × the G query heads sharing that
 //      key-value head, so a key is read once for its whole group — and one
@@ -59,10 +59,11 @@ namespace bllm::kernels {
 //      written to `scores`, S[h][i][j] for query head h, row i and key j, N
 //      floats a row, adjacent lanes adjacent keys; a masked one is written
 //      0.0 and never read as a score. Then each vector's maximum over the
-//      chunk's live keys: each invocation's over its 4, through 2 KiB of
-//      workgroup memory, and one invocation a vector folding the 16 —
-//      written to `score_maxima`, one float a (head, row, chunk); 0.0 for a
-//      chunk with no live key, which liveness, below, skips.
+//      chunk's live keys: each invocation's over its 4, with whether any was
+//      live, as two whole vec4s in the query slabs' workgroup memory, free
+//      once the products are done, and one invocation a vector folding the
+//      16 — written to `score_maxima`, one float a (head, row, chunk); 0.0
+//      for a chunk with no live key, which liveness, below, skips.
 //   2. `weigh`: out = Σ_j 2^(s_j − m) v_j / Σ_j 2^(s_j − m), m the row's
 //      maximum. A workgroup takes one key-value head, a tile of 32 query
 //      vectors, and 64 of the d output dimensions. First, one invocation a
@@ -71,8 +72,9 @@ namespace bllm::kernels {
 //      workgroup memory, and a barrier. Then it steps along the keys 32 at
 //      a time, staging the weights p = 2^(s − m), 0 for a key not live, 32
 //      vectors × 32 keys, 4 KiB, computed as they are staged, 8 exp2 an
-//      invocation; and the values' 64 dimensions of those 32 keys, 9 KiB
-//      padded. Its 128 invocations each own 4 vectors × 4 dimensions — a
+//      invocation; and the values' 64 dimensions of those 32 keys, 8 KiB,
+//      16 vec4s a key, which a read's 16 lanes take whole and its 8 groups
+//      of lanes share. Its 128 invocations each own 4 vectors × 4 dimensions — a
 //      vec4 of the output a vector — and add p × v for each key, in key
 //      order, into 4 vec4 accumulators, and each vector's p into its sum l,
 //      in the same order: the 16 invocations sharing a vector each keep the
@@ -80,6 +82,10 @@ namespace bllm::kernels {
 //      l, written to `attention` at query head h's columns of row i. Every
 //      row below N has a live key — itself — so l is never 0.
 //
+//   - A step is at position 0, as an encoder's one step is, so a row is its
+//     position: the scores launch's chunks are the step's own, ceil(N /
+//     64), which the program counts as a split's — key_chunks at position 0,
+//     with no window and no limit on the partial rows (kernels/interface.h).
 //   - Liveness — j < N and |i − j| <= h — is recomputed from positions
 //     wherever it is needed, never carried in a value: WGSL lets an
 //     implementation assume no infinities, and no finite sentinel lies
@@ -95,7 +101,7 @@ namespace bllm::kernels {
 //     the same shape at every d, so no workgroup array is sized by one.
 //   - Constants (binding 1): struct BlockAttention { half_window: u32,
 //     scale_log2e: f32 }, the layer's.
-//   - Bindings: `scores` binds 2 the queries and 3 the keys, read-only, and
+//   - Bindings: `scores_of` binds 2 the queries and 3 the keys, read-only, and
 //     4 the scores and 5 the maxima, written; `weigh` binds 2 the scores and
 //     3 the maxima and 4 the values, read-only, and 5 the attention buffer,
 //     written — two entry points of one module, their own declarations
@@ -137,10 +143,10 @@ namespace bllm::kernels {
 //   - Barriers: `scores` two a step along d and one for the maxima, 17 at d
 //     = 256 and 33 at 512; `weigh` one after the maxima and two a step of
 //     32 keys, 33 at N = 512.
-//   - Workgroup memory: `scores` 15 KiB, `weigh` 13.1 KiB, under WebGPU's
-//     default 16 KiB, which the harness keeps for cross-browser
+//   - Workgroup memory: `scores_of` 13 KiB, `weigh` 12.1 KiB, under
+//     WebGPU's default 16 KiB, which the harness keeps for cross-browser
 //     compatibility; WGSL zero-fills it, a store an invocation of each word,
-//     about 30 a launch's invocation.
+//     about 26 a launch's invocation.
 //   - Launches: 2 a layer, 48 an encode, about 72 µs at 1.5 µs.
 // Optimization (practice): a key-value head's keys and values read once for
 // its whole group of query heads, its G heads' vectors tiled together — as
@@ -181,11 +187,11 @@ namespace bllm::kernels {
 //
 // Verification the implementation is held to, on the GPU against f64 from
 // the same buffers: EmbeddingGemma 2's two layer shapes, d = 256 with G = 2
-// and d = 512 with G = 4; N of 2, 31, 32, 33, 64, 65 and 512; a window
-// narrower than the step, so keys either side are masked, at rows near both
-// ends; every output within the margin; the same step run twice giving the
-// same bits. On the CPU: each launch's workgroups, bindings and overrides,
-// and the half window from the layer's.
+// and d = 512 with G = 4; N of 2, 31, 33, 64, 65 and 130, and 512 for the
+// first; windows of 32 and 1,024 beside a full layer's, so keys either side
+// are masked; every output within the margin; the same step run twice
+// giving the same bits. Each launch's entry point, split and workgroups at
+// 65 and 512 tokens.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -223,7 +229,7 @@ struct BlockAttentionLaunch {
 // The layer's scores launch and its weigh launch, in that order.
 // Preconditions: the head dimension is a multiple of 64, at most 512; the
 // query heads a key-value head serves divide 32; the buffers are the plan's,
-// sized for kPrefillBlock rows.
+// sized for kPrefillBlock rows; every step is at position 0.
 [[nodiscard]] std::array<Launch, 2> block_attention_launches(const BlockAttentionLaunch& attention);
 
 }  // namespace bllm::kernels
