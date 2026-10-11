@@ -134,6 +134,7 @@ add_library(charlotte_gpu STATIC
     src/core/runtime/runtime.cpp
     src/core/runtime/generator.cpp
     src/core/runtime/embedder.cpp
+    src/core/runtime/vision.cpp
 )
 target_link_libraries(charlotte_gpu PUBLIC charlotte_core)
 # Not compiled at all in a clean build (upload_check.h, TLM.8).

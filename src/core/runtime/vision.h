@@ -7,10 +7,7 @@
 
 #include "core/kernels/program.h"
 #include "core/media/image.h"
-
-namespace bllm::kernels {
-class ProgramLink;   // kernels/program.h, as this design asks of it
-}
+#include "core/tokenizer/tokenizer.h"
 
 namespace bllm::runtime {
 
@@ -167,17 +164,23 @@ namespace bllm::runtime {
 //     as a PNG under tests/fixtures/vision/ with its source and license — alone,
 //     and one with a caption around its placeholder. It keeps, as fixtures:
 //     the grid sizes over a table of sizes and each image's resampled bytes
-//     (media/image.h); each image's soft tokens; and each embedding. Each of
-//     Charlotte's soft tokens and embeddings within the largest difference
-//     llama.cpp shows between its own two backends of Metal's, and its
-//     cosine with Metal's at least the CPU's with Metal's, as embedder.h's
-//     check is. The check discriminates: the axial rotation's axes swapped,
-//     and the feed-forward run with GELU-quick, each fall outside.
+//     (media/image.h), and each embedding. Each of
+//     Charlotte's embeddings within the largest difference llama.cpp shows
+//     between its own two backends of Metal's, and its cosine with Metal's
+//     at least the CPU's with Metal's, as embedder.h's check is
+//     (tests/gpu/vision_embed_test.cpp). The check discriminates: the
+//     encoder run with SiLU in its feed-forward falls outside on every
+//     image. It cannot tell GELU's tanh form from llama.cpp's GELU-quick:
+//     llama.cpp's own CPU and Metal disagree more (cosine 0.99971 to
+//     0.99996) than the two activations do (0.99976 to 0.99997), so the
+//     activation rests on Google's config (arch/gemma4v), and the fixture
+//     records the GELU-quick cosine beside each image.
 //   - The tokens: each fixture text's identifiers, the image tokens placed,
 //     as llama.cpp's server tokenized them.
 //   - On the GPU: the same image embedded twice gives the same bits, and
 //     the same when prepared while another encodes; a text encode after an
 //     image's gives the bits a fresh embedder gives; each refusal named.
+//   - Each of the four scenes' queries ranks its own scene first, natively.
 //   - In the app's Chromium, the page: each of the fixtures' four queries
 //     ranks its own photograph first among the four and the search
 //     fixture's paragraphs (web/search.js).
@@ -213,26 +216,45 @@ struct ImageSlot {
     SlotState state = SlotState::Empty;
 };
 
+// The text model's tokens an image's rows stand among, resolved at load from
+// its vocabulary by text: the placeholder a text writes, and llama.cpp's
+// img_beg and img_end for gemma4v around the rows.
+struct ImageTokens {
+    tokenizer::TokenId placeholder;   // "<|image|>"
+    tokenizer::TokenId begin;         // "<|image>"
+    tokenizer::TokenId end;           // "<image|>"
+};
+
 // The vision encoder, loaded beside the text model, and its slot.
 class Vision {
 public:
     // Preconditions: `program` was built from the vision encoder's graph,
-    // with no readback, and `link` copies its `soft_tokens` into the text
-    // program's `hidden`; `budget` is the policy's; `patch` and `pooling`
-    // the encoder's (model_description.h).
+    // with no readback; `link` copies its `soft_tokens` into the text
+    // program's `hidden`; `pixels` is its plan's `pixels`; `budget` the
+    // policy's; `patch` and `pooling` the encoder's (model_description.h).
     Vision(std::unique_ptr<kernels::Program> program, std::unique_ptr<kernels::ProgramLink> link,
-           media::ImageBudget budget, std::uint32_t patch, std::uint32_t pooling);
+           kernels::Binding pixels, media::ImageBudget budget, std::uint32_t patch, std::uint32_t pooling);
 
     // Starts an image of `width` × `height` in the slot, discarding whatever
     // it held: its grid, or the image's refusal. May be called at any time:
-    // an encode's start() writes the slot's patches to the GPU before it
-    // returns, so no encode holds the slot after.
+    // run() writes the slot's patches to the GPU before it returns, so no
+    // encode holds the slot after.
     [[nodiscard]] media::ImageError begin(std::uint32_t width, std::uint32_t height);
 
     // The next band of the slot's image; the last band writes its patches.
     [[nodiscard]] media::ImageError rows(std::uint32_t first_row, std::span<const std::uint8_t> rgba);
 
-    [[nodiscard]] const ImageSlot& slot() const noexcept;
+    [[nodiscard]] const ImageSlot& slot() const noexcept { return slot_; }
+
+    // The soft tokens the slot's image becomes, or 0 when it is not ready.
+    [[nodiscard]] std::uint32_t ready_tokens() const noexcept;
+
+    // Submits the vision step over the slot's patches — its grid's columns,
+    // its patches written into `pixels` — and empties the slot.
+    // Precondition: ready_tokens() > 0.
+    void run(kernels::StepCallback done, void* userdata);
+
+    [[nodiscard]] const kernels::ProgramLink& link() const noexcept { return *link_; }
 
     ~Vision();
     Vision(const Vision&) = delete;
@@ -241,6 +263,7 @@ public:
 private:
     std::unique_ptr<kernels::Program> program_;
     std::unique_ptr<kernels::ProgramLink> link_;
+    kernels::Binding pixels_;
     ImageSlot slot_;
     media::ImageBudget budget_;
     std::uint32_t patch_;

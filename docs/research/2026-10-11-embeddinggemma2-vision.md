@@ -125,12 +125,8 @@ the activation, and `gemma4v.cpp` passes `hparams.ffn_op` to `build_vit`.
 
 So by reading the code, llama.cpp at the pin runs this vision encoder's
 feed-forward with GELU-quick where the model was trained with GELU's tanh
-form. The two differ by up to 0.021 (at x ≈ −2.29), about 1 to 2% of the
-activation over the range that matters, in every one of 16 layers: far
-outside the spread between llama.cpp's own backends that Charlotte's
-reference tests take as their tolerance. This is from reading, not running;
-the reference tool confirms it when it is built, by embedding one image both
-ways.
+form. The two differ by up to 0.021 an activation (at x ≈ −2.29), about 1
+to 2% over the range that matters, in every one of 16 layers.
 
 What follows for Charlotte:
 
@@ -139,10 +135,15 @@ What follows for Charlotte:
 - Its oracle is llama.cpp run on a copy of the mmproj whose header adds
   `clip.use_gelu = true`: the same weights, Google's activation, so the
   comparison is still against llama.cpp's own two backends' spread.
-- Once, while the reference tool is built, the corrected llama.cpp's
-  embedding of an image is checked against Google's transformers
-  implementation of the same image, to confirm that the correction is the
-  only one; that figure belongs in this note when it exists.
+- Run, the difference is small in the final vector. On Metal, each fixture
+  image's embedding with GELU-quick has a cosine of 0.99976 to 0.99997 with
+  its embedding with GELU's tanh form (tests/fixtures/reference/
+  vision_embeddings.inc). llama.cpp's own CPU and Metal backends disagree
+  more on the same images, cosines 0.99971 to 0.99996, so a check against
+  their spread cannot tell the two activations apart; Charlotte follows
+  Google's config, and its embeddings differ from Metal's by at most
+  2.2 × 10⁻⁴ a component, against 1.3 to 3.3 × 10⁻³ between llama.cpp's
+  backends.
 
 ## llama.cpp as the oracle for an image and text together
 

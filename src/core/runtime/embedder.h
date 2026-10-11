@@ -8,6 +8,7 @@
 
 #include "core/kernels/program.h"
 #include "core/runtime/ends.h"
+#include "core/runtime/vision.h"
 #include "core/tokenizer/tokenizer.h"
 
 namespace bllm::runtime {
@@ -208,6 +209,8 @@ enum class EmbedError {
     NonFinite,        // a component of the vector is not finite
     Step,             // the step failed; the message is WebGPU's
     Cancelled,        // the embedder was destroyed with the encode in flight
+    ImageNotReady,    // an image asked for, and none prepared, or no vision encoder loaded
+    Placeholder,      // with an image, the text holds `<|image|>` other than once; without, at all
 };
 
 // An encode's outcome. `tokens` is what the text made with its ends, or, for
@@ -244,6 +247,21 @@ public:
     // running anything, and then `done` is never called. `text` is not read
     // after the call.
     [[nodiscard]] EmbedResult start(std::string_view text, EmbedCallback done, void* userdata);
+
+    // Starts an encode of `text` with the vision encoder's prepared image
+    // where `text` writes `<|image|>`, once (runtime/vision.h): the vision
+    // step and the text step submitted together, the image's rows copied
+    // between them. Refuses, besides start()'s, ImageNotReady and
+    // Placeholder. With `image` false, as start(text, …).
+    [[nodiscard]] EmbedResult start(std::string_view text, bool image, EmbedCallback done, void* userdata);
+
+    // The vision encoder, once its companion has loaded: its tokens in this
+    // model's vocabulary and the hidden width its rows are. Released with
+    // the embedder, or by attach(nullptr, …).
+    void attach(std::unique_ptr<Vision> vision, ImageTokens tokens, std::uint32_t width);
+
+    // The vision encoder attached, or null.
+    [[nodiscard]] Vision* vision() noexcept;
 
     // The most tokens one encode holds, its ends included.
     [[nodiscard]] std::uint32_t context() const noexcept;

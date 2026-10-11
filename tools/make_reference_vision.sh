@@ -29,3 +29,16 @@ cmake --build .cache/reference_vision --target reference_vision
 mkdir -p tests/fixtures/reference
 .cache/reference_vision/reference_vision prepare ".cache/test-data/models/$MMPROJ.gguf" "$LLAMA_COMMIT" "$SHA256" \
     > tests/fixtures/reference/vision_prepare.inc
+
+# The embeddings: tests/fixtures/reference/vision_embeddings.inc, for
+# tests/gpu/vision_embed_test.cpp (runtime/vision.h). llama.cpp is given a
+# copy of the mmproj with clip.use_gelu set, so it computes the activation
+# the model was trained with (arch/gemma4v); the published file is given too,
+# for the cosine the fixture records beside each image.
+MODEL=embeddinggemma-2-q8_0
+MODEL_SHA256=2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135
+PATCHED=.cache/reference_vision/$MMPROJ-use-gelu.gguf
+python3 tools/gguf_add_bool.py ".cache/test-data/models/$MMPROJ.gguf" "$PATCHED" clip.use_gelu true
+.cache/reference_vision/reference_vision embed ".cache/test-data/models/$MODEL.gguf" "$PATCHED" \
+    ".cache/test-data/models/$MMPROJ.gguf" "$LLAMA_COMMIT" "$MODEL_SHA256" "$SHA256" \
+    > tests/fixtures/reference/vision_embeddings.inc

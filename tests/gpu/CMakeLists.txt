@@ -11,6 +11,7 @@ add_executable(charlotte_gpu_tests
     runtime_test.cpp
     generator_test.cpp
     embedder_test.cpp
+    vision_embed_test.cpp
     profile_test.cpp
     reference_test.cpp
     attention_test.cpp

@@ -4,6 +4,8 @@
 // harness.
 //
 //     reference_vision prepare <mmproj.gguf> <llama.cpp commit> <mmproj sha256>
+//     reference_vision embed <model.gguf> <mmproj, clip.use_gelu set> <mmproj as published>
+//                            <llama.cpp commit> <model sha256> <mmproj sha256>
 //
 // The mmproj is loaded as llama.cpp loads it, with the card's default
 // budget, 280 tokens at most, and llama.cpp's own least, 70. Each image of
@@ -13,11 +15,24 @@
 // with the padding gemma4v uses, and its floats, x / 255. The bytes are
 // recovered from the floats, exactly, and kept as their FNV-1a hash with
 // the grid. A table of further sizes keeps the grid alone.
+//
+// embed: each item's unit-length embedding on llama.cpp's CPU and on Metal,
+// mean-pooled and L2-normalized, as the text reference's are. An image's
+// rows come from the mmproj llama.cpp is given with clip.use_gelu set, so it
+// computes the activation the model was trained with (arch/gemma4v); the
+// sequence is built as llama.cpp's multimodal path builds it for gemma4v —
+// the file's ends, the text before the image, `<|image>`, the image's rows,
+// `<image|>`, the text after — and run as one batch of tokens and rows
+// mixed, so every row attends to every other, as its server runs one. On
+// Metal, each image is embedded again from the mmproj as published, and the
+// cosine between the two written beside it: what llama.cpp's default
+// activation costs.
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <string>
 #include <vector>
@@ -25,7 +40,9 @@
 #include "clip-impl.h"
 #include "clip-model.h"
 #include "clip.h"
+#include "llama.h"
 #include "mtmd-image.h"
+#include "mtmd.h"
 #include "tests/fixtures/vision/scenes.h"
 
 namespace {
@@ -142,10 +159,226 @@ int prepare(const char* mmproj, const char* commit, const char* sha256) {
     return 0;
 }
 
+// One item to embed: a text, and where it holds an image, the scene, the text
+// before it and the text after.
+struct Item {
+    const char* name;
+    const char* scene;    // nullptr for a text alone
+    const char* before;
+    const char* after;
+};
+
+constexpr Item kItems[] = {
+    {"red_circle", "red_circle", "", ""},
+    {"blue_square", "blue_square", "", ""},
+    {"green_stripes", "green_stripes", "", ""},
+    {"black_diagonal", "black_diagonal", "", ""},
+    {"noise_1200x900", "noise_1200x900", "", ""},
+    {"captioned", "red_circle", "title: none | text: A drawing ", " on white paper."},
+    {"query_red_circle", nullptr, "task: search result | query: a red circle", ""},
+    {"query_blue_square", nullptr, "task: search result | query: a blue square on yellow", ""},
+    {"query_green_stripes", nullptr, "task: search result | query: green and white stripes", ""},
+    {"query_black_diagonal", nullptr, "task: search result | query: a black diagonal line", ""},
+};
+
+struct Embedding {
+    std::vector<llama_token> before;   // the ends and the text before the image's rows
+    std::uint32_t rows = 0;            // the image's rows
+    std::vector<llama_token> after;
+    std::vector<float> vector;
+};
+
+struct Backend {
+    llama_model* model;
+    llama_context* context;
+    mtmd_context* vision;
+};
+
+Backend open_backend(const char* model_path, const char* mmproj, bool cpu) {
+    llama_model_params mp = llama_model_default_params();
+    static ggml_backend_dev_t no_devices[] = {nullptr};
+    if (cpu) {
+        mp.devices = no_devices;
+        mp.n_gpu_layers = 0;
+    } else {
+        mp.n_gpu_layers = -1;
+    }
+    llama_model* model = llama_model_load_from_file(model_path, mp);
+    if (model == nullptr) std::exit(1);
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = 512;
+    cp.n_batch = 512;
+    cp.n_ubatch = 512;
+    cp.embeddings = true;
+    if (cpu) {
+        cp.offload_kqv = false;
+        cp.op_offload = false;
+    }
+    llama_context* context = llama_init_from_model(model, cp);
+    if (context == nullptr) std::exit(1);
+    mtmd_context_params vp = mtmd_context_params_default();
+    vp.use_gpu = !cpu;
+    vp.warmup = false;
+    vp.image_min_tokens = kLeast;
+    vp.image_max_tokens = kMost;
+    mtmd_context* vision = mtmd_init_from_file(mmproj, model, vp);
+    if (vision == nullptr) std::exit(1);
+    return {model, context, vision};
+}
+
+std::vector<llama_token> tokens_of(const llama_vocab* vocab, const std::string& text) {
+    std::vector<llama_token> tokens(text.size() + 8);
+    const int n = llama_tokenize(vocab, text.data(), static_cast<int>(text.size()), tokens.data(),
+                                 static_cast<int>(tokens.size()), false, true);
+    if (n < 0) std::exit(1);
+    tokens.resize(n);
+    return tokens;
+}
+
+// The scene's rows from the vision encoder: its image chunk encoded.
+std::vector<float> image_rows(mtmd_context* vision, const Scene& scene, std::uint32_t& rows) {
+    std::vector<unsigned char> rgb(static_cast<std::size_t>(scene.width) * scene.height * 3);
+    for (std::uint32_t y = 0; y < scene.height; ++y) {
+        for (std::uint32_t x = 0; x < scene.width; ++x) {
+            for (std::uint32_t c = 0; c < 3; ++c) rgb[(static_cast<std::size_t>(y) * scene.width + x) * 3 + c] = pixel(scene, x, y, c);
+        }
+    }
+    mtmd_bitmap* bitmap = mtmd_bitmap_init(scene.width, scene.height, rgb.data());
+    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    const mtmd_bitmap* bitmaps[] = {bitmap};
+    const char* marker = mtmd_get_marker(vision);
+    mtmd_input_text text{marker, std::strlen(marker), false, true};
+    if (mtmd_tokenize(vision, chunks, &text, bitmaps, 1) != 0) std::exit(1);
+    std::vector<float> out;
+    for (std::size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
+        const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks, i);
+        if (mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_IMAGE) continue;
+        if (mtmd_encode_chunk(vision, chunk) != 0) std::exit(1);
+        rows = static_cast<std::uint32_t>(mtmd_input_chunk_get_n_tokens(chunk));
+        const float* embd = mtmd_get_output_embd(vision);
+        out.assign(embd, embd + static_cast<std::size_t>(rows) * 512);
+    }
+    mtmd_input_chunks_free(chunks);
+    mtmd_bitmap_free(bitmap);
+    if (rows == 0) std::exit(1);
+    return out;
+}
+
+const Scene* scene_named(const char* name) {
+    for (const Scene& s : kScenes) {
+        if (s.name == name) return &s;
+    }
+    return nullptr;
+}
+
+Embedding embed_item(const Backend& b, const Item& item) {
+    const llama_vocab* vocab = llama_model_get_vocab(b.model);
+    Embedding e;
+    if (llama_vocab_get_add_bos(vocab)) e.before.push_back(llama_vocab_bos(vocab));
+    for (const llama_token t : tokens_of(vocab, item.before)) e.before.push_back(t);
+    std::vector<float> rows;
+    if (item.scene != nullptr) {
+        for (const llama_token t : tokens_of(vocab, "<|image>")) e.before.push_back(t);
+        rows = image_rows(b.vision, *scene_named(item.scene), e.rows);
+        for (const llama_token t : tokens_of(vocab, "<image|>")) e.after.push_back(t);
+    }
+    for (const llama_token t : tokens_of(vocab, item.after)) e.after.push_back(t);
+    if (llama_vocab_get_add_eos(vocab)) e.after.push_back(llama_vocab_eos(vocab));
+
+    llama_memory_clear(llama_get_memory(b.context), true);
+    llama_batch_ext* batch = llama_batch_ext_init(b.context);
+    llama_pos pos = 0;
+    const auto place = [&](int32_t index) {
+        if (index < 0) std::exit(1);
+        llama_batch_ext_set_pos(batch, index, &pos);
+        llama_batch_ext_set_output_embd(batch, index, true);
+        ++pos;
+    };
+    for (const llama_token t : e.before) place(llama_batch_ext_add_token(batch, 0, t));
+    for (std::uint32_t r = 0; r < e.rows; ++r) {
+        place(llama_batch_ext_add_embd(batch, 0, llama_embd{rows.data() + static_cast<std::size_t>(r) * 512, 1, 512}));
+    }
+    for (const llama_token t : e.after) place(llama_batch_ext_add_token(batch, 0, t));
+    if (llama_process(b.context, LLAMA_PROCESS_TYPE_DECODE, batch) != 0) std::exit(1);
+    const int n = llama_model_n_embd_out(b.model);
+    const float* pooled = llama_get_embeddings_seq(b.context, 0);
+    if (pooled == nullptr) std::exit(1);
+    e.vector.assign(pooled, pooled + n);
+    llama_batch_ext_free(batch);
+    double sum = 0;
+    for (const float v : e.vector) sum += static_cast<double>(v) * v;
+    const float scale = sum > 0 ? static_cast<float>(1.0 / std::sqrt(sum)) : 0.0f;
+    for (float& v : e.vector) v *= scale;
+    return e;
+}
+
+void print_floats(const std::vector<float>& v) {
+    std::printf("{");
+    for (std::size_t i = 0; i < v.size(); ++i) std::printf("%s%af", i ? ", " : "", v[i]);
+    std::printf("}");
+}
+
+void print_tokens(const std::vector<llama_token>& t) {
+    std::printf("{");
+    for (std::size_t i = 0; i < t.size(); ++i) std::printf("%s%d", i ? ", " : "", t[i]);
+    std::printf("}");
+}
+
+int embed(const char* model, const char* patched, const char* published, const char* commit, const char* model_sha,
+          const char* mmproj_sha) {
+    llama_backend_init();
+    const Backend cpu = open_backend(model, patched, true);
+    const Backend metal = open_backend(model, patched, false);
+    const Backend quick = open_backend(model, published, false);
+
+    std::printf("// Generated by tools/make_reference_vision.sh. Do not edit.\n");
+    std::printf("// llama.cpp %s, CPU and Metal, the model of SHA-256 %s and the mmproj of SHA-256\n", commit, model_sha);
+    std::printf("// %s with clip.use_gelu set; budget %d to %d tokens an image. Each item: its\n", mmproj_sha, kLeast, kMost);
+    std::printf("// name, its scene or none, its text before and after the image, the tokens before the\n");
+    std::printf("// image's rows (the ends and <|image> among\n");
+    std::printf("// them), its rows, the tokens after, and its unit-length embedding on Metal and on the CPU.\n");
+    std::printf("inline const VisionReference kVisionReferences[] = {\n");
+    for (const Item& item : kItems) {
+        const Embedding m = embed_item(metal, item), c = embed_item(cpu, item);
+        if (m.before != c.before || m.after != c.after || m.rows != c.rows) {
+            std::fprintf(stderr, "%s: the backends built different sequences\n", item.name);
+            return 1;
+        }
+        if (item.scene != nullptr) {
+            const Embedding q = embed_item(quick, item);
+            double dot = 0;
+            for (std::size_t i = 0; i < m.vector.size(); ++i) dot += static_cast<double>(m.vector[i]) * q.vector[i];
+            std::printf("    // %s: cosine with llama.cpp's default activation, GELU-quick, on Metal: %.6f\n", item.name, dot);
+        }
+        std::printf("    {\"%s\", \"%s\", R\"REF(%s)REF\", R\"REF(%s)REF\", ", item.name,
+                    item.scene != nullptr ? item.scene : "", item.before, item.after);
+        print_tokens(m.before);
+        std::printf(", %u, ", m.rows);
+        print_tokens(m.after);
+        std::printf(", ");
+        print_floats(m.vector);
+        std::printf(", ");
+        print_floats(c.vector);
+        std::printf("},\n");
+        std::fprintf(stderr, "%s: %zu tokens, %u rows\n", item.name, m.before.size() + m.after.size(), m.rows);
+    }
+    std::printf("};\n");
+    for (const Backend* b : {&cpu, &metal, &quick}) {
+        mtmd_free(b->vision);
+        llama_free(b->context);
+        llama_model_free(b->model);
+    }
+    llama_backend_free();
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc == 5 && std::string(argv[1]) == "prepare") return prepare(argv[2], argv[3], argv[4]);
-    std::fprintf(stderr, "usage: reference_vision prepare <mmproj.gguf> <llama.cpp commit> <mmproj sha256>\n");
+    if (argc == 8 && std::string(argv[1]) == "embed") return embed(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]);
+    std::fprintf(stderr, "usage: reference_vision prepare <mmproj.gguf> <llama.cpp commit> <mmproj sha256>\n"
+                         "       reference_vision embed <model.gguf> <patched mmproj> <published mmproj> <commit>"
+                         " <model sha256> <mmproj sha256>\n");
     return 2;
 }
