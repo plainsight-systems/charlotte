@@ -8,8 +8,8 @@ import { h } from './dom.js';
 const NOTICES = {
   mobile: {
     heading: 'Charlotte runs on phones experimentally.',
-    detail: "It's a tech demo of WebGPU, built for desktop Chrome and Edge. On a phone it runs " +
-            "Qwen3 0.6B with a short context, and the larger models don't fit. Expect rough edges.",
+    detail: "It's a tech demo of WebGPU, built for desktop Chrome and Edge. Memory is tight on a phone, " +
+            "so not every model will work here. When one won't, the page tells you why. Expect rough edges.",
   },
   browser: {
     heading: 'Charlotte was built for Chrome and Edge on desktop.',
