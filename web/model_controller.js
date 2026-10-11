@@ -113,11 +113,11 @@ export function createModelController({
         });
       const cancel = () => client.request(Request.CANCEL, { target: id }).catch(() => {});
       signal.addEventListener('abort', cancel, { once: true });
-      const { check } = await reply;
+      const { check, contextOffered, embeddingLength } = await reply;
       signal.removeEventListener('abort', cancel);
       if (signal.aborted) return;
       show({ phase: 'loaded', model, verdict, check });
-      onLoaded(model, verdict);
+      onLoaded(model, verdict, { contextOffered, embeddingLength });
     } catch (error) {
       if (!signal.aborted) show({ phase: 'failed', model, action: 'load', error });
     }

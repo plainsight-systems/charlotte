@@ -6,19 +6,22 @@
 // passages are ranked by their vectors' dot product with the query's, the
 // best five shown with their scores.
 //
-// createSearch(root, { embed, onSearch, onChooseModel }) returns
+// createSearch(root, { embed, onSearch }) returns
 // { open(model, loaded), close() }. `embed(text)` sends one EMBED and
 // returns its reply, { vector, tokens }; `loaded` is the load's answer,
 // { contextOffered, embeddingLength }, which the panel's heading states:
 // "768 numbers a text, up to 512 tokens". `onSearch(step, detail)`, if
 // given, follows the indexing and each query for the diagnostics
-// (diagnostics_recorder.js).
+// (diagnostics_recorder.js): 'indexing', 'progress' with "12 of 40",
+// 'querying', then 'done', 'stopped', or 'failed' with its message. close()
+// leaves the panel empty; the page shows the chat's empty state (app.js).
 //
 //   - Passages are the document's paragraphs (passages.js), each written
 //     into the model's document prompt (task_prompt.js) and sent as one
 //     EMBED, in order, one at a time: the embedder runs one encode at a time
 //     and refuses a second, Busy, so the panel waits for each answer before
-//     sending the next. A passage refused as "text-too-long" is cut from the
+//     sending the next — after Stop too, so embedding again never meets the
+//     stopped run's last encode still running. A passage refused as "text-too-long" is cut from the
 //     counts its refusal carries (passages.js) and its pieces sent in its
 //     place; a refusal costs an encode on the CPU and no step.
 //   - The index is built whole or not at all. Any other failure, or Stop,
@@ -98,3 +101,191 @@
 // screen, in iOS Safari under
 // ?fake-runtime=embedder (dev/fake_runtime.js), the panel with the
 // on-screen keyboard up.
+
+import { h } from './dom.js';
+import { passagesOf, piecesOf } from './passages.js';
+import { createIndex } from './search_index.js';
+import { taskPrompt } from './task_prompt.js';
+
+const kResults = 5;
+
+export function createSearch(root, { embed, onSearch }) {
+  let active = null;
+
+  const close = () => {
+    if (active !== null) active.closed = true;
+    active = null;
+    root.replaceChildren();
+  };
+
+  const open = (model, loaded) => {
+    close();
+    active = { closed: false };
+    root.replaceChildren(searchPanel(model, loaded, active, { embed, onSearch }));
+  };
+
+  return { open, close };
+}
+
+function searchPanel(model, { contextOffered, embeddingLength }, session, { embed: request, onSearch }) {
+  const prompts = model.prompts ?? null;
+  // Each EMBED waits for the one before to answer, even one whose run was
+  // stopped: the embedder refuses a second while one runs.
+  let previous = Promise.resolve();
+  const embed = (text) => {
+    const reply = previous.then(() => request(text));
+    previous = reply.catch(() => {});
+    return reply;
+  };
+  // The index once built; the indexing running, if one is; a query running.
+  let ready = null;
+  let indexing = null;
+  let querying = false;
+
+  const documentInput = h('textarea', { rows: 5, 'aria-label': 'Document',
+    placeholder: 'Paste a document. Each paragraph, between blank lines, becomes a passage.' });
+  const documentFacts = h('span', { className: 'message-facts' });
+  const indexButton = h('button', { type: 'submit', className: 'action primary', text: 'Embed passages' });
+  const queryInput = h('input', { type: 'search', 'aria-label': 'Query', placeholder: 'Search the passages' });
+  const queryButton = h('button', { type: 'submit', className: 'action primary', text: 'Search' });
+  const error = h('p', { className: 'chat-error', 'aria-live': 'assertive' });
+  const results = h('ol', { className: 'search-results', 'aria-live': 'polite' });
+  const queryFacts = h('p', { className: 'message-facts' });
+
+  const settle = () => {
+    indexButton.textContent = indexing === null ? 'Embed passages' : 'Stop';
+    indexButton.disabled = querying;
+    queryButton.disabled = ready === null || indexing !== null || querying;
+  };
+
+  const clearResults = () => {
+    results.replaceChildren();
+    queryFacts.textContent = '';
+  };
+
+  // Whether a run's answer still counts: the panel open, the run current.
+  const current = (run) => !session.closed && indexing === run;
+
+  const index = async () => {
+    const passages = passagesOf(documentInput.value);
+    error.textContent = '';
+    if (passages.length === 0) {
+      error.textContent = 'The document has no paragraphs to embed.';
+      return;
+    }
+    const run = {};
+    indexing = run;
+    ready = null;
+    clearResults();
+    documentFacts.textContent = `0 of ${passages.length} passages embedded`;
+    settle();
+    const built = createIndex(embeddingLength);
+    const queue = [...passages];
+    let tokens = 0;
+    const started = performance.now();
+    onSearch?.('indexing');
+    try {
+      while (queue.length > 0) {
+        const passage = queue.shift();
+        let reply;
+        try {
+          reply = await embed(taskPrompt(prompts, 'document', passage));
+        } catch (failure) {
+          if (!current(run)) return;
+          // Longer than the context: its pieces go in its place.
+          const pieces = failure.code === 'text-too-long' ? piecesOf(passage, failure.counts) : null;
+          if (pieces === null) throw failure;
+          queue.unshift(...pieces);
+          continue;
+        }
+        if (!current(run)) return;
+        built.add(passage, reply.vector);
+        tokens += reply.tokens;
+        const progress = `${built.size()} of ${built.size() + queue.length}`;
+        documentFacts.textContent = `${progress} passages embedded`;
+        onSearch?.('progress', progress);
+      }
+      ready = built;
+      const seconds = (performance.now() - started) / 1000;
+      documentFacts.textContent =
+        `${built.size()} passages embedded · ${tokens} tokens · ${seconds.toFixed(2)} s`;
+      onSearch?.('done');
+    } catch (failure) {
+      if (!current(run)) return;
+      documentFacts.textContent = 'Nothing kept.';
+      error.textContent = failure.message;
+      onSearch?.('failed', failure.message);
+    } finally {
+      if (indexing === run) indexing = null;
+      if (!session.closed) settle();
+    }
+  };
+
+  // Stop, or an edit: whatever was embedded goes, and an answer still on
+  // its way finds its run gone.
+  const discard = (fact) => {
+    if (indexing !== null) onSearch?.('stopped');
+    indexing = null;
+    ready = null;
+    clearResults();
+    documentFacts.textContent = fact;
+    settle();
+  };
+
+  const search = async () => {
+    const text = queryInput.value.trim();
+    if (text === '' || ready === null || indexing !== null || querying) return;
+    const ranking = ready;
+    querying = true;
+    error.textContent = '';
+    settle();
+    const started = performance.now();
+    onSearch?.('querying');
+    try {
+      const { vector, tokens } = await embed(taskPrompt(prompts, 'query', text));
+      if (session.closed || ready !== ranking) return;
+      const milliseconds = performance.now() - started;
+      results.replaceChildren(...ranking.rank(vector, kResults).map(({ passage, score }) =>
+        h('li', {}, h('span', { className: 'score', text: score.toFixed(3) }), h('p', { text: passage }))));
+      queryFacts.textContent = `${tokens} tokens · ${milliseconds.toFixed(1)} ms · ${ranking.size()} passages ranked`;
+      onSearch?.('done');
+    } catch (failure) {
+      if (session.closed) return;
+      const message = failure.code === 'text-too-long'
+        ? `The query is ${failure.counts.textTokens} tokens, past the context's ${failure.counts.contextTokens}; ` +
+          'a query is not cut.'
+        : failure.message;
+      error.textContent = message;
+      onSearch?.('failed', message);
+    } finally {
+      querying = false;
+      if (!session.closed) settle();
+    }
+  };
+
+  documentInput.addEventListener('input', () => {
+    if (indexing !== null || ready !== null) discard('Edited: embed the passages again.');
+  });
+
+  const documentForm = h('form', { className: 'composer', onsubmit: (event) => {
+    event.preventDefault();
+    if (indexing !== null) discard('Stopped; nothing kept.');
+    else index();
+  } },
+    documentInput,
+    h('div', { className: 'composer-row' }, documentFacts, indexButton));
+
+  const queryForm = h('form', { className: 'composer search-query', onsubmit: (event) => {
+    event.preventDefault();
+    search();
+  } },
+    h('div', { className: 'composer-row' }, queryInput, queryButton));
+
+  const about = `${embeddingLength} numbers a text, up to ${contextOffered} tokens` +
+    (prompts === null ? ' · no task prompts are known for this model: texts are embedded as written' : '');
+  settle();
+  return h('div', { className: 'conversation search-panel' },
+    h('p', { className: 'chat-heading', text: model.measured ? model.name : `${model.name} · unmeasured` }),
+    h('p', { className: 'message-facts', text: about }),
+    documentForm, queryForm, error, results, queryFacts);
+}

@@ -1,0 +1,12 @@
+{
+  "$comment": "The search panel's check (web/search.js): each query, against document.txt's paragraphs as passagesOf cuts them, ranks first the paragraph written to answer it, or a piece of it where the paragraph was cut. `paragraph` counts from 0. The last paragraph is longer than EmbeddingGemma 2's context.",
+  "queries": [
+    { "query": "how many steps does the keeper climb to reach the lamp?", "paragraph": 0 },
+    { "query": "why does bread dough rise?", "paragraph": 1 },
+    { "query": "how do octopuses camouflage themselves?", "paragraph": 2 },
+    { "query": "how fast does a glacier move?", "paragraph": 3 },
+    { "query": "what should you do in the opening of a chess game?", "paragraph": 4 },
+    { "query": "which gear makes it easier to ride up a hill?", "paragraph": 5 },
+    { "query": "how do bees tell each other where the flowers are?", "paragraph": 6 }
+  ]
+}

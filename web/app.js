@@ -22,6 +22,7 @@ import { unsupportedPlatform } from './platform.js';
 import { loadPolicyFor } from './platform_policy.js';
 import { showPlatformNotice } from './platform_notice.js';
 import { Request } from './protocol.js';
+import { createSearch } from './search.js';
 import { WorkerClient } from './worker_client.js';
 
 const page = {
@@ -33,6 +34,7 @@ const page = {
   model: document.querySelector('#model'),
   cache: document.querySelector('#cache'),
   chat: document.querySelector('#chat'),
+  search: document.querySelector('#search'),
 };
 
 const platform = unsupportedPlatform(navigator);
@@ -96,10 +98,22 @@ if (!('gpu' in navigator)) {
     onChooseModel: () => drawer.open(),
   });
 
+  const search = createSearch(page.search, {
+    embed: (text) => client.request(Request.EMBED, { text }),
+    onSearch: (step, detail) => recorder.search(step, detail),
+  });
+  // The main panel shown: the chat, or the search panel.
+  const show = (panel) => {
+    page.chat.hidden = panel !== page.chat;
+    page.search.hidden = panel !== page.search;
+  };
+
   const picker = createPicker(page.models, {
     models,
     onChoose: (model) => {
       chat.close();
+      search.close();
+      show(page.chat);
       controller.choose(model);
     },
   });
@@ -123,9 +137,15 @@ if (!('gpu' in navigator)) {
     onCacheChanged: refreshCache,
     onState: (state) => recorder.modelState(state),
     loadPolicyOf: (model) => loadPolicyFor(model.policy?.load, platform),
-    onLoaded: (model, verdict) => {
+    onLoaded: (model, verdict, loaded) => {
+      drawer.close();   // the panel, once there is one to have
+      if (loaded.embeddingLength !== null) {
+        show(page.search);
+        search.open(model, loaded);
+        return;
+      }
+      show(page.chat);
       chat.open(model, verdict.chat);
-      drawer.close();   // the chat, once there is one to have
       // ?benchmark, on the development site: the page's throughput measured
       // once the model is loaded (web/dev/benchmark.js). Elsewhere the
       // module is absent, and the failure says so.

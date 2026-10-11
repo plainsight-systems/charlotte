@@ -118,6 +118,30 @@ test('a turn is recorded from the prompt to the reply, and its failure kept', ()
   assert.deepEqual(storage.read().log.map((e) => e.phase), ['reading the prompt', 'writing the reply', 'failed']);
 });
 
+test('a search is recorded: indexing a phase with its progress written at most once a second, then each query', () => {
+  const storage = memoryStorage();
+  let clock = 0;
+  const recorder = createRecorder({ storage, now: () => clock, userAgent: 'ua', platform: null });
+  recorder.search('indexing');
+  assert.equal(storage.read().phase, 'embedding the document');
+  const after = storage.writes;
+  for (let i = 1; i < 40; ++i) {
+    clock += 10;
+    recorder.search('progress', `${i} of 40`);
+  }
+  assert.equal(storage.writes, after);
+  assert.equal(recorder.current().detail, '39 of 40');
+  recorder.search('done');
+  recorder.search('querying');
+  assert.equal(storage.read().phase, 'embedding the query');
+  recorder.search('failed', 'the GPU device was lost');
+  assert.equal(storage.read().error, 'search: the GPU device was lost');
+  recorder.search('indexing');
+  recorder.search('stopped');
+  assert.deepEqual(storage.read().log.map((e) => e.phase),
+    ['embedding the document', 'embedded', 'embedding the query', 'failed', 'embedding the document', 'embedding stopped']);
+});
+
 test('storage the browser refuses leaves the recorder working, without a record to survive', () => {
   const refusing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
   const recorder = createRecorder({ storage: refusing, now: () => 0, userAgent: 'ua', platform: null });

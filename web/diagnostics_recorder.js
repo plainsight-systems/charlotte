@@ -79,6 +79,24 @@ export function createRecorder({ storage, now, userAgent, platform, onChange }) 
         default: return undefined;
       }
     },
+    // The search panel (search.js): 'indexing', 'progress' with its detail,
+    // 'querying', then 'done', 'stopped' or 'failed' with its message.
+    search: (step, detail = '') => {
+      switch (step) {
+        case 'indexing':
+          return change(withPhase(session, { phase: 'embedding the document', busy: true }, now()), { urgent: true });
+        case 'progress': return change(withProgress(session, detail, now()), { urgent: false });
+        case 'querying':
+          return change(withPhase(session, { phase: 'embedding the query', busy: true }, now()), { urgent: true });
+        case 'done': return change(withPhase(session, { phase: 'embedded', busy: false }, now()), { urgent: true });
+        case 'stopped':
+          return change(withPhase(session, { phase: 'embedding stopped', busy: false }, now()), { urgent: true });
+        case 'failed':
+          return change(withPhase(session, { phase: 'failed', busy: false, error: `search: ${detail}` }, now()),
+            { urgent: true });
+        default: return undefined;
+      }
+    },
   };
 }
 
