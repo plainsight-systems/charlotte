@@ -304,3 +304,55 @@ TEST_CASE("destroying the program with a step in flight reports Cancelled, once"
     CHECK(ran.calls == 1);
     CHECK(ran.error == ProgramError::Cancelled);
 }
+
+TEST_CASE("a text step's image rows are left to the copy that fills them; every other row is gathered") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_table(instance.get(), *device, "embedding_f32", {7});
+    const auto program = build(instance.get(), u, 1.0f);
+    const std::uint32_t ids[] = {3, 0, 0, 6, 1};
+    kernels::Step step{};
+    step.tokens = 5;
+    step.logits = 1;
+    step.media_first = 1;
+    step.media_rows = 2;
+    std::copy(std::begin(ids), std::end(ids), step.ids.begin());
+    const StepOutcome ran = try_step(instance.get(), *program, step);
+    REQUIRE_MESSAGE(ran.error == ProgramError::Ok, ran.message);
+    const auto got = read_hidden(instance.get(), *device, u, 5);
+    for (const std::size_t r : {std::size_t{1}, std::size_t{2}}) {
+        for (std::size_t i = 0; i < u.width; ++i) CHECK(got[r * u.width + i] == 0.0f);
+    }
+    for (const std::size_t r : {std::size_t{0}, std::size_t{3}, std::size_t{4}}) {
+        const Expected want = expected_row(u, ids[r], 1.0f);
+        for (std::size_t i = 0; i < u.width; ++i) CHECK(got[r * u.width + i] == want.primary[i]);
+    }
+}
+
+TEST_CASE("the position form sums each patch's column row and row row of the table") {
+    // The fixture's F32 table read as a vision encoder's: rows 0 .. 2 the
+    // column table and 3 .. 5 the row table, three positions an axis.
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_table(instance.get(), *device, "embedding_f32", {7});
+    constexpr std::uint32_t kPositions = 3;
+    const auto program = build_program(instance.get(), *u.upload,
+                                       {kernels::position_launch(u.model.plan.tensors[0].view, kPositions, u.hidden)});
+    for (const std::uint32_t columns : {1u, 2u, 3u}) {
+        CAPTURE(columns);
+        const std::uint32_t rows = columns * kPositions;
+        kernels::Step step{};
+        step.tokens = rows;
+        step.columns = columns;
+        const StepOutcome ran = try_step(instance.get(), *program, step);
+        REQUIRE_MESSAGE(ran.error == ProgramError::Ok, ran.message);
+        const auto got = read_hidden(instance.get(), *device, u, rows);
+        for (std::uint32_t r = 0; r < rows; ++r) {
+            const Expected across = expected_row(u, r % columns, 1.0f);
+            const Expected down = expected_row(u, kPositions + r / columns, 1.0f);
+            for (std::size_t i = 0; i < u.width; ++i) {
+                CHECK(got[r * u.width + i] == across.primary[i] + down.primary[i]);
+            }
+        }
+    }
+}

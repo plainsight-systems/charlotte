@@ -9,6 +9,7 @@ struct Gather {
     groups_per_row: u32,
     blocks_in_piece: u32,
     scale: f32,
+    positions: u32,   // the position form's: each axis table's rows
 }
 
 // The program sets workgroup_size from the launcher (gather.cpp, 64); the
@@ -24,6 +25,11 @@ override workgroup_size: u32 = 64;
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let row = id.x / gather.groups_per_row;
     if (row >= step.tokens) {
+        return;
+    }
+    // An image's rows are copied in before the pass (runtime/vision.h); their
+    // identifiers are never read.
+    if (row >= step.media_first && row - step.media_first < step.media_rows) {
         return;
     }
     // A fed step's one token is the last step's draw, and its identifier is
@@ -43,5 +49,27 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let at = (row * gather.groups_per_row + group) * 8u;
     for (var v = 0u; v < 8u; v++) {
         hidden[at + v] = weights_of[v] * gather.scale;
+    }
+}
+
+// The position form, a vision encoder's learned positions (graph/vision.h):
+// patch row r, at column x = r mod columns and row y = r / columns of the
+// step's grid, takes the column table's row x plus the row table's row y —
+// rows x and positions + y of the one table — written to the output the
+// first norm adds. One invocation per 32-weight group of a row, as main.
+@compute @workgroup_size(workgroup_size)
+fn positions(@builtin(global_invocation_id) id: vec3<u32>) {
+    let row = id.x / gather.groups_per_row;
+    if (row >= step.tokens) {
+        return;
+    }
+    let group = id.x % gather.groups_per_row;
+    let x = row % step.columns;
+    let y = row / step.columns;
+    let across = unpack(0u, gather.blocks_in_piece, x * gather.groups_per_row + group);
+    let down = unpack(0u, gather.blocks_in_piece, (gather.positions + y) * gather.groups_per_row + group);
+    let at = (row * gather.groups_per_row + group) * 8u;
+    for (var v = 0u; v < 8u; v++) {
+        hidden[at + v] = across[v] + down[v];
     }
 }

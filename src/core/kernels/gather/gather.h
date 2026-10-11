@@ -52,6 +52,20 @@ namespace bllm::kernels {
 //     step starts without the token having left the GPU. A drawn token is
 //     below the vocabulary by construction.
 //   - Workgroups of 64 invocations.
+//   - A text step's image rows, media_first .. media_first + media_rows − 1
+//     (kernels/interface.h), are an image's soft tokens, copied into hidden
+//     before the pass (runtime/vision.h): an invocation whose row lies there
+//     returns before reading its identifier, which is never one.
+//   - The position form, entry point `positions`, a vision encoder's learned
+//     positions (graph/vision.h): no identifier is read; patch row r at
+//     column x = r mod columns and row y = r / columns of the step's grid
+//     writes, a 32-weight group an invocation, the table's row x plus its
+//     row positions + y — the column table then the row table, one F32
+//     tensor of W × positions × 2 — into the launch's output, two groups
+//     read and one written. llama.cpp adds the column's row into the patch,
+//     then the row's; here the two are summed, then added by the next norm
+//     (graph/vision.h), a difference of rounding. Constants gain
+//     `positions`; bindings 2 the table, 3 the output.
 //
 // What it costs, counted. Launches: one a piece, a step — 1 for Qwen3, 2 for
 // Llama 3.2, 3 for Gemma 3 — at about 1.5 µs of GPU time each (interface.h). Bytes,
@@ -104,5 +118,14 @@ namespace bllm::kernels {
 [[nodiscard]] std::vector<Launch> gather_launches(const residency::WeightView& table,
                                                   const residency::BufferRange& hidden,
                                                   const residency::BufferRange& sampled, float scale);
+
+// The position form's one launch: each patch row of a vision step, at column
+// x and row y of the step's grid, its column row x plus its row row y of
+// `table`, F32 of W × `positions` × 2 in one piece, written to `output`.
+// Preconditions: `table` is one piece, as a vision encoder's 62.9 MB table
+// is under the default binding; W a whole number of 32-weight groups; the
+// step's `columns` set, and its rows at most columns × positions.
+[[nodiscard]] Launch position_launch(const residency::WeightView& table, std::uint32_t positions,
+                                     const residency::BufferRange& output);
 
 }  // namespace bllm::kernels

@@ -16,8 +16,9 @@ struct Constants {
     std::uint32_t groups_per_row;
     std::uint32_t blocks_in_piece;
     float scale;
+    std::uint32_t positions = 0;
 };
-static_assert(sizeof(Constants) == 20);
+static_assert(sizeof(Constants) == 24);
 
 constexpr std::uint32_t kWorkgroupSize = 64;
 
@@ -57,6 +58,27 @@ std::vector<Launch> gather_launches(const residency::WeightView& table, const re
         });
     }
     return launches;
+}
+
+Launch position_launch(const residency::WeightView& table, std::uint32_t positions,
+                       const residency::BufferRange& output) {
+    const std::uint64_t width = table.shape().dimensions[0];
+    const auto groups_per_row = static_cast<std::uint32_t>(width / formats::kUnpackGroup);
+    const residency::WeightPiece& piece = table.pieces().front();
+    const Constants constants{0, 2 * positions, groups_per_row,
+                              static_cast<std::uint32_t>(std::uint64_t{2} * positions * width /
+                                                         gguf::format_layout(table.format())->block_elements),
+                              1.0f, positions};
+    Launch launch{
+        shaders::gather,
+        capability::find_format(table.format()),
+        bytes_of(constants),
+        {Binding{piece.buffer, piece.offset, piece.length}, Binding{output.buffer, output.offset, output.length}},
+        groups_per_row,
+        kWorkgroupSize,
+    };
+    launch.entry_point = "positions";
+    return launch;
 }
 
 }  // namespace bllm::kernels
