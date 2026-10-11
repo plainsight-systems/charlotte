@@ -9,6 +9,15 @@
 // is the model's own. Then it claims every stage for every model, loads
 // nothing, and replies with fixed text that says what it is.
 //
+// ?fake-runtime=embedder stands in for a model that embeds instead: its load
+// answers with an embedding's length, 768, and generate refuses, as the real
+// runtime refuses a model that embeds. Its vectors are the text's character
+// trigrams hashed into 768 places and normalized — no model's, but the same
+// for the same text, so the search panel's ranking can be exercised — and a
+// text over 2,048 UTF-8 bytes is refused as "text-too-long", counting a
+// token for each four bytes against a context of 512, so the panel's cutting
+// can be. The worker passes the parameter's value (worker.js).
+//
 // Never deployed: tools/assemble_site.sh leaves web/dev/ out of the site, and
 // tools/check_site.sh fails the build if it is there.
 

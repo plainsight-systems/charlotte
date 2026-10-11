@@ -9,7 +9,8 @@ export class WorkerError extends Error {
     this.name = 'WorkerError';
     this.stage = stage;
     this.code = code;
-    // For "prompt-too-long": { promptTokens, contextTokens }.
+    // For "prompt-too-long": { promptTokens, contextTokens }; for
+    // "text-too-long": { textTokens, contextTokens }.
     this.counts = counts;
   }
 }

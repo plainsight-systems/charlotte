@@ -413,7 +413,8 @@ and the file's declared context: the most one step holds.
 
 **Where policy lives.** The curated model list is a list of measured
 configurations — file, hash, cache precision, memory budget, sampling per
-mode, affordances — not a list of URLs. It changes when a model is measured. The capability table
+mode, affordances, and for a model that embeds the task prompts its card
+gives — not a list of URLs. It changes when a model is measured. The capability table
 changes when code is written. Different reasons, so they are two things. A
 model loaded from a pasted URL gets defaults and is shown as unmeasured;
 presenting an untested model as tuned would claim something nobody checked.

@@ -1,8 +1,11 @@
 // Axis H. The models the picker offers: the curated list in models.json, and
 // a model named by a pasted URL.
 //
-// A model is { id, name, url, sizeBytes?, sha256?, policy?, measured }. Only a
-// curated entry with a policy is measured; everything else runs on defaults.
+// A model is { id, name, url, sizeBytes?, sha256?, policy?, prompts?, measured }.
+// Only a curated entry with a policy is measured; everything else runs on
+// defaults. `prompts`, for a model that embeds, is { query, document }, the
+// task prompts its card gives (task_prompt.js), each a string, or the entry
+// is refused naming the one at fault; a pasted URL's model has none.
 
 export class CatalogError extends Error {
   constructor(message) {

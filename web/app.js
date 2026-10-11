@@ -1,5 +1,10 @@
 // The composition root. Creates the worker, the cache and the views, and
 // wires them together; no other module reaches into another's DOM.
+//
+// The main panel is the chat (chat.js) or, for a model whose load answered
+// with an embedding's length, the search panel (search.js); each owns its
+// own element, and one shows at a time. Choosing a model closes both and
+// shows the chat's empty state.
 
 import { renderCache } from './cache_view.js';
 import { loadCatalog } from './catalog.js';

@@ -22,7 +22,9 @@ const postDevice = (device) => self.postMessage({ kind: Notice.DEVICE, device })
 const postDeviceEvent = (event) => self.postMessage({ kind: Notice.DEVICE_EVENT, event });
 
 // ?fake-runtime selects the development stand-in, which is absent from the
-// deployed site; asking for it there fails at this import, by name.
+// deployed site; asking for it there fails at this import, by name. Its
+// value, as ?fake-runtime=embedder, says which kind of model it stands in
+// for (dev/fake_runtime.js).
 const runtimeModule = flags.has('fake-runtime') ? './dev/fake_runtime.js' : './wasm_runtime.js';
 const runtimePromise = import(runtimeModule)
   .then(({ createRuntime }) => createRuntime({ onDevice: postDevice, onDeviceEvent: postDeviceEvent,

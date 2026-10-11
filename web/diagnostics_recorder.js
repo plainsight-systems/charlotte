@@ -13,6 +13,9 @@
 //     write is guarded, and the page works without it, only without the
 //     record surviving a reload.
 //   - `onChange(session)` follows every change, for the view.
+//   - A search (search.js) is recorded as a turn is: indexing a document a
+//     phase, its passages progress within it, written at most once a
+//     second like a download's; a query a phase; then done or failed.
 
 import {
   startSession, withDevice, withEvent, withModel, withPhase, withProgress, phaseOfModelState,

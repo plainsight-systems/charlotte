@@ -39,13 +39,16 @@ module's own header, and contract 11 in the two boundary files.
 | `web/stages.js` | H | the stages preflight judges, in order, and a verdict's next stage |
 | `web/cache_view.js` | H | what the cache holds, the space it uses, and whether the browser keeps it |
 | `web/dom.js`, `web/units.js` | H | building elements safely; formatting sizes |
-| `web/models.json` | J | the curated list: one measured configuration per model |
+| `web/models.json` | J | the curated list: one measured configuration per model, and an embedder's task prompts from its card |
 | `web/template.js` | H | rendering the model's chat template, as a pure function of the conversation and the date |
-| `web/task_prompt.js` | H | an embedding model's task prompt written around a text, as a pure function of the task and the text |
+| `web/task_prompt.js` | H | an embedding model's task prompt written before a text, as a pure function of the model's prompts, the task and the text |
 | `web/vendor/jinja.js` | dependency | `@huggingface/jinja`, byte-for-byte as published; its hash is checked in the tests |
 | `web/chat.js` | H | the conversation panel: renders each turn through the template, streams the reply, stops it |
 | `web/conversation.js` | H | messages as the template sees them, and the conversation shortened to fit the context |
 | `web/thinking_stream.js` | H | a streaming reply split into reasoning and answer, each piece read once |
+| `web/search.js` | H | the search panel, for a model that embeds: a document's passages embedded one at a time, a query embedded and the passages ranked against it |
+| `web/passages.js` | H | a document cut into passages, and a passage the runtime refused cut into pieces that fit |
+| `web/search_index.js` | H | the passages' vectors, and a query ranked against them by dot product |
 | `web/fetch.js` | L | range and streaming fetch, with progress |
 | `web/preflight.js` | L | fetching the front of a file until the reader has its whole index |
 | `web/opfs.js` | L | the model file cache; a file is listed only once complete and verified |

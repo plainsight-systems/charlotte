@@ -8,6 +8,11 @@
 // Preflight and load carry the model's load policy, the same at both
 // (web/protocol.js), as `loadPolicyOf(model)` gives it — on a phone, its
 // budget capped (platform_policy.js).
+//
+// `onLoaded(model, verdict, loaded)` follows a load with its answer,
+// { contextOffered, embeddingLength }: the length is null for a model that
+// generates, and the embedding's for one that embeds, which is how the page
+// learns which kind it loaded (app.js).
 
 import { cacheKey, downloadModel } from './download.js';
 import { confirmDuplicates } from './duplicates.js';
