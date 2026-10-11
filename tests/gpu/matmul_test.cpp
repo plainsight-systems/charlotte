@@ -153,6 +153,11 @@ std::vector<float> decoded(const Uploaded& u, const std::string& name) {
         case gguf::TensorType::Q4_1: return test::dequantize_q4_1(bytes).rounded;
         case gguf::TensorType::Q8_0: return test::dequantize_q8_0(bytes);
         case gguf::TensorType::Q6_K: return test::dequantize_q6_k(bytes);
+        case gguf::TensorType::F32: {
+            std::vector<float> out(bytes.size() / 4);
+            std::memcpy(out.data(), bytes.data(), bytes.size());
+            return out;
+        }
         default: FAIL("no reference for " << name); return {};
     }
 }
@@ -219,7 +224,8 @@ TEST_CASE("each format's product is within its bound, decoded and prefilled, and
     const auto source = source_rows(instance.get(), *device, u);
     double worst = 0;
     // Then narrow weights whose decode sets take 2, 3 and 4 rows.
-    for (const char* name : {"w_q4_0", "w_q4_1_1152", "w_q4_1_3072", "w_q8_0", "w_q6_k", "w_set2", "w_set3", "w_set4"}) {
+    for (const char* name :
+         {"w_q4_0", "w_q4_1_1152", "w_q4_1_3072", "w_q8_0", "w_q6_k", "w_f32", "w_set2", "w_set3", "w_set4"}) {
         CAPTURE(name);
         const residency::WeightView& w = u.view(name);
         const auto columns = static_cast<std::uint32_t>(w.shape().dimensions[0]);
@@ -503,6 +509,29 @@ TEST_CASE("split along K, every epilogue it takes writes the tiled form's bits, 
             const auto got = run(instance.get(), *device, pieced, 1024, split, tokens, 0, {140});
             const auto want = run(instance.get(), *device, u, 1024, whole, tokens, 0, {140});
             CHECK(std::equal(got[0].begin(), got[0].end(), want[0].begin()));
+        }
+    }
+}
+
+TEST_CASE("a product over the step's tokens divided writes those rows' bits, as a step of that many") {
+    // A vision encoder's projection runs over its pooled rows, the step's
+    // patches over 9 (graph/vision.h, kernels/interface.h's row_divisor).
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Uploaded u = upload_weights(instance.get(), *device);
+    for (const char* name : {"w_q8_0", "w_f32"}) {
+        CAPTURE(name);
+        const residency::WeightView& w = u.view(name);
+        const auto columns = static_cast<std::uint32_t>(w.shape().dimensions[0]);
+        const auto rows = static_cast<std::uint32_t>(w.shape().dimensions[1]);
+        const auto plain = kernels::matmul_launches(single(u, w, kernels::Rows::EveryToken), kNever, u.range_sums);
+        auto divided = plain;
+        for (kernels::Launch& l : divided) l.row_divisor = 9;
+        for (const std::uint32_t pooled : {1u, 2u, 7u}) {
+            CAPTURE(pooled);
+            const auto want = run(instance.get(), *device, u, columns, plain, pooled, 0, {rows});
+            const auto got = run(instance.get(), *device, u, columns, divided, pooled * 9, 0, {rows});
+            CHECK(std::equal(want[0].begin(), want[0].end(), got[0].begin()));
         }
     }
 }

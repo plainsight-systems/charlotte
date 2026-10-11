@@ -137,22 +137,30 @@ inline constexpr std::uint32_t kFirstWeightBinding = 2;
 //
 //   struct Step { position: u32, tokens: u32, logits: u32, fed: u32,
 //                 seed: vec2<u32>, top_k: u32, temperature: f32, top_p: f32,
-//                 min_p: f32, log_min_p: f32, ids: array<vec4<u32>, 128> }
+//                 min_p: f32, log_min_p: f32, columns: u32, media_first: u32,
+//                 media_rows: u32, padding: vec2<u32>,
+//                 ids: array<vec4<u32>, 128> }
 //
-// A 48-byte head: WGSL places `ids` at 48, a uniform array's 16-byte stride,
-// leaving one word of padding after `log_min_p`. sampler::apply writes the
+// A 64-byte head: WGSL places `ids` at 64, a uniform array's 16-byte stride.
+// `columns` is a vision step's patch grid columns, which rope's axial form
+// and gather's position form read (graph/vision.h); `media_first` and
+// `media_rows` are a text step's rows an image's rows fill, which gather
+// skips (runtime/vision.h); each 0 where a step has none. sampler::apply writes the
 // seed and settings. `logits` is the program's,
 // read by no kernel; `fed` is gather's; the seed and the settings are the
 // draw's (sampler/sampler.h), the turn's, written with every step. Token i's
 // identifier is ids[i / 4][i % 4]. A step writes its head and only the
-// identifier words it uses: 48 bytes for a fed decode step, which uses none,
-// 64 for one given its token.
+// identifier words it uses: 64 bytes for a fed decode step, which uses none,
+// 80 for one given its token. A step of more than kPrefillBlock rows — a
+// vision step's patches — has no identifiers and writes its head alone.
 // Optimization (browser): the identifiers ride in the uniform every launch
 // already binds, so a step is one write, not one for its parameters and one
 // for its tokens (WASM.2).
 struct Step {
     std::uint32_t position;   // the first token's position in the context
-    std::uint32_t tokens;     // 1 .. kPrefillBlock
+    // 1 .. kPrefillBlock for a step of tokens; a vision step's patches, up
+    // to its plan's rows, with no identifiers.
+    std::uint32_t tokens;
     // 1 when the step's last token's logits are sampled; 0 for a prefill
     // step that does not end the prompt, which runs no launch over the last
     // token alone — the final norm and the head (graph/graph.h).
@@ -169,11 +177,15 @@ struct Step {
     float top_p;
     float min_p;
     float log_min_p;   // ln min_p, once a turn: the draw's min-p threshold
-    std::uint32_t padding1;
+    std::uint32_t columns = 0;       // a vision step's patch grid columns
+    std::uint32_t media_first = 0;   // a text step's rows an image's rows fill
+    std::uint32_t media_rows = 0;
+    std::uint32_t padding1 = 0;
+    std::uint32_t padding2 = 0;   // WGSL places `ids` at 64, a uniform array's 16-byte stride
     std::array<std::uint32_t, residency::kPrefillBlock> ids;
 };
-static_assert(sizeof(Step) == 48 + 4 * residency::kPrefillBlock);
-inline constexpr std::size_t kStepHead = 48;
+static_assert(sizeof(Step) == 64 + 4 * residency::kPrefillBlock);
+inline constexpr std::size_t kStepHead = 64;
 
 // Each launch's constants lie at their own offset in one uniform buffer, in
 // a whole number of slots on the alignment WebGPU's default limits require
@@ -247,10 +259,18 @@ struct Geometry {
     std::uint32_t rows_per_tile;   // 0: a launch over rows
     KeySplit key_split;
     std::uint32_t window;
-    // The steps it runs in, by token count; every step by default.
+    // The steps it runs in, by its rows (below); every step by default.
     TokenRange tokens = {};
     // A key split's partial buffers' query rows (key_chunks).
     std::uint32_t partial_rows = residency::kPrefillBlock;
+    // The launch's rows are the step's tokens over this: 1 for every
+    // launch but those after a vision encoder's pooling, whose rows are its
+    // patches over k² (graph/vision.h). Its token range is in those rows,
+    // and its kernel bounds its rows the same way, by an override the
+    // program sets, `row_divisor`. Every step's tokens are a multiple of
+    // every divisor its launches carry. Not with a launch over the last
+    // token or a key split.
+    std::uint32_t row_divisor = 1;
 };
 
 // The workgroups a launch of `workgroup_size` runs in a step of `tokens`
@@ -263,9 +283,10 @@ struct Geometry {
 [[nodiscard]] constexpr std::uint64_t workgroups_for(const Geometry& g, std::uint32_t workgroup_size,
                                                      std::uint32_t position, std::uint32_t tokens,
                                                      bool logits) noexcept {
-    if (tokens < g.tokens.least || tokens > g.tokens.most) return 0;
+    const std::uint32_t launch_rows = tokens / g.row_divisor;
+    if (launch_rows < g.tokens.least || launch_rows > g.tokens.most) return 0;
     if (g.rows == Rows::LastToken && !logits) return 0;
-    const std::uint64_t rows = g.rows == Rows::LastToken ? 1 : tokens;
+    const std::uint64_t rows = g.rows == Rows::LastToken ? 1 : launch_rows;
     const std::uint64_t covered =
         g.rows_per_tile == 0 ? rows * g.invocations_per_row
                              : (rows + g.rows_per_tile - 1) / g.rows_per_tile * g.rows_per_tile *
@@ -320,10 +341,14 @@ struct Launch {
     // The WGSL entry point: one module may hold two roles, which share its
     // functions and not each other's workgroup memory.
     std::string_view entry_point = "main";
-    // The steps the launch runs in, by token count, every step by default:
-    // a matrix product's decode form runs in tokens_of(Regime::Decode), its
-    // prefill tiles in parts of prefill's.
+    // The steps the launch runs in, by its rows — the step's token count over
+    // row_divisor — every step by default: a matrix product's decode form
+    // runs in tokens_of(Regime::Decode), its prefill tiles in parts of
+    // prefill's.
     TokenRange tokens = {};
+    // Its rows are the step's tokens over this (Geometry); the program sets
+    // the kernel's `row_divisor` override to it where it is not 1.
+    std::uint32_t row_divisor = 1;
     // What the launch does in the model, and its layer, as the graph names
     // them (graph/graph.h): a profile's name for it, since
     // one kernel serves many roles — the matrix product is every projection

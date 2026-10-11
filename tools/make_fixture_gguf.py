@@ -271,6 +271,10 @@ def matmul_rows(seed=0x85EBCA6B):
         weight("w_set2", T_Q4_0, 64, 2047),
         weight("w_set3", T_Q4_0, 64, 4088),
         weight("w_set4", T_Q4_0, 64, 4096),
+        # F32, a vision encoder's patch embedding's format, last so every
+        # tensor before it keeps its bytes (graph/vision.h).
+        (b"w_f32", [768, 40], T_F32,
+         floats(((u32() >> 8) % 2001 - 1000) / 20000.0 for _ in range(768 * 40))),
     ]
     return build(tensors)
 

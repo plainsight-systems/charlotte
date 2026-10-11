@@ -242,7 +242,7 @@ void Build::bind() {
         s.launches.push_back({p, gpu::BindGroup(wgpuDeviceCreateBindGroup(device, &desc)),
                               Geometry{launches[i].rows, launches[i].invocations_per_row, launches[i].rows_per_tile,
                                        launches[i].key_split, launches[i].window, launches[i].tokens,
-                                       launches[i].partial_rows},
+                                       launches[i].partial_rows, launches[i].row_divisor},
                               launches[i].workgroup_size});
     }
     std::vector<Geometry> geometries;
@@ -263,13 +263,15 @@ void Build::next() {
 }
 
 // A pipeline's override constants, in name order, the program's own among
-// them: workgroup_size always, last_token for a launch of the last token.
+// them: workgroup_size always, last_token for a launch of the last token,
+// row_divisor for a launch over the step's tokens divided (interface.h).
 using Constants = std::vector<std::pair<std::string_view, double>>;
 
 Constants constants_of(const Launch& launch) {
     Constants c;
     c.emplace_back("workgroup_size", launch.workgroup_size);
     if (launch.rows == Rows::LastToken) c.emplace_back("last_token", 1.0);
+    if (launch.row_divisor != 1) c.emplace_back("row_divisor", launch.row_divisor);
     for (const Override& o : launch.overrides) c.emplace_back(o.name, o.value);
     std::sort(c.begin(), c.end());
     return c;
@@ -376,11 +378,17 @@ void Program::build(const residency::Upload& upload, std::vector<Launch> launche
             done(nullptr, ProgramError::Build, at + "split by key chunks with no window", userdata);
             return;
         }
+        if (launch.row_divisor == 0 ||
+            (launch.row_divisor != 1 && (launch.rows == Rows::LastToken || launch.key_split != KeySplit::None))) {
+            done(nullptr, ProgramError::Build, at + "a row divisor of 0, or one over the last token or key chunks",
+                 userdata);
+            return;
+        }
         for (std::size_t o = 0; o < launch.overrides.size(); ++o) {
             const std::string_view name = launch.overrides[o].name;
             const bool repeated = std::any_of(launch.overrides.begin(), launch.overrides.begin() + o,
                                               [&](const Override& earlier) { return earlier.name == name; });
-            if (name == "workgroup_size" || name == "last_token" || repeated) {
+            if (name == "workgroup_size" || name == "last_token" || name == "row_divisor" || repeated) {
                 done(nullptr, ProgramError::Build,
                      at + "override " + std::string(name) + (repeated ? " given twice" : " is the program's to set"),
                      userdata);
@@ -630,7 +638,10 @@ void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, 
     push_scopes(device, kStepScopes);
     // Optimization (browser): the step's head and only the identifier words
     // it uses, in one write (interface.h).
-    const std::size_t bytes = kStepHead + (step.fed == 1 ? 0 : 16 * ((std::size_t{step.tokens} + 3) / 4));
+    // A step of more rows than identifiers — a vision step's patches — has
+    // none, and writes its head alone.
+    const bool identifiers = step.fed != 1 && step.tokens <= residency::kPrefillBlock;
+    const std::size_t bytes = kStepHead + (identifiers ? 16 * ((std::size_t{step.tokens} + 3) / 4) : 0);
     wgpuQueueWriteBuffer(s.queue.get(), s.step.get(), 0, &step, bytes);
 
     // Past kMaxPositions a position is not exact as an f32 and the chunk

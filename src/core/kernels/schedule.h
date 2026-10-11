@@ -47,8 +47,9 @@ public:
     // Plans from every launch's geometry, in the graph's order.
     explicit Schedules(std::span<const Geometry> launches);
 
-    // The launches a step of `tokens` can dispatch, in order. Preconditions:
-    // 1 <= tokens <= kPrefillBlock.
+    // The launches a step of `tokens` can dispatch, in order. Precondition:
+    // tokens >= 1 — a step of tokens is at most kPrefillBlock, a vision
+    // step's patches more (interface.h).
     [[nodiscard]] std::span<const std::uint32_t> of(std::uint32_t tokens, bool logits) const noexcept;
 
 private:

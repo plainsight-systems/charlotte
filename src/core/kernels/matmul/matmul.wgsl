@@ -66,6 +66,15 @@ var<workgroup> partials: array<f32, 256>;
 // the launcher (matmul.cpp) on every launch: with tile_tokens for prefill,
 // and the largest tile's for decode, which never touches x_tile.
 override x_tile_vec4s: u32 = 256u;
+// The program's: the launch's rows are the step's tokens over this — 1 but
+// for a product after a vision encoder's pooling, whose rows are its
+// patches over k² (kernels/interface.h, Geometry).
+override row_divisor: u32 = 1u;
+
+// The rows this launch covers: the step's tokens, divided.
+fn step_rows() -> u32 {
+    return step.tokens / row_divisor;
+}
 var<workgroup> x_tile: array<vec4<f32>, x_tile_vec4s>;
 var<workgroup> w_tile: array<vec4<f32>, 576>;
 
@@ -111,7 +120,7 @@ fn weights_of(m: u32, row: u32, g: u32) -> array<vec4<f32>, 8> {
 }
 
 fn token_of_decode() -> u32 {
-    return select(0u, step.tokens - 1u, last_token);
+    return select(0u, step_rows() - 1u, last_token);
 }
 
 // e^x for x <= 0, as explicit arithmetic rather than the built-in exp,
@@ -327,7 +336,7 @@ fn tile_place(token_tile: u32, out_tile: u32, t: u32, gated: bool) -> TilePlace 
     let slot1 = t + workgroup_size;
     // A quad wholly past the step stages and passes the barriers, and skips
     // the products.
-    return TilePlace(token_tile, t % kOutputLanes, token_tile * tile_tokens + tq * kMicro < step.tokens, t, slot1,
+    return TilePlace(token_tile, t % kOutputLanes, token_tile * tile_tokens + tq * kMicro < step_rows(), t, slot1,
                      slot_row(out_tile, t, gated), slot_row(out_tile, min(slot1, kTileRows - 1u), gated),
                      tq * kMicro * 8u);
 }
@@ -363,7 +372,7 @@ fn tile_range(at: TilePlace, t: u32, r: u32) -> array<vec4<f32>, 4> {
         for (var q = t; q < 8u * tile_tokens; q += workgroup_size) {
             let token = token_tile * tile_tokens + q / 8u;
             var x = vec4<f32>(0.0);
-            if (token < step.tokens) {
+            if (token < step_rows()) {
                 x = input[token * (columns / 4u) + g * 8u + q % 8u];
             }
             x_tile[q] = x;
@@ -408,7 +417,7 @@ fn tile_range(at: TilePlace, t: u32, r: u32) -> array<vec4<f32>, 4> {
 // sums added to its total in order, a total from zero, exactly as decode adds
 // them.
 fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<vec4<f32>, 4> {
-    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
+    let token_tiles = (step_rows() + tile_tokens - 1u) / tile_tokens;
     let at = tile_place(wg % token_tiles, wg / token_tiles, t, gated);
     var y0 = vec4<f32>(0.0);
     var y1 = vec4<f32>(0.0);
@@ -438,12 +447,12 @@ fn stage_row(slot: u32, at: vec3<u32>, g: u32) {
 
 // The first of invocation t's 4 tokens in the step.
 fn first_token(wg: u32, t: u32) -> u32 {
-    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
+    let token_tiles = (step_rows() + tile_tokens - 1u) / tile_tokens;
     return (wg % token_tiles) * tile_tokens + (t / kOutputLanes) * kMicro;
 }
 
 fn out_tile_of(wg: u32) -> u32 {
-    return wg / ((step.tokens + tile_tokens - 1u) / tile_tokens);
+    return wg / ((step_rows() + tile_tokens - 1u) / tile_tokens);
 }
 
 @compute @workgroup_size(workgroup_size)
@@ -454,7 +463,7 @@ fn prefill_write(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation
         let at = slot_row(out_tile_of(wg.x), t % kOutputLanes + kOutputLanes * j, false);
         for (var i = 0u; i < kMicro; i++) {
             let token = first + i;
-            if (token < step.tokens && at.z == 1u) {
+            if (token < step_rows() && at.z == 1u) {
                 out0[token * out_width + matmul.members[at.x].z + at.y] = totals[i][j];
             }
         }
@@ -470,7 +479,7 @@ fn prefill_qkv(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
         let width = matmul.members[at.x].w;
         for (var i = 0u; i < kMicro; i++) {
             let token = first + i;
-            if (token < step.tokens && at.z == 1u) {
+            if (token < step_rows() && at.z == 1u) {
                 let value = totals[i][j];
                 if (at.x == 0u) {
                     out0[token * width + at.y] = value;
@@ -495,7 +504,7 @@ fn prefill_gated(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation
         let row = out_tile_of(wg.x) * (kTileRows / 2u) + (t % kOutputLanes) * 2u + j;
         for (var i = 0u; i < kMicro; i++) {
             let token = first + i;
-            if (token < step.tokens && row < width) {
+            if (token < step_rows() && row < width) {
                 out0[token * width + row] = activate(totals[i][j]) * totals[i][j + 2u];
             }
         }
@@ -510,7 +519,7 @@ fn prefill_gated_input(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invo
         let at = slot_row(out_tile_of(wg.x), t % kOutputLanes + kOutputLanes * j, false);
         for (var i = 0u; i < kMicro; i++) {
             let token = first + i;
-            if (token < step.tokens && at.z == 1u) {
+            if (token < step_rows() && at.z == 1u) {
                 let o = matmul.members[at.x].z + at.y;
                 out0[token * out_width + o] = gated_by_input(totals[i][j], token, o);
             }
@@ -528,7 +537,7 @@ fn product_rows() -> u32 {
 // Where range r's sum of the product's row p for `token` lies in
 // `range_sums`: range first, so a range's sums for adjacent rows are adjacent.
 fn range_sum_at(r: u32, token: u32, p: u32) -> u32 {
-    return (r * step.tokens + token) * product_rows() + p;
+    return (r * step_rows() + token) * product_rows() + p;
 }
 
 // The tiled form's workgroup (token tile, output tile) for range r alone,
@@ -537,7 +546,7 @@ fn range_sum_at(r: u32, token: u32, p: u32) -> u32 {
 @compute @workgroup_size(workgroup_size)
 fn split_ranges(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
     let rows = product_rows();
-    let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
+    let token_tiles = (step_rows() + tile_tokens - 1u) / tile_tokens;
     let out_tiles = (rows + kTileRows - 1u) / kTileRows;
     let token_tile = wg.x % token_tiles;
     let out_tile = (wg.x / token_tiles) % out_tiles;
@@ -548,7 +557,7 @@ fn split_ranges(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_
         let p = out_tile * kTileRows + t % kOutputLanes + kOutputLanes * j;
         for (var i = 0u; i < kMicro; i++) {
             let token = first + i;
-            if (token < step.tokens && p < rows) {
+            if (token < step_rows() && p < rows) {
                 out0[range_sum_at(r, token, p)] = sums[i][j];
             }
         }
@@ -579,7 +588,7 @@ fn combined(token: u32, p: u32) -> f32 {
 @compute @workgroup_size(workgroup_size)
 fn combine_write(@builtin(global_invocation_id) id: vec3<u32>) {
     let rows = product_rows();
-    if (id.x >= step.tokens * rows) {
+    if (id.x >= step_rows() * rows) {
         return;
     }
     let token = id.x / rows;
@@ -591,7 +600,7 @@ fn combine_write(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(workgroup_size)
 fn combine_qkv(@builtin(global_invocation_id) id: vec3<u32>) {
     let rows = product_rows();
-    if (id.x >= step.tokens * rows) {
+    if (id.x >= step_rows() * rows) {
         return;
     }
     let token = id.x / rows;
@@ -612,7 +621,7 @@ fn combine_qkv(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(workgroup_size)
 fn combine_gated_input(@builtin(global_invocation_id) id: vec3<u32>) {
     let rows = product_rows();
-    if (id.x >= step.tokens * rows) {
+    if (id.x >= step_rows() * rows) {
         return;
     }
     let token = id.x / rows;
