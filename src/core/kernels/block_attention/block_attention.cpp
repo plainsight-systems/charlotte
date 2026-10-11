@@ -73,4 +73,28 @@ std::array<Launch, 2> block_attention_launches(const BlockAttentionLaunch& a) {
     return {std::move(scores), std::move(weigh)};
 }
 
+Launch streamed_attention_launch(const StreamedAttentionLaunch& a) {
+    const model::LayerDescription& layer = a.layer;
+    const std::uint32_t group = layer.query_heads / layer.key_value_heads;
+    const std::uint32_t rows_per_tile = kStreamVectors / group;
+    const Constants constants{layer.attention_window / 2, static_cast<float>(a.scale * std::numbers::log2e)};
+    const auto bytes = std::as_bytes(std::span(&constants, 1));
+    // A workgroup a key-value head and a vector tile: every key of the step
+    // walked within it, so no key split.
+    Launch stream{shaders::block_attention_stream,
+                  nullptr,
+                  std::vector<std::byte>(bytes.begin(), bytes.end()),
+                  {whole(a.query), whole(a.key), whole(a.value), whole(a.attention)},
+                  layer.key_value_heads * kWorkgroupSize / rows_per_tile,
+                  kWorkgroupSize,
+                  Rows::EveryToken,
+                  {{"head_dimension", static_cast<double>(layer.head_dimension)},
+                   {"query_heads", static_cast<double>(layer.query_heads)},
+                   {"key_value_heads", static_cast<double>(layer.key_value_heads)},
+                   {"group", static_cast<double>(group)}}};
+    stream.entry_point = "stream";
+    stream.rows_per_tile = rows_per_tile;
+    return stream;
+}
+
 }  // namespace bllm::kernels

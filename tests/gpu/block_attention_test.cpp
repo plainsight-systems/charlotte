@@ -226,3 +226,166 @@ TEST_CASE("block attention's launches: a scores launch over the step's chunks, t
     CHECK(workgroups(pair[1], 512) == 512);
     CHECK(workgroups(pair[0], 65) == 9 * 2);   // 9 tiles, 2 chunks
 }
+
+namespace {
+
+constexpr Shape kVision{"vision", 12, 12, 64};
+constexpr std::uint32_t kVisionRows = 2520;
+
+// Buffers for a vision step of up to 2,520 patches, queries, keys and values
+// filled once on the device.
+struct Streamed {
+    Model model;
+    std::unique_ptr<residency::Upload> upload;
+    residency::BufferRange query{}, key{}, value{}, attended{};
+};
+
+Streamed upload_vision(WGPUInstance instance, const gpu::Device& device) {
+    Streamed u;
+    u.model.bytes = load_gguf_fixture("rope_rows");   // any file: no weight is read
+    gguf::MemoryByteSource source{u.model.bytes};
+    REQUIRE(gguf::read_index(source, u.model.index).error == gguf::ReadError::Ok);
+    residency::ResidencyPlan& plan = u.model.plan;
+    plan.buffers.push_back({residency::Pool::Weights, 0});
+    const auto alone = [&](std::uint64_t bytes) {
+        plan.buffers.push_back({residency::Pool::Scratch, bytes});
+        return residency::BufferRange{static_cast<residency::BufferIndex>(plan.buffers.size() - 1), 0, bytes};
+    };
+    const std::uint64_t bytes = std::uint64_t{kVisionRows} * 12 * 64 * 4;
+    u.query = alone(bytes);
+    u.key = alone(bytes);
+    u.value = alone(bytes);
+    u.attended = alone(bytes);
+    Ready ready;
+    residency::Upload::begin(device, u.model.index, plan, u.model.bytes.size(), capability::find_format, {}, kChunk,
+                             on_ready, &ready);
+    pump_until(instance, ready.done, "the buffers");
+    REQUIRE_MESSAGE(ready.error == residency::UploadError::Ok, ready.subject);
+    u.upload = std::move(ready.upload);
+    REQUIRE(stream(instance, *u.upload, u.model) == residency::UploadError::Ok);
+    REQUIRE(finish(instance, *u.upload) == residency::UploadError::Ok);
+    const auto program = build_program(instance, *u.upload,
+                                       {fill_launch(u.query, 11, 1.0f, false), fill_launch(u.key, 23, 1.0f, false),
+                                        fill_launch(u.value, 37, 1.0f, false)});
+    run_step(instance, *program, 1);
+    return u;
+}
+
+kernels::Launch stream_launch(const Streamed& u, std::uint32_t window) {
+    return kernels::streamed_attention_launch(
+        {model::LayerDescription{kVision.query_heads, kVision.key_value_heads, kVision.d, 0, window, 100.0f, {}}, 1.0f,
+         u.query, u.key, u.value, u.attended});
+}
+
+// `rows` of a streaming step against f64, every head and dimension of each,
+// within block_attention.h's margin and its rescales'.
+double check_rows(std::uint32_t window, std::uint32_t tokens, std::span<const std::uint32_t> rows,
+                  std::span<const float> q, std::span<const float> k, std::span<const float> v,
+                  std::span<const float> got) {
+    const Shape& s = kVision;
+    const std::uint32_t half = window / 2;
+    const double log2e = std::numbers::log2e;
+    const double rescales = 2.0 * ((tokens + 15) / 16) * std::ldexp(1.0, -24);
+    double worst = 0;
+    for (const std::uint32_t i : rows) {
+        for (std::uint32_t h = 0; h < s.query_heads; ++h) {
+            const auto qi = q.subspan((std::size_t{i} * s.query_heads + h) * s.d, s.d);
+            std::vector<double> score(tokens, 0.0);
+            std::vector<bool> live(tokens, false);
+            double top = -1e300, magnitude = 0, largest_v = 0;
+            for (std::uint32_t j = 0; j < tokens; ++j) {
+                const std::uint32_t apart = i > j ? i - j : j - i;
+                if (apart > half) continue;
+                live[j] = true;
+                const auto kj = k.subspan((std::size_t{j} * s.key_value_heads + h) * s.d, s.d);
+                double dot = 0, absolute = 0;
+                for (std::uint32_t c = 0; c < s.d; ++c) {
+                    dot += double{qi[c]} * kj[c];
+                    absolute += std::abs(double{qi[c]} * kj[c]);
+                }
+                score[j] = dot * log2e;
+                top = std::max(top, score[j]);
+                magnitude = std::max(magnitude, absolute);
+                for (std::uint32_t c = 0; c < s.d; ++c) {
+                    largest_v = std::max(largest_v, std::abs(double{v[(std::size_t{j} * s.key_value_heads + h) * s.d + c]}));
+                }
+            }
+            double sum = 0;
+            std::vector<double> out(s.d, 0.0);
+            for (std::uint32_t j = 0; j < tokens; ++j) {
+                if (!live[j]) continue;
+                const double w = std::exp2(score[j] - top);
+                sum += w;
+                for (std::uint32_t c = 0; c < s.d; ++c) out[c] += w * v[(std::size_t{j} * s.key_value_heads + h) * s.d + c];
+            }
+            const double bound = largest_v * (2 * gamma(s.d) * magnitude * log2e * std::numbers::ln2 +
+                                              2 * gamma(tokens + 1) + std::ldexp(1.0, -16) + rescales);
+            for (std::uint32_t c = 0; c < s.d; ++c) {
+                const double want = out[c] / sum;
+                const double error = std::abs(got[(std::size_t{i} * s.query_heads + h) * s.d + c] - want);
+                worst = std::max(worst, error / bound);
+                if (!(error <= bound)) {
+                    FAIL_CHECK("row " << i << " head " << h << " value " << c << " off by " << error);
+                    return worst;
+                }
+            }
+        }
+    }
+    return worst;
+}
+
+}  // namespace
+
+TEST_CASE("the streaming form is within its margin of f64 at a vision encoder's shape, up to 2,520 patches") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Streamed u = upload_vision(instance.get(), *device);
+    const auto read = [&](const residency::BufferRange& r, std::uint32_t rows) {
+        return read_floats(instance.get(), *device, u.upload->buffer(r.buffer), 0, std::size_t{rows} * 12 * 64);
+    };
+    const auto q = read(u.query, kVisionRows);
+    const auto k = read(u.key, kVisionRows);
+    const auto v = read(u.value, kVisionRows);
+    double worst = 0;
+    struct Case {
+        std::uint32_t tokens, window;
+    };
+    // Steps either side of a 16-key step; a window narrower than the step,
+    // so a vector meets steps with no live key; and the most patches.
+    for (const Case c : {Case{2, UINT32_MAX}, Case{15, UINT32_MAX}, Case{16, UINT32_MAX}, Case{17, UINT32_MAX},
+                         Case{33, UINT32_MAX}, Case{130, 32}, Case{630, UINT32_MAX}, Case{kVisionRows, UINT32_MAX}}) {
+        CAPTURE(c.tokens);
+        CAPTURE(c.window);
+        const auto program = build_program(instance.get(), *u.upload, {stream_launch(u, c.window)});
+        run_step(instance.get(), *program, c.tokens);
+        const auto got = read(u.attended, c.tokens);
+        std::vector<std::uint32_t> rows;
+        if (c.tokens <= 130) {
+            for (std::uint32_t i = 0; i < c.tokens; ++i) rows.push_back(i);
+        } else {
+            for (const std::uint32_t i : {0u, 1u, 31u, 32u, c.tokens / 2, c.tokens - 2, c.tokens - 1}) rows.push_back(i);
+        }
+        worst = std::max(worst, check_rows(c.window, c.tokens, rows, q, k, v, got));
+    }
+    MESSAGE("largest error, against its bound: " << worst);
+}
+
+TEST_CASE("the streaming form gives the same bits run twice, and its workgroups are its tiles by heads") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const Streamed u = upload_vision(instance.get(), *device);
+    const kernels::Launch launch = stream_launch(u, UINT32_MAX);
+    CHECK(launch.entry_point == "stream");
+    CHECK(launch.bindings.size() == 4);
+    CHECK(kernels::workgroups_for({launch.rows, launch.invocations_per_row, launch.rows_per_tile, launch.key_split,
+                                   launch.window, launch.tokens},
+                                  launch.workgroup_size, 0, kVisionRows, true) == 79 * 12);
+    const auto program = build_program(instance.get(), *u.upload, {launch});
+    std::vector<std::vector<float>> runs;
+    for (int r = 0; r < 2; ++r) {
+        run_step(instance.get(), *program, 630);
+        runs.push_back(read_floats(instance.get(), *device, u.upload->buffer(u.attended.buffer), 0,
+                                   std::size_t{630} * 12 * 64));
+    }
+    CHECK(runs[0] == runs[1]);
+}

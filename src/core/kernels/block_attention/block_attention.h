@@ -128,8 +128,9 @@ namespace bllm::kernels {
 // already the size the caches hold gains little from tiling, and its
 // consumer here needs it whole, row by row.
 //
-// The streaming form, for a head of 64: one launch, `stream`, the scores
-// never written — FlashAttention's online softmax (GDSA.16, CDSA.23). At N
+// The streaming form, for a head of 64: one launch, `stream`, in a source
+// of its own, block_attention_stream.wgsl, so neither form's workgroup
+// memory is declared beside the other's; the scores never written — FlashAttention's online softmax (GDSA.16, CDSA.23). At N
 // = 2,520 patches and 12 heads the written form's scores would be 305 MB a
 // layer, over the default 128 MiB binding and 256 MiB buffer; and at d = 64
 // the reason above against streaming is gone: a tile's outputs, 32 query

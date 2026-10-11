@@ -108,6 +108,7 @@ bllm_embed_shaders(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/norm/norm.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/attention/attention.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/block_attention/block_attention.wgsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/block_attention/block_attention_stream.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/pool/pool.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope.wgsl"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/core/kernels/rope/rope_cache.wgsl"
