@@ -10,7 +10,9 @@
 // a JSON array, in the order the graph first launches it. A browser page
 // then compiles each on its own (tools/kernel_probe/).
 //
-// It runs no GPU: planning and the graph need only the file's index.
+// It runs no GPU: planning and the graph need only the file's index. A
+// model that encodes is dumped from its encoder's graph, one that generates
+// from its decoder's.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -81,13 +83,21 @@ int main(int argc, char** argv) {
         !stop.empty()) {
         die("the model does not plan: " + stop);
     }
-    std::string_view architecture;
-    (void)index.read_string("general.architecture", architecture);
-    const formats::Format* cache_format = capability::find_format(plan.cache_type);
-    if (cache_format == nullptr) die("the cache's format is not one this build writes");
+    std::string_view name;
+    (void)index.read_string("general.architecture", name);
+    const arch::Architecture* architecture = capability::find_architecture(name);
+    if (architecture == nullptr) die("the architecture is not one this build implements");
+    // A model that encodes has its encoder's graph and no cache; one that
+    // generates, its decoder's over the cache's format.
     std::vector<kernels::Launch> launches;
-    const graph::GraphResult built =
-        arch::decoder_graph(*capability::find_architecture(architecture))(description, plan, *cache_format, launches);
+    graph::GraphResult built;
+    if (const arch::EncodeFn encode = arch::encoder_graph(*architecture); encode != nullptr) {
+        built = encode(description, plan, launches);
+    } else {
+        const formats::Format* cache_format = capability::find_format(plan.cache_type);
+        if (cache_format == nullptr) die("the cache's format is not one this build writes");
+        built = arch::decoder_graph(*architecture)(description, plan, *cache_format, launches);
+    }
     if (!built.ok()) die("the graph does not build: " + built.subject);
 
     std::set<std::tuple<std::string, std::string_view, std::vector<std::pair<std::string_view, double>>>> seen;
