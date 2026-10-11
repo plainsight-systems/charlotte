@@ -58,7 +58,7 @@ const formats::Format& f16() { return *capability::find_format(gguf::TensorType:
 
 std::vector<kernels::Launch> graph_of(const Loaded& l, graph::GraphResult* result = nullptr) {
     std::vector<kernels::Launch> out;
-    const graph::GraphResult r = l.architecture->graph(l.model, l.plan, f16(), out);
+    const graph::GraphResult r = arch::decoder_graph(*l.architecture)(l.model, l.plan, f16(), out);
     if (result != nullptr) *result = r;
     else REQUIRE_MESSAGE(r.ok(), r.subject);
     return out;
@@ -190,7 +190,7 @@ TEST_CASE("every listed architecture supplies its describe and its graph") {
         const arch::Architecture* a = capability::find_architecture(name);
         REQUIRE(a != nullptr);
         CHECK(a->describe != nullptr);
-        CHECK(a->graph != nullptr);
+        CHECK(arch::decoder_graph(*a) != nullptr);
     }
 }
 

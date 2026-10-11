@@ -596,9 +596,16 @@ void on_load_finished(bllm::residency::UploadError error, void* userdata) {
     // The graph over the plan, and its program, reading back the draw's
     // record; every pipeline compiles together (kernels/program.h).
     const bllm::residency::ResidencyPlan& plan = s.loaded->plan();
+    const bllm::arch::GraphFn graph = bllm::arch::decoder_graph(*load->architecture);
+    if (graph == nullptr) {
+        load->settled = true;
+        s.loaded.reset();
+        bllm_reply(request, failure_json("the model encodes, which this build runs no graph for", "").c_str());
+        return;
+    }
     std::vector<bllm::kernels::Launch> launches;
-    const bllm::graph::GraphResult built = load->architecture->graph(
-        load->description, plan, *bllm::capability::find_format(plan.cache_type), launches);
+    const bllm::graph::GraphResult built =
+        graph(load->description, plan, *bllm::capability::find_format(plan.cache_type), launches);
     std::optional<bllm::kernels::Binding> sampled;
     for (const bllm::residency::PlannedScratch& scratch : plan.scratch) {
         if (scratch.purpose == "sampled") {

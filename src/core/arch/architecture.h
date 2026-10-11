@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "core/formats/format.h"
@@ -28,6 +29,15 @@ namespace bllm::arch {
 //     runs them in, and what its family does that the description does not
 //     carry, such as Gemma 3's embedding scale. A family whose structure no
 //     block covers adds blocks; it never changes another family's graph.
+//
+// An architecture's graph is one of two kinds: a decoder's, which runs
+// turns over a cache and ends in the draw, or an encoder's, which runs one
+// step over a whole text and ends in a pooled vector (graph/encoder.h). The
+// kind is the architecture's, fixed in the capability table as a variant,
+// so no entry can hold both or neither (C.181); load reads it once and makes
+// a generator or an embedder (runtime/embedder.h). An architecture whose
+// graph encodes describes an encoder (model_description.h's `encoder`); one
+// whose graph decodes never does.
 //
 // It rewrites no weights. A file's converter has already put them in the
 // convention the shared kernels expect — llama.cpp's stores Gemma 3's norm
@@ -74,10 +84,28 @@ using DescribeFn = DescribeResult (*)(const gguf::TensorIndex& index,
 using GraphFn = graph::GraphResult (*)(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
                                        const formats::Format& cache_format, std::vector<kernels::Launch>& out);
 
+// Fills `out` with every launch of an encoder's one step. Preconditions:
+// `model` is this architecture's describe's, with an encoder; `plan` was made
+// from it, with the encoder's working set, as upload carried it out.
+using EncodeFn = graph::GraphResult (*)(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
+                                        std::vector<kernels::Launch>& out);
+
 struct Architecture {
     std::string_view name;
     DescribeFn describe;
-    GraphFn graph;
+    std::variant<GraphFn, EncodeFn> graph;
 };
+
+// The decoder's graph, or null for an architecture that encodes.
+[[nodiscard]] constexpr GraphFn decoder_graph(const Architecture& a) noexcept {
+    const GraphFn* f = std::get_if<GraphFn>(&a.graph);
+    return f != nullptr ? *f : nullptr;
+}
+
+// The encoder's graph, or null for an architecture that decodes.
+[[nodiscard]] constexpr EncodeFn encoder_graph(const Architecture& a) noexcept {
+    const EncodeFn* f = std::get_if<EncodeFn>(&a.graph);
+    return f != nullptr ? *f : nullptr;
+}
 
 }  // namespace bllm::arch

@@ -78,7 +78,7 @@ std::unique_ptr<Model> upload_qwen3(WGPUInstance instance, const gpu::Device& de
     const residency::ResidencyPlan& planned = m->upload->plan();
     std::string_view name;
     REQUIRE(m->index.read_string("general.architecture", name) == gguf::MetadataError::Ok);
-    const graph::GraphResult built = capability::find_architecture(name)->graph(
+    const graph::GraphResult built = arch::decoder_graph(*capability::find_architecture(name))(
         m->description, planned, *capability::find_format(planned.cache_type), m->launches);
     REQUIRE_MESSAGE(built.ok(), built.subject);
     for (const residency::PlannedScratch& s : planned.scratch) {

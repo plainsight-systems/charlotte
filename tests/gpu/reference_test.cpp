@@ -146,7 +146,7 @@ std::vector<std::vector<float>> decode(WGPUInstance instance, const gpu::Device&
     const residency::ResidencyPlan& plan = r.upload->plan();
     std::vector<kernels::Launch> launches;
     const graph::GraphResult built =
-        r.architecture->graph(description, plan, *capability::find_format(plan.cache_type), launches);
+        arch::decoder_graph(*r.architecture)(description, plan, *capability::find_format(plan.cache_type), launches);
     REQUIRE_MESSAGE(built.ok(), built.subject);
     const auto program = build_program(instance, *r.upload, std::move(launches));
     std::vector<std::vector<float>> logits;

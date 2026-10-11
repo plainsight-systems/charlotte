@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
     if (cache_format == nullptr) die("the cache's format is not one this build writes");
     std::vector<kernels::Launch> launches;
     const graph::GraphResult built =
-        capability::find_architecture(architecture)->graph(description, plan, *cache_format, launches);
+        arch::decoder_graph(*capability::find_architecture(architecture))(description, plan, *cache_format, launches);
     if (!built.ok()) die("the graph does not build: " + built.subject);
 
     std::set<std::tuple<std::string, std::string_view, std::vector<std::pair<std::string_view, double>>>> seen;

@@ -42,6 +42,13 @@ enum class Role {
     Up,
     Down,
     PostFeedForwardNorm,
+    // Gemma 4's per-layer block (graph/encoder.h): the gate from X to the
+    // per-layer width, the projection back, its post-norm, and the scale X
+    // takes once the block is added — one F32 value.
+    PerLayerGate,
+    PerLayerProjection,
+    PerLayerPostNorm,
+    OutputScale,
     Count,
 };
 
@@ -67,18 +74,45 @@ enum class FeedForwardActivation {
     GeluTanh,
 };
 
+// Which keys a query reads: those behind it, a decoder's, or those either
+// side, an encoder's (kernels/block_attention/block_attention.h).
+enum class AttentionMask {
+    Causal,
+    Bidirectional,
+};
+
+// How an encoder's rows become one vector: the mean of every row.
+enum class Pooling {
+    Mean,
+};
+
 struct LayerDescription {
     std::uint32_t query_heads;
     std::uint32_t key_value_heads;
     std::uint32_t head_dimension;
     std::uint32_t feed_forward_width;
-    // Tokens this layer attends back over: the context length for a
-    // full-attention layer, the window for a sliding-window layer. A query at
-    // position p reads keys at p - attention_window + 1 .. p.
+    // Tokens this layer attends over: the context length for a
+    // full-attention layer, the window for a sliding-window layer. Under a
+    // causal mask a query at position p reads keys at p - attention_window +
+    // 1 .. p; under a bidirectional one, keys within attention_window / 2 of
+    // p either side, llama.cpp's symmetric window.
     std::uint32_t attention_window;
     float rope_base;
     // The tensor filling each role. Empty where this layer has no such weight.
     std::array<std::optional<gguf::TensorId>, kRoleCount> tensors;
+};
+
+// What an encoder has beside its layers (graph/encoder.h): the projection of
+// the embedding to every layer's per-layer input, W to layers × width, and
+// that input's norm; the output projection, W to the embedding's length,
+// after pooling; and the pooling.
+struct EncoderDescription {
+    gguf::TensorId per_layer_projection;
+    gguf::TensorId per_layer_norm;
+    std::uint32_t per_layer_width;
+    gguf::TensorId output_projection;
+    std::uint32_t embedding_length;
+    Pooling pooling;
 };
 
 struct ModelDescription {
@@ -103,6 +137,15 @@ struct ModelDescription {
     // where the file has none. Every head is rotated whole: describe refuses
     // a file that rotates part of a head or declares another scaling.
     std::optional<gguf::TensorId> rotary_factors;
+    // Causal for a decoder; Bidirectional for an encoder.
+    AttentionMask mask = AttentionMask::Causal;
+    // Values normalized per head without a gain, as Gemma 4's are, in rope's
+    // encode form (kernels/rope/rope.h).
+    bool value_norm = false;
+    // Set by an architecture whose graph encodes, and by no other
+    // (arch/architecture.h): what the planner sizes its working buffers by,
+    // and what makes it plan no cache.
+    std::optional<EncoderDescription> encoder;
     std::vector<LayerDescription> layers;
 };
 

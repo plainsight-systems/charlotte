@@ -92,8 +92,13 @@ void check_graph(const Described& d, const residency::ResidencyPlan& plan, Verdi
                                                     " cannot be written by this build"});
         return;
     }
+    const arch::GraphFn graph = arch::decoder_graph(*d.architecture);
+    if (graph == nullptr) {
+        verdict.blockers.push_back({Stage::Run, "architecture " + quoted(d.name) + " encodes, which this build runs no graph for"});
+        return;
+    }
     std::vector<kernels::Launch> launches;
-    if (const auto r = d.architecture->graph(d.description, plan, *cache, launches); !r.ok()) {
+    if (const auto r = graph(d.description, plan, *cache, launches); !r.ok()) {
         verdict.blockers.push_back({Stage::Run, "architecture " + quoted(d.name) + " cannot run this file: " +
                                                     std::string(to_string(r.error)) + " (" + r.subject + ")"});
     }

@@ -55,7 +55,7 @@ inline Running run_model(WGPUInstance instance, const gpu::Device& device, const
     std::vector<kernels::Launch> launches;
     const formats::Format* cache_format = capability::find_format(plan.cache_type);
     REQUIRE_MESSAGE(cache_format != nullptr, "the plan's cache format is not one this build writes");
-    const graph::GraphResult built = architecture->graph(r.description, plan, *cache_format, launches);
+    const graph::GraphResult built = arch::decoder_graph(*architecture)(r.description, plan, *cache_format, launches);
     REQUIRE_MESSAGE(built.ok(), built.subject);
     residency::BufferRange sampled{};
     for (const residency::PlannedScratch& s : plan.scratch) {

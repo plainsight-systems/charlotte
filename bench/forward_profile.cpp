@@ -275,7 +275,7 @@ std::unique_ptr<Loaded> load(WGPUInstance instance, const gpu::Device& device, c
     const formats::Format* cache_format = capability::find_format(planned.cache_type);
     if (cache_format == nullptr) die("the cache's format is not one this build writes");
     const graph::GraphResult built =
-        capability::find_architecture(name)->graph(l->description, planned, *cache_format, l->launches);
+        arch::decoder_graph(*capability::find_architecture(name))(l->description, planned, *cache_format, l->launches);
     if (!built.ok()) die("the graph does not build: " + built.subject);
     std::optional<kernels::Binding> sampled;
     for (const residency::PlannedScratch& sc : planned.scratch) {
