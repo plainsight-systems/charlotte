@@ -37,6 +37,18 @@ This file tracks active and accepted work.
   video follow it, each its own design, before EmbeddingGemma 2 is
   announced as multimodal.
 
+  In: the module prepares an image byte for byte as llama.cpp does, and
+  each image's embedding falls within llama.cpp's own CPU-to-Metal spread
+  of its Metal output (`tests/gpu/vision_embed_test.cpp`). The page
+  downloads the companion's header and vision span, 226 MB of its 555,
+  checks them against a pinned SHA-256 and loads them the first time a
+  photo is indexed. In the app's Chromium, photos and the fixture's
+  paragraphs share one index; each query for the four test scenes ranks
+  its own scene first, every score llama.cpp's to three places; a
+  12-megapixel photo indexes in 0.49 s. In iOS Safari, under the fake
+  runtime, photos come from the library and the ranged download is
+  verified and cached.
+
 ## Accepted
 
 - **Generation in the browser** — accepted 2026-10-07, designed in its file
