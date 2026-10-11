@@ -18,9 +18,18 @@
 // token for each four bytes against a context of 512, so the panel's cutting
 // can be. The worker passes the parameter's value (worker.js).
 //
+// As a model that embeds, it claims a vision companion too: its verdict
+// claims every stage and its load loads nothing. A photo is decoded and cut
+// into bands as the real runtime does (image_input.js), and its vector is
+// the photo's colour histogram — each pixel counted in one of 512 bins by
+// the top three bits of each channel, then normalized — no model's, but the
+// same for the same photo, so photos can be indexed and ranked beside
+// paragraphs. Never shown as a model's: the page's banner stays up.
+//
 // Never deployed: tools/assemble_site.sh leaves web/dev/ out of the site, and
 // tools/check_site.sh fails the build if it is there.
 
+import { bands, decode } from '../image_input.js';
 import { createRuntime as createWasmRuntime } from '../wasm_runtime.js';
 
 const REPLY = 'This reply comes from the fake runtime, not from a model. ' +
@@ -30,6 +39,8 @@ const WORD_DELAY_MS = 40;
 const kDimensions = 768;
 const kContext = 512;
 const kBytesPerToken = 4;
+// What it claims for a photo: the budget's most tokens.
+const kImageTokens = 280;
 
 export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake }) {
   const embeds = fake === 'embedder';
@@ -39,6 +50,8 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake })
     runBench,
   });
   const cancelled = new Set();
+  // The photo prepared, as its histogram, until an embed takes it.
+  let prepared = null;
 
   return {
     preflight: async (bytes, totalSize, policy) => {
@@ -65,9 +78,33 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake })
       return { stopReason: 'stop', tokens, promptTokens: 0, reusedTokens: 0 };
     },
 
+    companionPreflight: async () => {
+      if (!embeds) throw new Error('the model generates; it has no companion');
+      return { status: 'read', reached: 'run', fit: null, blockers: [] };
+    },
+    loadCompanion: async () => ({ imageTokens: kImageTokens }),
+    prepareImage: async (blob) => {
+      const { bitmap, width, height } = await decode(blob);
+      const histogram = new Float32Array(kDimensions);
+      for (const { pixels } of bands(bitmap)) {
+        for (let i = 0; i < pixels.length; i += 4) {
+          histogram[(pixels[i] >> 5) * 64 + (pixels[i + 1] >> 5) * 8 + (pixels[i + 2] >> 5)] += 1;
+        }
+      }
+      const norm = Math.hypot(...histogram) || 1;
+      prepared = histogram.map((v) => v / norm);
+      return { tokens: kImageTokens, width, height };
+    },
+
     // Standing in for a model that generates, it embeds nothing, and says so.
-    embed: async (text) => {
+    embed: async (text, image = false) => {
       if (!embeds) throw new Error('the model generates; it does not embed');
+      if (image) {
+        if (prepared === null) throw new Error('no image is prepared');
+        const vector = prepared;
+        prepared = null;
+        return { vector, tokens: kImageTokens + 4 };
+      }
       const bytes = new TextEncoder().encode(text).length;
       const tokens = Math.ceil(bytes / kBytesPerToken);
       if (tokens > kContext) {

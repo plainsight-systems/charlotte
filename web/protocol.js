@@ -23,13 +23,28 @@ export const Request = Object.freeze({
   // prompt does not fit the context, and "prompt-too-large", shown by name,
   // when it is past the bytes one encode takes.
   GENERATE: 'generate',
-  // Embed a text, for a model that encodes — { text }, the task's prompt
-  // written around it. DONE carries { vector, tokens }: the unit-length
-  // Float32Array and the tokens the text made, ends included; FAILED's error
-  // carries code "text-too-long", with both counts, when the text does not
-  // fit the context.
+  // Embed a text, for a model that encodes — { text, image }, the task's
+  // prompt written around it; with `image` true, the image PREPARE_IMAGE
+  // prepared goes where the text writes <|image|>. DONE carries { vector,
+  // tokens }: the unit-length Float32Array and the tokens the text made, ends
+  // included; FAILED's error carries code "text-too-long", with both counts,
+  // when the text does not fit the context.
   EMBED: 'embed',
-  // Stop a load or a generation early; `target` is its request id.
+  // Judge a loaded model's companion file (companion.js) from its header,
+  // read from its first range — { bytes, totalSize, vision, memoryBudget },
+  // `vision` the catalog's entry and memoryBudget the model's load policy's,
+  // or absent. DONE carries the verdict, as PREFLIGHT's.
+  PREFLIGHT_COMPANION: 'preflight-companion',
+  // Load a cached companion beside the loaded model, by its file's name —
+  // { name, vision, memoryBudget, maxChunk }; progress comes back as
+  // PROGRESS replies. DONE carries { imageTokens }, the most an image becomes.
+  LOAD_COMPANION: 'load-companion',
+  // Decode a photo in the worker and prepare it in the module's one image
+  // slot — { image }, a Blob. DONE carries { tokens, width, height }: the
+  // tokens it becomes and the size it is resampled to.
+  PREPARE_IMAGE: 'prepare-image',
+  // Stop a load, a companion's load or a generation early; `target` is its
+  // request id.
   CANCEL: 'cancel',
 });
 

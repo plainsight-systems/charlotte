@@ -5,8 +5,10 @@
 // two places JavaScript and C++ meet. The crossings are preflight a header
 // prefix; load a cached model, which the worker streams through the module
 // itself (load.js); generate from a rendered prompt and the turn's policy;
-// embed a text, for a model that encodes, its vector one reply; and cancel,
-// which stops a load or a generation by naming its request. Text
+// embed a text, for a model that encodes, its vector one reply; judge and
+// load such a model's companion, and prepare an image for it, decoded here
+// (image_input.js); and cancel, which stops a load or a generation by naming
+// its request. Text
 // comes back one message per piece the reply completes, and a load's progress
 // one message a chunk (WASM.2). A failure's code, where the runtime gives one,
 // crosses with its message, so the page can act on it by name.
@@ -54,7 +56,20 @@ const handlers = {
   },
   [Request.GENERATE]: (runtime, { id, prompt, sampling, seed, maxTokens }, { token }) =>
     runtime.generate({ id, prompt, sampling, seed, maxTokens, onText: token }),
-  [Request.EMBED]: (runtime, { text }) => runtime.embed(text),
+  [Request.EMBED]: (runtime, { text, image }) => runtime.embed(text, image === true),
+  [Request.PREFLIGHT_COMPANION]: (runtime, { bytes, totalSize, vision, memoryBudget }) =>
+    runtime.companionPreflight(bytes, totalSize, vision, memoryBudget),
+  [Request.LOAD_COMPANION]: async (runtime, { id, name, vision, memoryBudget, maxChunk }, { progress }) => {
+    const controller = new AbortController();
+    loads.set(id, controller);
+    try {
+      return await runtime.loadCompanion({ name, vision, memoryBudget, maxChunk, onProgress: progress,
+        signal: controller.signal });
+    } finally {
+      loads.delete(id);
+    }
+  },
+  [Request.PREPARE_IMAGE]: (runtime, { image }) => runtime.prepareImage(image),
   [Request.CANCEL]: (runtime, { target }) => {
     const load = loads.get(target);
     if (load === undefined) return runtime.cancel(target);
