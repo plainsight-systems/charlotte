@@ -9,6 +9,7 @@
 #include "core/capability/capability.h"
 #include "core/formats/format.h"
 #include "core/gguf/reader.h"
+#include "core/graph/graph.h"
 #include "core/residency/plan.h"
 #include "core/residency/routes.h"
 #include "support/gguf_fixture.h"
@@ -53,7 +54,8 @@ Planned planned(const std::string& fixture, const DeviceLimits& limits = kDefaul
     std::string_view name;
     REQUIRE(p.index.read_string("general.architecture", name) == gguf::MetadataError::Ok);
     REQUIRE(capability::find_architecture(name)->describe(p.index, p.model).ok());
-    (void)residency::plan_residency(p.index, p.model, limits, policy::LoadPolicy{}, p.plan);
+    (void)residency::plan_residency(p.index, p.model, limits, policy::LoadPolicy{},
+                                    graph::decoder_working_set(p.model), p.plan);
     return p;
 }
 

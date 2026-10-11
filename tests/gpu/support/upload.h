@@ -23,6 +23,7 @@
 #include "core/formats/format.h"
 #include "core/gguf/reader.h"
 #include "core/gpu/device.h"
+#include "core/graph/graph.h"
 #include "core/residency/plan.h"
 #include "core/residency/upload.h"
 #include "support/gguf_fixture.h"
@@ -64,7 +65,8 @@ inline Model load(const std::string& fixture, const policy::LoadPolicy& policy =
     model::ModelDescription description;
     REQUIRE(capability::find_architecture(name)->describe(m.index, description).ok());
     const residency::PlanResult planned = residency::plan_residency(
-        m.index, description, residency::DeviceLimits{256ull << 20, 128ull << 20, 256}, policy, m.plan);
+        m.index, description, residency::DeviceLimits{256ull << 20, 128ull << 20, 256}, policy,
+        graph::decoder_working_set(description), m.plan);
     REQUIRE_MESSAGE(planned.ok(), planned.subject);
     return m;
 }

@@ -1,5 +1,6 @@
 #include "core/graph/graph.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <string_view>
 
@@ -77,6 +78,53 @@ void named(std::vector<kernels::Launch>& out, std::size_t from, std::string_view
 }
 
 }  // namespace
+
+residency::WorkingSet decoder_working_set(const model::ModelDescription& model) {
+    using residency::kCandidates;
+    using residency::kPrefillBlock;
+    using residency::kSelectionTile;
+    std::uint64_t query = 0, key_value = 0, feed_forward = 0, query_heads = 0;
+    for (const model::LayerDescription& l : model.layers) {
+        query = std::max<std::uint64_t>(query, std::uint64_t{l.query_heads} * l.head_dimension);
+        query_heads = std::max<std::uint64_t>(query_heads, l.query_heads);
+        key_value = std::max<std::uint64_t>(key_value, std::uint64_t{l.key_value_heads} * l.head_dimension);
+        feed_forward = std::max<std::uint64_t>(feed_forward, l.feed_forward_width);
+    }
+    // Selection's first pass writes kCandidates for each tile of the
+    // vocabulary, its second kCandidates for each tile of those.
+    const std::uint64_t first_tiles = (std::uint64_t{model.vocabulary_size} + kSelectionTile - 1) / kSelectionTile;
+    const std::uint64_t second_tiles = (kCandidates * first_tiles + kSelectionTile - 1) / kSelectionTile;
+    const std::uint32_t partial_rows = residency::partial_rows_for(model.trained_context);
+    return {{
+                {"hidden", kPrefillBlock, model.embedding_width},
+                {"normed", kPrefillBlock, model.embedding_width},
+                {"query", kPrefillBlock, query},
+                {"key", kPrefillBlock, key_value},
+                {"value", kPrefillBlock, key_value},
+                {"attention", kPrefillBlock, query},
+                // A split step's unnormalized outputs and their maxima and
+                // sums, a prefill block's query rows or the context's chunks
+                // (kernels/attention/attention.h).
+                {"partials", partial_rows, query},
+                {"partial_stats", partial_rows, 2 * query_heads},
+                // A block's last matmul writes its result here; the norm after
+                // it adds it into hidden (kernels/norm/norm.h).
+                {"output", kPrefillBlock, model.embedding_width},
+                // The gated activation, gate and up never written
+                // (kernels/matmul).
+                {"activation", kPrefillBlock, feed_forward},
+                // Logits are computed for the last token of a step only.
+                {"logits", 1, model.vocabulary_size},
+                // Selection's (logit, token) pairs, two words each, and the
+                // draw's record (sampler/sampler.h).
+                {"partials_a", 1, 2ull * kCandidates * first_tiles},
+                {"partials_b", 1, 2ull * kCandidates * second_tiles},
+                {"candidates", 1, 2ull * kCandidates},
+                {"sampled", 1, 4},
+            },
+            true,
+            partial_rows};
+}
 
 Builder::Builder(const model::ModelDescription& model, const residency::ResidencyPlan& plan,
                  const formats::Format& cache_format, std::vector<kernels::Launch>& out)

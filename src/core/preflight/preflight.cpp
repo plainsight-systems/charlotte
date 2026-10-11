@@ -138,7 +138,8 @@ void check_fit(const gguf::TensorIndex& index, const model::ModelDescription& de
         verdict.blockers.push_back({Stage::Fit, "the device's storage-offset alignment is not a power of two"});
         return;
     }
-    if (const auto r = residency::plan_residency(index, description, limits, policy, plan); !r.ok()) {
+    if (const auto r = residency::plan_residency(index, description, limits, policy,
+                                                 graph::decoder_working_set(description), plan); !r.ok()) {
         verdict.blockers.push_back({Stage::Fit, fit_failure(r, plan, policy)});
         return;
     }

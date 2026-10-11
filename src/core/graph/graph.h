@@ -230,6 +230,35 @@ struct GraphResult {
     [[nodiscard]] bool ok() const noexcept { return error == GraphError::Ok; }
 };
 
+// The working buffers the blocks above bind, for the residency plan to place
+// (residency/plan.h), in this order, each kPrefillBlock rows at f32 unless
+// stated: `hidden`, `normed` and `output`, the hidden width; `query` and
+// `attention`, the widest layer's query heads × head dimension; `key` and
+// `value`, its key-value heads × head dimension; the split attention's
+// `partials` and `partial_stats`, partial_rows_for the trained context
+// (kernels/attention/attention.h); `activation`, the widest feed-forward;
+// one row of `logits`, the vocabulary; selection's `partials_a` and
+// `partials_b` and the `candidates` it keeps, (logit, token) pairs of two
+// words (kernels/topk/topk.h); and the draw's 16-byte record, `sampled`
+// (sampler/sampler.h). A decoder keeps a KV cache. Which buffers a graph
+// binds is the graph's to say, and where they lie the planner's
+// (docs/architecture/change-axes.md).
+//
+// Selection and the draw have four working buffers of their own
+// (sampler/sampler.h): `partials_a` and `partials_b`, which its passes
+// alternate between — `partials_a` the first pass's output, kCandidates
+// (logit, token) pairs of 8 bytes for every kSelectionTile of the
+// vocabulary, 76 KB for Qwen3 and 131 KB for Gemma 3; `partials_b` the
+// second's, kCandidates for every kSelectionTile of those, 5 KB and
+// 8 KB; each later pass writes fewer than the one two before it, into the
+// same buffer — `candidates`, the kCandidates kept, 512 bytes; and
+// `sampled`, the draw's 16-byte record. Selection's last pass writes
+// `candidates` in place of a partials buffer, so for a vocabulary of
+// 16,384 or fewer — none listed — no pass writes `partials_b`, and for
+// one of 1,024 or fewer none writes `partials_a`; each is still planned,
+// 512 bytes at least, so every plan holds the same working buffers.
+[[nodiscard]] residency::WorkingSet decoder_working_set(const model::ModelDescription& model);
+
 // Appends a step's launches to `out`, block by block, in the order an
 // architecture's graph calls them. It holds what `output` holds between
 // blocks (above). Preconditions, as architecture.h's GraphFn states: `model`

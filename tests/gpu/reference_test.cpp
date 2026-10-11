@@ -36,6 +36,7 @@
 #include "core/arch/architecture.h"
 #include "core/capability/capability.h"
 #include "core/gguf/reader.h"
+#include "core/graph/graph.h"
 #include "core/kernels/program.h"
 #include "core/residency/plan.h"
 #include "core/residency/upload.h"
@@ -113,7 +114,7 @@ Running upload_model(WGPUInstance instance, const gpu::Device& device, const Ref
     policy::LoadPolicy policy;
     policy.memory_budget = ref.budget;
     REQUIRE(residency::plan_residency(r.index, r.description, residency::DeviceLimits{256ull << 20, 128ull << 20, 256},
-                                      policy, r.plan)
+                                      policy, graph::decoder_working_set(r.description), r.plan)
                 .ok());
     REQUIRE(r.plan.context_offered >= ref.tokens.size());
 

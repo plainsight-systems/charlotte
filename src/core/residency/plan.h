@@ -25,7 +25,14 @@ namespace bllm::residency {
 //   - Three pools, never sharing a buffer, because their lifetimes differ
 //     (GPU.9): the weights, packed in file order into as few buffers as the
 //     limits allow; the KV cache, keys and values per layer at the context
-//     offered; and one set of working buffers that every layer reuses.
+//     offered, for a graph that keeps one; and one set of working buffers
+//     that every layer reuses.
+//   - Which working buffers, and how large, is the graph's: the caller hands
+//     the planner a WorkingSet its graph declared (graph/graph.h), and the
+//     planner places each need in order, knowing no kernel by name. Which
+//     buffers a graph binds changes when a graph or a kernel needs one, axis
+//     A or E; where they lie changes with the limits, axis D
+//     (docs/architecture/change-axes.md).
 //     Optimization (practice): weights and cache in a few large buffers,
 //     suballocated, rather than one allocation per tensor (GPU.9).
 //   - Each working buffer is a buffer of its own. WebGPU tracks a dispatch's
@@ -53,19 +60,6 @@ namespace bllm::residency {
 //     them, with whatever the file puts between them, so upload is the
 //     same; a span wider than a binding is not a group, and its members are
 //     multiplied apart.
-//   - Selection and the draw have four working buffers of their own
-//     (sampler/sampler.h): `partials_a` and `partials_b`, which its passes
-//     alternate between — `partials_a` the first pass's output, kCandidates
-//     (logit, token) pairs of 8 bytes for every kSelectionTile of the
-//     vocabulary, 76 KB for Qwen3 and 131 KB for Gemma 3; `partials_b` the
-//     second's, kCandidates for every kSelectionTile of those, 5 KB and
-//     8 KB; each later pass writes fewer than the one two before it, into the
-//     same buffer — `candidates`, the kCandidates kept, 512 bytes; and
-//     `sampled`, the draw's 16-byte record. Selection's last pass writes
-//     `candidates` in place of a partials buffer, so for a vocabulary of
-//     16,384 or fewer — none listed — no pass writes `partials_b`, and for
-//     one of 1,024 or fewer none writes `partials_a`; each is still planned,
-//     512 bytes at least, so every plan holds the same working buffers.
 //   - The working buffers hold a prefill block of kPrefillBlock tokens at f32.
 //     Attention never stores a block-by-context matrix of scores: at 512
 //     tokens, 32 heads and a 40,000-token context that is 2.6 GB. Kernels work
@@ -111,6 +105,24 @@ inline constexpr std::uint32_t kChunkKeys = 64;
 // buffers are sized by.
 inline constexpr std::uint32_t kCandidates = 64;
 inline constexpr std::uint32_t kSelectionTile = 1024;
+
+// A working buffer a graph binds: its purpose, which the graph finds it by,
+// and its rows of `width` f32 values.
+struct ScratchNeed {
+    std::string_view purpose;
+    std::uint64_t rows;
+    std::uint64_t width;
+};
+
+// What a graph asks the planner to place beside the weights: its working
+// buffers, in order; whether it keeps a KV cache; and, for one that splits
+// attention by key chunks, the partial buffers' query rows
+// (kernels/attention/attention.h), or 0.
+struct WorkingSet {
+    std::vector<ScratchNeed> needs;
+    bool cache = true;
+    std::uint32_t partial_rows = 0;
+};
 
 // The limits the device was granted. How many bytes the plan may place on the
 // device is not among them — WebGPU does not report device memory — and comes
@@ -180,7 +192,7 @@ struct ResidencyPlan {
     // plan_residency before anything else, so a failed plan has it too.
     gguf::TensorType cache_type{};
     std::vector<PlannedScratch> scratch;
-    // The partial buffers' query rows, partial_rows_for the trained context.
+    // The partial buffers' query rows, as the working set gave them.
     std::uint32_t partial_rows = 0;
     std::uint32_t context_offered = 0;
     // Bytes in each pool, alignment padding included, and their sum. On
@@ -216,10 +228,15 @@ struct PlanResult {
     [[nodiscard]] bool ok() const noexcept { return error == PlanError::Ok; }
 };
 
+// Plans `model` for `limits` and `policy`, placing the working set its
+// graph declared. Without a cache the context offered is the smaller of
+// kPrefillBlock and the trained context — the most one step holds — and the
+// fit is the weights' and working buffers' bytes against the budget.
 [[nodiscard]] PlanResult plan_residency(const gguf::TensorIndex& index,
                                         const model::ModelDescription& model,
                                         const DeviceLimits& limits,
                                         const policy::LoadPolicy& policy,
+                                        const WorkingSet& working,
                                         ResidencyPlan& out);
 
 }  // namespace bllm::residency

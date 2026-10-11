@@ -8,6 +8,7 @@
 #include "core/arch/architecture.h"
 #include "core/capability/capability.h"
 #include "core/gguf/reader.h"
+#include "core/graph/graph.h"
 #include "core/residency/plan.h"
 #include "support/gguf_fixture.h"
 #include "support/model_headers.h"
@@ -98,7 +99,8 @@ std::uint64_t file_bytes(const residency::PlannedTensor& tensor, const gguf::Ten
 TEST_CASE("every tensor is placed, whole, and within the limits") {
     const auto p = describe("tiny_qwen3");
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), plan).ok());
     check_invariants(plan, kDefaults);
 
     REQUIRE(plan.tensors.size() == p.index.tensors().size());
@@ -118,7 +120,8 @@ TEST_CASE("a weight wider than a binding is split by whole rows") {
     const DeviceLimits narrow{65536, 256, 32};
     // Room for the working buffers is beside the point here: give them none.
     ResidencyPlan plan;
-    const auto r = residency::plan_residency(p.index, p.model, narrow, policy::LoadPolicy{}, plan);
+    const auto r = residency::plan_residency(p.index, p.model, narrow, policy::LoadPolicy{},
+                                             graph::decoder_working_set(p.model), plan);
     CHECK(r.error == PlanError::ScratchExceedsBinding);   // weights placed first
     const auto embd = static_cast<std::size_t>(*p.index.find("token_embd.weight"));
     REQUIRE(plan.tensors.size() > embd);
@@ -136,14 +139,16 @@ TEST_CASE("a piece whose bytes are no multiple of 4 binds them rounded up to 4")
     const auto extra = static_cast<std::size_t>(*p.index.find("extra.weight"));
     // Whole: 3 rows of 18 bytes, 54, bound as 56.
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), plan).ok());
     check_invariants(plan, kDefaults);
     REQUIRE(plan.tensors[extra].view.pieces().size() == 1);
     CHECK(plan.tensors[extra].view.pieces()[0].length == 56);
     // Split two rows to a 48-byte binding: 36 bound as 36, then 18 bound as 20.
     const DeviceLimits narrow{4096, 48, 32};
     ResidencyPlan split;
-    (void)residency::plan_residency(p.index, p.model, narrow, policy::LoadPolicy{}, split);
+    (void)residency::plan_residency(p.index, p.model, narrow, policy::LoadPolicy{},
+                                    graph::decoder_working_set(p.model), split);
     REQUIRE(split.tensors.size() > extra);
     const auto& pieces = split.tensors[extra].view.pieces();
     REQUIRE(pieces.size() == 2);
@@ -156,7 +161,7 @@ TEST_CASE("a row wider than a binding cannot be placed, and is named") {
     const auto p = describe("tiny_qwen3");
     ResidencyPlan plan;
     const auto r = residency::plan_residency(p.index, p.model, DeviceLimits{4096, 16, 32},
-                                             policy::LoadPolicy{}, plan);
+                                             policy::LoadPolicy{}, graph::decoder_working_set(p.model), plan);
     CHECK(r.error == PlanError::RowExceedsBinding);
     CHECK(r.subject == "token_embd.weight");
 }
@@ -166,7 +171,7 @@ TEST_CASE("a working buffer wider than a binding is named") {
     ResidencyPlan plan;
     // Weights fit 1 KiB bindings; the 512-token hidden buffer (16 KiB) does not.
     const auto r = residency::plan_residency(p.index, p.model, DeviceLimits{1 << 20, 1024, 32},
-                                             policy::LoadPolicy{}, plan);
+                                             policy::LoadPolicy{}, graph::decoder_working_set(p.model), plan);
     CHECK(r.error == PlanError::ScratchExceedsBinding);
     CHECK(r.subject == "hidden");
 }
@@ -174,7 +179,8 @@ TEST_CASE("a working buffer wider than a binding is named") {
 TEST_CASE("the context offered is capped by what the model was trained for") {
     const auto p = describe("tiny_qwen3");
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), plan).ok());
     CHECK(plan.context_offered == p.model.trained_context);
     REQUIRE(plan.cache.size() == p.model.layers.size());
     // 1 key/value head of width 32 at f16: 64 bytes a token, for keys and for values.
@@ -196,7 +202,8 @@ constexpr std::uint32_t kRing = 16 + residency::kPrefillBlock + 4096;
 TEST_CASE("a sliding-window layer's cache is a ring of its window, a prefill block and the reserve") {
     const auto p = describe("tiny_gemma3_long");
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), plan).ok());
     check_invariants(plan, kDefaults);
     CHECK(plan.context_offered == 8192);
     REQUIRE(plan.cache.size() == 7);
@@ -213,14 +220,16 @@ TEST_CASE("a ring that would reach the context offered is the context offered") 
     policy::LoadPolicy generous{};
     generous.rollback_reserve = 8192;
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, generous, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, generous,
+                                      graph::decoder_working_set(p.model), plan).ok());
     for (const auto& layer : plan.cache) CHECK(layer.slots == plan.context_offered);
 }
 
 TEST_CASE("only full-attention layers cost the budget a token at a time") {
     const auto p = describe("tiny_gemma3_long");
     ResidencyPlan roomy;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, roomy).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), roomy).ok());
 
     // Past the ring, one token costs the one global layer 128 bytes (64 of
     // keys, 64 of values). Take away 1,000 tokens' worth at that rate; had
@@ -228,7 +237,8 @@ TEST_CASE("only full-attention layers cost the budget a token at a time") {
     policy::LoadPolicy tight{};
     tight.memory_budget = roomy.total_bytes - 128 * 1000;
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, tight, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, tight,
+                                      graph::decoder_working_set(p.model), plan).ok());
     check_invariants(plan, kDefaults);
     CHECK(plan.total_bytes <= tight.memory_budget);
     CHECK(plan.context_offered <= 8192 - 1000);
@@ -243,7 +253,8 @@ TEST_CASE("only full-attention layers cost the budget a token at a time") {
 TEST_CASE("a model whose every layer uses a window is offered its trained context") {
     const auto p = describe("tiny_gemma3_long_all_window");
     ResidencyPlan roomy;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, roomy).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), roomy).ok());
     for (const auto& layer : roomy.cache) CHECK(layer.slots == kRing);
 
     // Full-length caches would need 7 layers x 16 bytes x (8192 - kRing)
@@ -252,7 +263,8 @@ TEST_CASE("a model whose every layer uses a window is offered its trained contex
     policy::LoadPolicy tight{};
     tight.memory_budget = roomy.total_bytes + 100'000;
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, tight, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, tight,
+                                      graph::decoder_working_set(p.model), plan).ok());
     check_invariants(plan, kDefaults);
     CHECK(plan.context_offered == 8192);
 }
@@ -263,7 +275,8 @@ TEST_CASE("the context offered is the most the budget allows, and fits within it
     // trained context lets the budget, not the model, set the limit.
     p.model.trained_context = 4096;
     ResidencyPlan roomy;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, roomy).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), roomy).ok());
     REQUIRE(roomy.context_offered == 4096);
 
     // 2 layers, keys and values, 64 bytes a token each: 256 bytes a token.
@@ -271,7 +284,8 @@ TEST_CASE("the context offered is the most the budget allows, and fits within it
     policy::LoadPolicy tight{};
     tight.memory_budget = roomy.total_bytes - 256 * 1000;
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, tight, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, tight,
+                                      graph::decoder_working_set(p.model), plan).ok());
     check_invariants(plan, kDefaults);
     CHECK(plan.total_bytes <= tight.memory_budget);
     CHECK(plan.context_offered <= 4096 - 1000);
@@ -283,7 +297,8 @@ TEST_CASE("a budget too small for the shortest context says what it needs") {
     policy::LoadPolicy tiny{};
     tiny.memory_budget = 4096;
     ResidencyPlan plan;
-    const auto r = residency::plan_residency(p.index, p.model, kDefaults, tiny, plan);
+    const auto r = residency::plan_residency(p.index, p.model, kDefaults, tiny,
+                                             graph::decoder_working_set(p.model), plan);
     CHECK(r.error == PlanError::ExceedsBudget);
     CHECK(plan.total_bytes > tiny.memory_budget);
 }
@@ -294,7 +309,8 @@ TEST_CASE("a cache precision that cannot store the head dimension is named") {
     policy::LoadPolicy q8{};
     q8.cache_precision = policy::CachePrecision::Q8_0;
     ResidencyPlan plan;
-    const auto r = residency::plan_residency(p.index, p.model, kDefaults, q8, plan);
+    const auto r = residency::plan_residency(p.index, p.model, kDefaults, q8,
+                                             graph::decoder_working_set(p.model), plan);
     CHECK(r.error == PlanError::UnsupportedCachePrecision);
     CHECK(r.subject == "layer 0");
 }
@@ -302,7 +318,8 @@ TEST_CASE("a cache precision that cannot store the head dimension is named") {
 TEST_CASE("an output head stored as a copy of the embedding gets buffers of its own") {
     const auto p = describe("tiny_qwen3_output_copy");
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), plan).ok());
     check_invariants(plan, kDefaults);
 
     const auto head = static_cast<std::size_t>(*p.model.output_head);
@@ -321,7 +338,8 @@ TEST_CASE("an output head stored as a copy of the embedding gets buffers of its 
 TEST_CASE("attention's partial buffers hold 512 query rows, or a row a chunk of the trained context") {
     const auto p = describe("tiny_qwen3");   // 2 query heads of 32
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), plan).ok());
     const auto length = [&](std::string_view purpose) -> std::uint64_t {
         for (const auto& s : plan.scratch) {
             if (s.purpose == purpose) return s.range.length;
@@ -338,7 +356,8 @@ TEST_CASE("attention's partial buffers hold 512 query rows, or a row a chunk of 
     auto model = p.model;
     model.trained_context = 40960;
     ResidencyPlan longer;
-    REQUIRE(residency::plan_residency(p.index, model, kDefaults, policy::LoadPolicy{}, longer).ok());
+    REQUIRE(residency::plan_residency(p.index, model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(model), longer).ok());
     CHECK(longer.partial_rows == 640);
     for (const auto& s : longer.scratch) {
         if (s.purpose == "partials") CHECK(s.range.length == 640 * 2 * 32 * 4);
@@ -349,7 +368,8 @@ TEST_CASE("attention's partial buffers hold 512 query rows, or a row a chunk of 
 TEST_CASE("selection's buffers hold 64 pairs a tile of the vocabulary, and the draw's its record") {
     const auto p = describe("tiny_qwen3");   // a vocabulary of 6: one tile
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), plan).ok());
     const auto length = [&](std::string_view purpose) -> std::uint64_t {
         for (const auto& s : plan.scratch) {
             if (s.purpose == purpose) return s.range.length;
@@ -374,7 +394,8 @@ TEST_CASE("selection's partials are sized by the passes that write them, for a v
         CAPTURE(vocabulary);
         m.vocabulary_size = vocabulary;
         ResidencyPlan plan;
-        REQUIRE(residency::plan_residency(qwen3.index, m, kDefaults, policy::LoadPolicy{}, plan).ok());
+        REQUIRE(residency::plan_residency(qwen3.index, m, kDefaults, policy::LoadPolicy{},
+                                          graph::decoder_working_set(m), plan).ok());
         const auto length = [&](std::string_view purpose) -> std::uint64_t {
             for (const auto& s : plan.scratch) {
                 if (s.purpose == purpose) return s.range.length;
@@ -410,7 +431,8 @@ void check_groups(const ResidencyPlan& plan, const residency::DeviceLimits& limi
 TEST_CASE("each layer's Q, K and V and its gate and up are fused groups, in output order") {
     const auto p = describe("tiny_qwen3");
     ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, plan).ok());
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(p.model), plan).ok());
     REQUIRE(plan.groups.size() == 2 * p.model.layers.size());
     check_groups(plan, kDefaults);
     const auto& layer = p.model.layers[1];
@@ -434,7 +456,8 @@ TEST_CASE("groups stay whole under buffers barely larger than the working buffer
         CAPTURE(buffer);
         const residency::DeviceLimits limits{buffer, buffer, 256};
         ResidencyPlan plan;
-        REQUIRE(residency::plan_residency(p.index, p.model, limits, policy::LoadPolicy{}, plan).ok());
+        REQUIRE(residency::plan_residency(p.index, p.model, limits, policy::LoadPolicy{},
+                                          graph::decoder_working_set(p.model), plan).ok());
         check_groups(plan, limits);
         CHECK(plan.groups.size() == 2 * p.model.layers.size());
     }
@@ -450,8 +473,48 @@ TEST_CASE("the listed models' groups are all fused, within a binding") {
         model::ModelDescription description;
         REQUIRE(capability::find_architecture(architecture)->describe(header.index, description).ok());
         ResidencyPlan plan;
-        REQUIRE(residency::plan_residency(header.index, description, limits, policy::LoadPolicy{}, plan).ok());
+        REQUIRE(residency::plan_residency(header.index, description, limits, policy::LoadPolicy{},
+                                          graph::decoder_working_set(description), plan).ok());
         CHECK(plan.groups.size() == 2 * description.layers.size());
         check_groups(plan, limits);
     }
+}
+
+TEST_CASE("the planner places the working set it is given, in order, and no cache for a graph that keeps none") {
+    const auto p = describe("tiny_qwen3");
+    const residency::WorkingSet working{{{"first", residency::kPrefillBlock, 64}, {"second", 1, 32}}, false, 0};
+    ResidencyPlan plan;
+    REQUIRE(residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, working, plan).ok());
+    check_invariants(plan, kDefaults);
+    REQUIRE(plan.scratch.size() == 2);
+    CHECK(plan.scratch[0].purpose == "first");
+    CHECK(plan.scratch[0].range.length == residency::kPrefillBlock * 64 * 4);
+    CHECK(plan.scratch[1].purpose == "second");
+    CHECK(plan.scratch[1].range.length == 32 * 4);
+    CHECK(plan.cache.empty());
+    CHECK(plan.cache_bytes == 0);
+    CHECK(plan.partial_rows == 0);
+    // Without a cache, one step's worth: a prefill block, or the trained
+    // context where that is less.
+    CHECK(plan.context_offered == std::min<std::uint32_t>(residency::kPrefillBlock, p.model.trained_context));
+}
+
+TEST_CASE("without a cache, a budget under the weights and working buffers is refused, with what they need") {
+    const auto p = describe("tiny_qwen3");
+    const residency::WorkingSet working{{{"only", residency::kPrefillBlock, 64}}, false, 0};
+    policy::LoadPolicy tiny{};
+    tiny.memory_budget = 4096;
+    ResidencyPlan plan;
+    const auto r = residency::plan_residency(p.index, p.model, kDefaults, tiny, working, plan);
+    CHECK(r.error == PlanError::ExceedsBudget);
+    CHECK(plan.total_bytes > tiny.memory_budget);
+}
+
+TEST_CASE("a working buffer whose size overflows is named") {
+    const auto p = describe("tiny_qwen3");
+    const residency::WorkingSet working{{{"huge", UINT64_MAX / 2, 4}}, false, 0};
+    ResidencyPlan plan;
+    const auto r = residency::plan_residency(p.index, p.model, kDefaults, policy::LoadPolicy{}, working, plan);
+    CHECK(r.error == PlanError::Overflow);
+    CHECK(r.subject == "huge");
 }

@@ -49,7 +49,8 @@ Loaded load(std::string_view id) {
     REQUIRE(l.architecture != nullptr);
     const auto described = l.architecture->describe(l.header.index, l.model);
     REQUIRE_MESSAGE(described.ok(), described.subject);
-    REQUIRE(residency::plan_residency(l.header.index, l.model, kDefaults, policy::LoadPolicy{}, l.plan).ok());
+    REQUIRE(residency::plan_residency(l.header.index, l.model, kDefaults, policy::LoadPolicy{},
+                                      graph::decoder_working_set(l.model), l.plan).ok());
     return l;
 }
 
@@ -369,4 +370,22 @@ TEST_CASE("every launch is named by its role and layer, as graph.h lists them") 
     const auto layer0 = roles_of(launches, 0);
     CHECK(std::vector<std::string_view>(layer0.begin() + 1, layer0.begin() + 4) ==
           std::vector<std::string_view>{"attention.q", "attention.k", "attention.v"});
+}
+
+TEST_CASE("a decoder's working set: its 15 buffers in order, a cache, and the partial rows of its context") {
+    const Loaded l = load("qwen3-0.6b-q4_0");
+    const residency::WorkingSet w = graph::decoder_working_set(l.model);
+    std::vector<std::string_view> purposes;
+    for (const residency::ScratchNeed& n : w.needs) purposes.push_back(n.purpose);
+    CHECK(purposes == std::vector<std::string_view>{"hidden", "normed", "query", "key", "value", "attention",
+                                                    "partials", "partial_stats", "output", "activation", "logits",
+                                                    "partials_a", "partials_b", "candidates", "sampled"});
+    CHECK(w.cache);
+    CHECK(w.partial_rows == residency::partial_rows_for(l.model.trained_context));
+    // The plan places exactly these, in this order.
+    REQUIRE(l.plan.scratch.size() == w.needs.size());
+    for (std::size_t i = 0; i < w.needs.size(); ++i) {
+        CHECK(l.plan.scratch[i].purpose == w.needs[i].purpose);
+        CHECK(l.plan.scratch[i].range.length == w.needs[i].rows * w.needs[i].width * 4);
+    }
 }

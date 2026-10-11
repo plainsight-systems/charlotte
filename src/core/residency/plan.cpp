@@ -21,9 +21,10 @@
 //   1. place_weights. Every tensor, in file order, packed into as few buffers
 //      as the limits allow. A tensor larger than one binding is cut between
 //      rows, never inside one, so no quantization block is split.
-//   2. place_scratch. The working buffers one layer's step reads and writes,
-//      shared by every layer, each in a buffer of its own.
-//   3. place_cache. The KV cache takes whatever the budget has left. The
+//   2. place_scratch. The working buffers the graph declared, shared by
+//      every layer, each in a buffer of its own.
+//   3. place_cache. For a graph that keeps a cache, the KV cache takes
+//      whatever the budget has left. The
 //      context offered is the largest whose cache fits, found by bisection
 //      because the cost only grows with the context. A sliding-window layer
 //      stops growing at its ring: its window, a prefill block, and the
@@ -238,56 +239,16 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
     return {};
 }
 
-// The working buffers one layer's step needs, shared by every layer.
-PlanResult place_scratch(const model::ModelDescription& model, const DeviceLimits& limits,
-                         ResidencyPlan& out) {
-    std::uint64_t query = 0, key_value = 0, feed_forward = 0, query_heads = 0;
-    for (const model::LayerDescription& l : model.layers) {
-        query = std::max<std::uint64_t>(query, std::uint64_t{l.query_heads} * l.head_dimension);
-        query_heads = std::max<std::uint64_t>(query_heads, l.query_heads);
-        key_value = std::max<std::uint64_t>(key_value, std::uint64_t{l.key_value_heads} * l.head_dimension);
-        feed_forward = std::max<std::uint64_t>(feed_forward, l.feed_forward_width);
-    }
-    // Selection's first pass writes kCandidates for each tile of the
-    // vocabulary, its second kCandidates for each tile of those.
-    const std::uint64_t first_tiles = (std::uint64_t{model.vocabulary_size} + kSelectionTile - 1) / kSelectionTile;
-    const std::uint64_t second_tiles = (kCandidates * first_tiles + kSelectionTile - 1) / kSelectionTile;
-    struct Need {
-        std::string_view purpose;
-        std::uint64_t rows;
-        std::uint64_t width;
-    };
-    const std::array needs{
-        Need{"hidden", kPrefillBlock, model.embedding_width},
-        Need{"normed", kPrefillBlock, model.embedding_width},
-        Need{"query", kPrefillBlock, query},
-        Need{"key", kPrefillBlock, key_value},
-        Need{"value", kPrefillBlock, key_value},
-        Need{"attention", kPrefillBlock, query},
-        // A split step's unnormalized outputs and their maxima and sums, a
-        // prefill block's query rows or the context's chunks
-        // (kernels/attention/attention.h).
-        Need{"partials", partial_rows_for(model.trained_context), query},
-        Need{"partial_stats", partial_rows_for(model.trained_context), 2 * query_heads},
-        // A block's last matmul writes its result here; the norm after it
-        // adds it into hidden (kernels/norm/norm.h).
-        Need{"output", kPrefillBlock, model.embedding_width},
-        // The gated activation, gate and up never written (kernels/matmul).
-        Need{"activation", kPrefillBlock, feed_forward},
-        // Logits are computed for the last token of a step only.
-        Need{"logits", 1, model.vocabulary_size},
-        // Selection's (logit, token) pairs, two words each, and the draw's
-        // record (sampler/sampler.h).
-        Need{"partials_a", 1, 2ull * kCandidates * first_tiles},
-        Need{"partials_b", 1, 2ull * kCandidates * second_tiles},
-        Need{"candidates", 1, 2ull * kCandidates},
-        Need{"sampled", 1, 4},
-    };
-    out.partial_rows = partial_rows_for(model.trained_context);
+// The working buffers the graph declared, shared by every layer, in order.
+PlanResult place_scratch(const WorkingSet& working, const DeviceLimits& limits, ResidencyPlan& out) {
+    out.partial_rows = working.partial_rows;
     Packer packer{out.buffers, Pool::Scratch, limits};
-    for (const Need& need : needs) {
+    for (const ScratchNeed& need : working.needs) {
         std::uint64_t bytes = 0;
-        if (!checked_mul(need.rows * need.width, kF32Bytes, bytes)) return failure(PlanError::Overflow, std::string(need.purpose));
+        std::uint64_t values = 0;
+        if (!checked_mul(need.rows, need.width, values) || !checked_mul(values, kF32Bytes, bytes)) {
+            return failure(PlanError::Overflow, std::string(need.purpose));
+        }
         if (bytes > range_limit(limits)) return failure(PlanError::ScratchExceedsBinding, std::string(need.purpose));
         BufferRange range{};
         // Alone: a kernel binds one working buffer read-only and another
@@ -415,18 +376,34 @@ PlanResult place_cache(const model::ModelDescription& model, const DeviceLimits&
     return {};
 }
 
+// Without a cache: the context one step holds, and the fit of what is placed.
+PlanResult place_no_cache(const model::ModelDescription& model, const policy::LoadPolicy& policy,
+                          ResidencyPlan& out) {
+    out.context_offered = std::min<std::uint32_t>(kPrefillBlock, model.trained_context);
+    std::uint64_t total = 0;
+    if (!checked_add(out.weight_bytes, out.scratch_bytes, total)) return failure(PlanError::Overflow);
+    if (total > policy.memory_budget) {
+        out.total_bytes = total;
+        return failure(PlanError::ExceedsBudget);
+    }
+    return {};
+}
+
 }  // namespace
 
 PlanResult plan_residency(const gguf::TensorIndex& index, const model::ModelDescription& model,
-                          const DeviceLimits& limits, const policy::LoadPolicy& policy,
+                          const DeviceLimits& limits, const policy::LoadPolicy& policy, const WorkingSet& working,
                           ResidencyPlan& out) {
     out = ResidencyPlan{};
     out.cache_type = storage_type(policy.cache_precision);
     if (auto r = place_weights(index, model, limits, out); !r.ok()) return r;
     out.weight_bytes = pool_bytes(out.buffers, Pool::Weights);
-    if (auto r = place_scratch(model, limits, out); !r.ok()) return r;
+    if (auto r = place_scratch(working, limits, out); !r.ok()) return r;
     out.scratch_bytes = pool_bytes(out.buffers, Pool::Scratch);
-    if (auto r = place_cache(model, limits, policy, out); !r.ok()) return r;
+    if (auto r = working.cache ? place_cache(model, limits, policy, out) : place_no_cache(model, policy, out);
+        !r.ok()) {
+        return r;
+    }
     out.cache_bytes = pool_bytes(out.buffers, Pool::Cache);
     out.total_bytes = out.weight_bytes + out.scratch_bytes + out.cache_bytes;
     return {};
