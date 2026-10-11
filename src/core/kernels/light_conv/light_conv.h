@@ -24,7 +24,7 @@ namespace bllm::kernels {
 //     being 0 — llama.cpp's left padding of K − 1 rows, K = 5, the taps in
 //     i order; w is conv_dw, (K, W), F32, w[c][i] at c × K + i;
 //   z[r][c] = y[r][c] × ρ × gain[c], ρ = 1 / √(mean over c of y² + ε);
-//   out[r][c] = z × σ(z).
+//   out[r][c] = z × σ(z), computed as z / (1 + e^−z), ggml_silu's form.
 //
 //   - One workgroup of 256 a row; the launch's rows are the step's R.
 //     Invocation n holds the vec4s n, n + 256, … of the row — channels 4n

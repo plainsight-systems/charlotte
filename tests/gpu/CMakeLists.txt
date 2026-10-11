@@ -21,6 +21,7 @@ add_executable(charlotte_gpu_tests
     pool_test.cpp
     subsample_test.cpp
     local_attention_test.cpp
+    light_conv_test.cpp
     program_test.cpp
     rope_test.cpp
     mapping_test.cpp

@@ -59,6 +59,7 @@ add_executable(charlotte_tests
     kernels_norm_test.cpp
     kernels_subsample_test.cpp
     kernels_local_attention_test.cpp
+    kernels_light_conv_test.cpp
     kernels_rope_test.cpp
     residency_piece_writer_test.cpp
     residency_routes_test.cpp
