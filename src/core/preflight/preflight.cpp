@@ -190,7 +190,7 @@ void check_rows(const gguf::TensorIndex& index, Verdict& verdict) {
     std::size_t short_rows = 0;
     const gguf::TensorEntry* first = nullptr;
     for (const gguf::TensorEntry& tensor : index.tensors()) {
-        if (formats::steps_by_groups(tensor)) continue;
+        if (formats::steps_by_groups(tensor) || formats::is_scalar(tensor)) continue;
         if (first == nullptr) first = &tensor;
         ++short_rows;
     }

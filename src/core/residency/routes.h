@@ -81,8 +81,8 @@ enum class RouteError {
     // tensor has. The subject names it, or gives the id.
     NotACandidate,
     // A tensor whose rows are not a whole number of unpack's 32-weight
-    // groups, which no kernel can step through (format.h). The subject names
-    // it.
+    // groups, which no kernel can step through, and that is not a scalar
+    // (format.h). The subject names it.
     RowNotSteppable,
 };
 

@@ -39,7 +39,9 @@ RouteResult route_tensor(const gguf::TensorEntry& entry, const PlannedTensor& pl
     // refusal does not depend on whether it has rows.
     const formats::Format* format = find_format(entry.type);
     if (format == nullptr) return failure(RouteError::UnsupportedFormat, entry.name);
-    if (!formats::steps_by_groups(entry)) return failure(RouteError::RowNotSteppable, entry.name);
+    if (!formats::steps_by_groups(entry) && !formats::is_scalar(entry)) {
+        return failure(RouteError::RowNotSteppable, entry.name);
+    }
     const formats::DeviceLayout& layout = format->layout();
 
     const auto& pieces = planned_tensor.view.pieces();

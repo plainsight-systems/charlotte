@@ -223,3 +223,16 @@ TEST_CASE("a tensor whose rows are not a whole number of 32-weight groups is ref
     CHECK(r.error == RouteError::RowNotSteppable);
     CHECK(r.subject == "extra.norm");
 }
+
+TEST_CASE("a scalar, one F32 value, is routed whole though its row is no group") {
+    const auto p = planned("tiny_qwen3_scalar");
+    std::vector<Route> routes;
+    ResidencyPlan carried;
+    const auto r = residency::plan_routes(p.index, p.plan, p.bytes.size(), both, {}, routes, carried);
+    REQUIRE(r.ok());
+    const auto scale = *p.index.find("extra.scale");
+    const auto& piece = carried.tensors[static_cast<std::size_t>(scale)].view.pieces();
+    REQUIRE(piece.size() == 1);
+    CHECK(piece.front().row_count == 1);
+    CHECK(piece.front().length == 4);
+}

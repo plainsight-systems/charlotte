@@ -57,7 +57,11 @@ namespace bllm::formats {
 //     number of groups: steps_by_groups says whether a tensor's are. A tensor
 //     whose rows are not — possible only for F32, whose block is one weight —
 //     is refused by routes (RowNotSteppable) and reported by preflight, so no
-//     kernel is handed one.
+//     kernel is handed one. A scalar, one value, is the exception: no kernel
+//     steps through it, and the one that reads it — the norm, Gemma 4's
+//     layer output scale (kernels/norm/norm.h) — reads it whole. Describe
+//     checks every role's tensor against its role's shape, so a scalar
+//     never fills a role that a kernel steps through.
 //   - Whether adjacent lanes read adjacent addresses depends on how a kernel
 //     maps lanes to groups; the layout makes it possible, and each kernel
 //     states its own mapping.
@@ -136,6 +140,11 @@ inline constexpr std::uint64_t kUnpackGroup = 32;
 // Whether a kernel can step through `tensor`'s rows, a group at a time.
 [[nodiscard]] constexpr bool steps_by_groups(const gguf::TensorEntry& tensor) noexcept {
     return tensor.dimensions[0] % kUnpackGroup == 0;
+}
+
+// Whether a tensor is one value, read whole by the kernel that reads it.
+[[nodiscard]] constexpr bool is_scalar(const gguf::TensorEntry& tensor) noexcept {
+    return tensor.element_count == 1;
 }
 
 namespace detail {

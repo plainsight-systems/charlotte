@@ -557,6 +557,9 @@ CASES = {
     # not of the 32-weight groups unpack steps through.
     "tiny_qwen3_odd_row": lambda: tiny_model(
         "qwen3", extra_tensors=[(b"extra.norm", [33], T_F32, b"\0" * 132)]),
+    # One F32 value, as Gemma 4's layer output scale is: placed whole.
+    "tiny_qwen3_scalar": lambda: tiny_model(
+        "qwen3", extra_tensors=[(b"extra.scale", [1], T_F32, struct.pack("<f", 0.5))]),
     # Seven layers: a run of six (five window layers, one global) and one more.
     "tiny_gemma3": lambda: tiny_model("gemma3", layers=7, extra=[
         kv(b"gemma3.attention.sliding_window", U32, struct.pack("<I", 16))]),
