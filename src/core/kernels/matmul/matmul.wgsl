@@ -306,24 +306,46 @@ fn slot_row(out_tile: u32, slot: u32, gated: bool) -> vec3<u32> {
     return locate(out_tile * kTileRows + slot);
 }
 
-// Invocation t's sums of range r for its 4 tokens × 4 outputs of the tile at
-// (token_tile, out_tile), a vec4 a token over its outputs: the range's groups
-// along K in order, each from zero, exactly as decode sums a range; fma on a
-// vec4 is the scalar fma a component. Every invocation calls it alike, so its
-// barriers are reached in uniform control flow.
-fn tile_range(token_tile: u32, out_tile: u32, t: u32, gated: bool, r: u32) -> array<vec4<f32>, 4> {
+// Invocation t's place in the tile at (token_tile, out_tile), worked out once
+// a tile rather than once a range: its lane, whether its token quad holds any
+// of the step, the row slots it decodes — t, and t + workgroup_size when the
+// workgroup is smaller than the tile's rows — with each slot's member and
+// row, and its quad's first input in x_tile.
+struct TilePlace {
+    token_tile: u32,
+    lane: u32,
+    live: bool,
+    slot0: u32,
+    slot1: u32,
+    mine0: vec3<u32>,
+    mine1: vec3<u32>,
+    x_at: u32,
+}
+
+fn tile_place(token_tile: u32, out_tile: u32, t: u32, gated: bool) -> TilePlace {
     let tq = t / kOutputLanes;
-    let lane = t % kOutputLanes;
+    let slot1 = t + workgroup_size;
     // A quad wholly past the step stages and passes the barriers, and skips
     // the products.
-    let live = token_tile * tile_tokens + tq * kMicro < step.tokens;
-    // The row slots this invocation decodes: t, and t + workgroup_size when
-    // the workgroup is smaller than the tile's rows.
-    let slot0 = t;
-    let slot1 = t + workgroup_size;
-    let mine0 = slot_row(out_tile, slot0, gated);
-    let mine1 = slot_row(out_tile, min(slot1, kTileRows - 1u), gated);
-    let x_at = tq * kMicro * 8u;
+    return TilePlace(token_tile, t % kOutputLanes, token_tile * tile_tokens + tq * kMicro < step.tokens, t, slot1,
+                     slot_row(out_tile, t, gated), slot_row(out_tile, min(slot1, kTileRows - 1u), gated),
+                     tq * kMicro * 8u);
+}
+
+// Invocation t's sums of range r for its 4 tokens × 4 outputs of its tile, a
+// vec4 a token over its outputs: the range's groups along K in order, each
+// from zero, exactly as decode sums a range; fma on a vec4 is the scalar fma
+// a component. Every invocation calls it alike, so its barriers are reached
+// in uniform control flow.
+fn tile_range(at: TilePlace, t: u32, r: u32) -> array<vec4<f32>, 4> {
+    let token_tile = at.token_tile;
+    let lane = at.lane;
+    let live = at.live;
+    let slot0 = at.slot0;
+    let slot1 = at.slot1;
+    let mine0 = at.mine0;
+    let mine1 = at.mine1;
+    let x_at = at.x_at;
     var s0 = vec4<f32>(0.0);
     var s1 = vec4<f32>(0.0);
     var s2 = vec4<f32>(0.0);
@@ -387,14 +409,13 @@ fn tile_range(token_tile: u32, out_tile: u32, t: u32, gated: bool, r: u32) -> ar
 // them.
 fn prefill_tile(wg: u32, t: u32, gated: bool) -> array<vec4<f32>, 4> {
     let token_tiles = (step.tokens + tile_tokens - 1u) / tile_tokens;
-    let token_tile = wg % token_tiles;
-    let out_tile = wg / token_tiles;
+    let at = tile_place(wg % token_tiles, wg / token_tiles, t, gated);
     var y0 = vec4<f32>(0.0);
     var y1 = vec4<f32>(0.0);
     var y2 = vec4<f32>(0.0);
     var y3 = vec4<f32>(0.0);
     for (var r = 0u; r < kRanges; r++) {
-        let s = tile_range(token_tile, out_tile, t, gated, r);
+        let s = tile_range(at, t, r);
         y0 = y0 + s[0];
         y1 = y1 + s[1];
         y2 = y2 + s[2];
@@ -521,7 +542,7 @@ fn split_ranges(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_
     let token_tile = wg.x % token_tiles;
     let out_tile = (wg.x / token_tiles) % out_tiles;
     let r = wg.x / (token_tiles * out_tiles);
-    let sums = tile_range(token_tile, out_tile, t, false, r);
+    let sums = tile_range(tile_place(token_tile, out_tile, t, false), t, r);
     let first = token_tile * tile_tokens + (t / kOutputLanes) * kMicro;
     for (var j = 0u; j < kMicro; j++) {
         let p = out_tile * kTileRows + t % kOutputLanes + kOutputLanes * j;

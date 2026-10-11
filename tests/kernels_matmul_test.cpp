@@ -215,32 +215,32 @@ TEST_CASE("split_tokens at each listed model's products, each need within the ra
         std::uint64_t rows, columns;
         std::uint32_t want;
     };
-    // W = output tiles × token tiles splits while W ≤ 2G and W ≤ 128.
+    // W = output tiles × token tiles splits while W ≤ 2G and W ≤ 64.
     const std::array<Case, 15> cases{{
-        {"EmbeddingGemma 2 down", Epilogue::Write, 512, 2048, 512},
+        {"EmbeddingGemma 2 down", Epilogue::Write, 512, 2048, 256},
         {"EmbeddingGemma 2 sliding output", Epilogue::Write, 512, 1024, 256},
         {"EmbeddingGemma 2 per-layer gate", Epilogue::GatedByInput, 512, 512, 128},
         {"EmbeddingGemma 2 sliding QKV", Epilogue::QKV, 2048, 512, 32},
         {"EmbeddingGemma 2 global QKV", Epilogue::QKV, 3072, 512, 1},
         {"EmbeddingGemma 2 gate and up", Epilogue::GatedActivation, 4096, 512, 1},
-        {"Qwen3 down", Epilogue::Write, 1024, 3072, 256},
-        {"Qwen3 output", Epilogue::Write, 1024, 2048, 256},
+        {"Qwen3 down", Epilogue::Write, 1024, 3072, 128},
+        {"Qwen3 output", Epilogue::Write, 1024, 2048, 128},
         {"Qwen3 QKV", Epilogue::QKV, 4096, 1024, 32},
-        {"Llama 3.2 down", Epilogue::Write, 2048, 8192, 128},
-        {"Llama 3.2 QKV", Epilogue::QKV, 3072, 2048, 64},
-        {"Llama 3.2 output", Epilogue::Write, 2048, 2048, 128},
-        {"Gemma 3 QKV", Epilogue::QKV, 1536, 1152, 96},
+        {"Llama 3.2 down", Epilogue::Write, 2048, 8192, 64},
+        {"Llama 3.2 QKV", Epilogue::QKV, 3072, 2048, 32},
+        {"Llama 3.2 output", Epilogue::Write, 2048, 2048, 64},
+        {"Gemma 3 QKV", Epilogue::QKV, 1536, 1152, 64},
         {"Gemma 3 output", Epilogue::Write, 1152, 1024, 96},
-        {"Gemma 3 down", Epilogue::Write, 1152, 6912, 224},
+        {"Gemma 3 down", Epilogue::Write, 1152, 6912, 96},
     }};
     for (const Case& c : cases) {
         CAPTURE(c.name);
         const std::uint32_t split = kernels::split_tokens(c.epilogue, c.rows, c.columns, kernels::kSplitGate);
         CHECK(split == c.want);
-        // Its range sums at its last split step, within the cap's 32 MiB.
+        // Its range sums at its last split step, within the cap's 16 MiB.
         const std::uint64_t need = kernels::range_sum_floats(c.epilogue, c.rows, c.columns, kernels::kSplitGate);
         CHECK(need == (split < 2 ? 0 : std::uint64_t{split} * c.rows * 32));
-        CHECK(need * 4 <= 32ull << 20);
+        CHECK(need * 4 <= 16ull << 20);
     }
 }
 

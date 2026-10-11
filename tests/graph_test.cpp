@@ -207,7 +207,7 @@ TEST_CASE("Qwen3's graph is the stated order, 763 launches, 231 dispatched a ste
     CHECK(launches.size() == 763);
     CHECK(dispatched(launches, 0, 1, true) == 231);
     CHECK(dispatched(launches, 0, 512, true) == 231);
-    // At 21 tokens all three split, each adding its combine; from 33 to 256
+    // At 21 tokens all three split, each adding its combine; from 33 to 128
     // the output and down projections alone — at 100 tokens beside each
     // layer's attention combine, its keys spanning two chunks.
     CHECK(dispatched(launches, 0, 21, true) == 231 + 3 * 28);
@@ -233,8 +233,8 @@ TEST_CASE("each step's schedule holds every launch the step dispatches, and walk
         for (const bool logits : {false, true}) {
             const auto list = schedules.of(tokens, logits);
             // A combine for each product split: QKV, output and down up to
-            // 32 tokens; output and down to 256 (kernels/matmul/matmul.h).
-            const std::uint32_t combines = tokens >= 2 && tokens <= 32 ? 84 : tokens >= 2 && tokens <= 256 ? 56 : 0;
+            // 32 tokens; output and down to 128 (kernels/matmul/matmul.h).
+            const std::uint32_t combines = tokens >= 2 && tokens <= 32 ? 84 : tokens >= 2 && tokens <= 128 ? 56 : 0;
             CHECK(list.size() == (logits ? 259u : 253u) + combines);
             for (const std::uint32_t position : {0u, 255u, 300u, 4095u, 40000u}) {
                 std::vector<std::uint32_t> runs, listed;
@@ -398,8 +398,8 @@ TEST_CASE("a decoder's working set: its 16 buffers in order, a cache, and the pa
                                                     "partials_a", "partials_b", "candidates", "sampled",
                                                     "range_sums"});
     // The most any product's range sums need: Qwen3's down and output at
-    // 256 tokens, 1,024 rows, 32 ranges (kernels/matmul/matmul.h).
-    CHECK(w.needs.back().rows * w.needs.back().width == 256ull * 1024 * 32);
+    // 128 tokens, 1,024 rows, 32 ranges (kernels/matmul/matmul.h).
+    CHECK(w.needs.back().rows * w.needs.back().width == 128ull * 1024 * 32);
     CHECK(w.cache);
     CHECK(w.partial_rows == residency::partial_rows_for(l.model.trained_context));
     // The plan places exactly these, in this order.

@@ -147,11 +147,11 @@ namespace bllm::graph {
 // `projected` and `embedding`, one row of D; and `range_sums`, one row of the
 // most kernels::range_sum_floats any of its products needs under
 // kernels::kSplitGate — a decoder's, and the per-layer inputs' projection
-// and each layer's per-layer gate and projection — 32 MiB, the down and
-// global output projections' at 512 tokens (kernels/matmul/matmul.h).
+// and each layer's per-layer gate and projection — 16 MiB, the down and
+// global output projections' at 256 tokens (kernels/matmul/matmul.h).
 // Every product's launches take that gate and that buffer. No KV cache: the
 // plan offers the smaller of kPrefillBlock and the trained context. About
-// 102 MiB for EmbeddingGemma 2, beside its 294 MB of weights: 401 MB, under
+// 86 MiB for EmbeddingGemma 2, beside its 294 MB of weights: 384 MB, under
 // the 2 GiB default budget and a phone's 512 MiB (web/platform_policy.js).
 //
 // What a step costs, counted, for EmbeddingGemma 2 at Q8_0 and N tokens:

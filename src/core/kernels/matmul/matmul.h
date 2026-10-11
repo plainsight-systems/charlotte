@@ -168,19 +168,23 @@ namespace bllm::kernels {
 //     bytes, and the split ran up to 1.8 times as long at the same shapes.
 //     Which steps split, by the workgroups the tiled form would run, W =
 //     output tiles × token tiles: when W is at most 2G, its chain long
-//     beside its parallel work, and at most 128, which bounds the range sums
+//     beside its parallel work, and at most 64, which bounds the range sums
 //     (costs, below). That is the gate, SplitGate (CDSA.21): two named
 //     values, measured, passed in by the graph, not read from ambient state,
-//     so a test forces either form. Measured in Chrome on the target over
-//     every listed model's product shapes at steps of 8 to 256 tokens, 124
-//     points (costs, below), the gate's choices came to 1.2% more time than
-//     the faster form at every point would, against 46% more for the tiled
-//     form alone. It split 87 points, three of them slower than tiled, by 1,
-//     2 and 6%; it left 37, four of them faster split — EmbeddingGemma 2's
-//     global QKV at 8 and 21 tokens by 1.69 and 1.21 times, Llama 3.2's QKV
-//     at 70 by 1.08 and its down at 256 by 1.10 — which a looser ratio
-//     would take only with losses of 14 to 43% elsewhere. Without the cap
-//     the choices were the same to within 0.02%. The gate depends on the
+//     so a test forces either form. The ratio is fitted to every listed
+//     model's product shapes timed alone in Chrome on the target, at steps
+//     of 8 to 256 tokens, 124 points (costs, below): with a cap of 128 its
+//     choices came to 1.2% more time than the faster form at every point
+//     would, against 46% more for the tiled form alone, and a ratio of 1.5
+//     to 2.0%. The cap is fitted to whole encodes, since a launch
+//     timed alone keeps its range sums in the GPU's caches and one in a step
+//     does not: under a cap of 128, EmbeddingGemma 2's down and global
+//     output projections split at 418 and 500 tokens, 27 to 33 MB of range
+//     sums each way a launch, and the encodes ran 1.0 to 1.4 ms slower than
+//     never splitting; under 64 they tie never splitting there, within 0.5%,
+//     and match 128 at every shorter step but 336 tokens, where 128 was 2%
+//     faster (docs/research/2026-10-11-chrome-encode-benchmark.md). The gate
+//     depends on the
 //     step only through its token tiles, so for each product it is a token
 //     range: every step up to split_tokens(), a whole number of the 32-token
 //     tile, or none; the split and tiled launches each take their part of
@@ -348,11 +352,11 @@ namespace bllm::kernels {
 //     combine's launch, an invocation an output a token, 32 adds each, at
 //     about 1.5 µs a launch. A product needs split_tokens() × its rows × 32
 //     floats at its last split step (range_sum_floats below), and the cap
-//     bounds that: W ≤ 128 is at most 128 tiles of 64 outputs × 32 tokens,
-//     32 MiB. The working buffer is the most the model's products need — 32
-//     MiB for EmbeddingGemma 2, Qwen3 and Llama 3.2, 31.5 for Gemma 3; a few
-//     KiB for a test's model of width 64. On a phone's 512 MiB
-//     (web/platform_policy.js) Qwen3's 32 is about 290 of its tokens of
+//     bounds that: W ≤ 64 is at most 64 tiles of 64 outputs × 32 tokens, 16
+//     MiB. The working buffer is the most the model's products need — 16
+//     MiB for EmbeddingGemma 2, Qwen3 and Llama 3.2, 13.5 for Gemma 3; half
+//     a MiB for a test's model of width 32. On a phone's 512 MiB
+//     (web/platform_policy.js) Qwen3's 16 is about 146 of its tokens of
 //     context. Launches: a split product adds its combine's, in
 //     the steps it splits.
 //     Measured in Chrome 151 on the target, a page timing each product's
@@ -378,10 +382,15 @@ namespace bllm::kernels {
 // coalesced (GPU.2). The gate is measured (CDSA.21, Per.6): for
 // EmbeddingGemma 2 at 21 tokens it takes the down, output, per-layer and
 // sliding QKV products, whose tiled times above, summed over its 24 layers,
-// come to about 9.8 ms of a 21-token encode's 13.9 in Chrome
-// (docs/research/2026-10-11-chrome-encode-benchmark.md), and their split
-// times to about 2.9 — an estimate from launches timed alone, until the
-// step is measured whole.
+// came to about 9.8 ms of a 21-token encode's 14.3 in Chrome and their split
+// times to about 2.9, launches timed alone; measured whole, the encode went
+// from 14.3 ms to 7.0, and a 70-token one from 16.0 to 11.0
+// (docs/research/2026-10-11-chrome-encode-benchmark.md).
+// Optimization (browser): a tiled workgroup works out its invocations' place
+// in the tile — lane, live token quad, the two row slots' members and rows —
+// once, not once a range: recomputed each of the 32 ranges, as a range of
+// Qwen3's 1,024-wide rows is one group, the tiled form ran 2 to 3% slower in
+// Chrome's compiled shaders at every encode measured, and 0.3% natively.
 // Optimization (practice): weights decoded in the load path, never
 // expanded (GDSA.18) — llama.cpp's mul_mv and mul_mm do the same.
 // Optimization (practice): Q, K and V as one product and gate and up as
@@ -494,7 +503,7 @@ namespace bllm::kernels {
 //     I.4    Make interfaces precisely and strongly typed — the epilogue is
 //            an enumeration.
 //     ES.45  Avoid magic constants — the micro-tile's 4 × 4 and the tiles'
-//            widths are named, and the gate's ratio of 2 and cap of 128.
+//            widths are named, and the gate's ratio of 2 and cap of 64.
 //     I.5    State preconditions — split_tokens' and matmul_launches'.
 //     F.8    Prefer pure functions — split_tokens and range_sum_floats, so
 //            the launches and the working set cannot disagree on a size.
@@ -557,11 +566,10 @@ struct SplitGate {
     std::uint32_t max_workgroups;
 };
 
-// Measured in Chrome 151 on the target (M3 Max, Metal), over every listed
-// model's product shapes at steps of 8 to 256 tokens (above): 1.2% from the
-// faster form's time summed over them, where a ratio of 1.5 would be 2.0%
-// and a cap of 96 2.0%.
-inline constexpr SplitGate kSplitGate{2, 1, 128};
+// Measured in Chrome 151 on the target (M3 Max, Metal): the ratio over every
+// listed model's product shapes timed alone, the cap over whole encodes
+// (above).
+inline constexpr SplitGate kSplitGate{2, 1, 64};
 
 // The most tokens a step may hold for the product to split — a whole number
 // of 32-token tiles, at most kPrefillBlock — or 1 when it never splits, as a

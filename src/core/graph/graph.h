@@ -243,7 +243,7 @@ struct GraphResult {
 // (sampler/sampler.h); and `range_sums`, one row of the most
 // kernels::range_sum_floats any of its products needs under
 // kernels::kSplitGate — Q, K and V, fused or each alone, the output and down
-// projections — at least one float: 32 MiB for Qwen3 and Llama 3.2, 31.5
+// projections — at least one float: 16 MiB for Qwen3 and Llama 3.2, 13.5
 // for Gemma 3. Every product's launches take that gate and that buffer
 // (kernels/matmul/matmul.h). A decoder keeps a KV cache. Which buffers a graph
 // binds is the graph's to say, and where they lie the planner's
