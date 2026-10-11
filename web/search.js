@@ -45,31 +45,50 @@
 //     (src/wasm/bindings.cpp).
 //
 // What it costs, counted, for EmbeddingGemma 2 on the target; a passage of
-// B bytes making N tokens:
-//   - Crossings: a passage is one request, two messages — the page to the
-//     worker and back — and one call into the module and one out of it, the
-//     vector's (wasm_runtime.js). A document of P passages is P of each, and
-//     P steps. WASM.2 asks a crossing that scales with content for its
-//     reason: the embedder encodes one text a step, so each crossing carries
-//     a step's whole work — about 1 ms fixed, the dispatches, the weights'
-//     one read and the mapping, and 5.6 ms of products for a 60-token
-//     paragraph at the rate embedder.h estimates from — beside which a
-//     message's hop is small.
-//   - Bytes: the passage, B bytes, is copied three times on its way in —
-//     written into the prompt, cloned into the worker's message, encoded as
-//     UTF-8 into the module's memory; the vector, 3 KiB, twice on its way
-//     out — sliced from the module's memory (wasm_runtime.js) and cloned
-//     into the reply — and kept as it arrives (search_index.js). A document
-//     of a thousand passages holds 3 MB of vectors (GDSA.6).
+// B bytes making N tokens, sent A times for P passages kept — A less P the
+// refusals that were cut:
+//   - Crossings, each send: two messages, the page to the worker and back;
+//     three calls into the module — malloc, bllm_embed, free — and out of
+//     it one call for a refusal, two for a vector: bllm_vector, then
+//     bllm_reply (wasm_runtime.js). Each kept passage is one step. WASM.2
+//     asks a crossing that scales with content for its reason: the embedder
+//     encodes one text a step, so each send carries a step's whole work.
+//   - The step, by embedder.h's estimates: 1.36 × 10⁸ N multiply-adds,
+//     5.6 ms for a 60-token paragraph at the rate it estimates from; the
+//     weights, 151 MB, read once a 32-token tile, ceil(N / 32) times — twice
+//     for 60 tokens, 0.76 ms at 400 GB/s, under the products; the 296
+//     dispatches' 0.44 ms, overlapped; then the 0.5 ms mapping. About 6.1 ms.
+//   - Bytes in, B each time: cloned into the worker's message, encoded as
+//     UTF-8 (TextEncoder.encode), copied into the module's memory
+//     (HEAPU8.set), then normalized by the tokenizer (embedder.h). Writing
+//     the prompt before it may or may not copy, as the engine joins strings.
+//   - Bytes out, 3 KiB a vector, three copies after the mapping: into the
+//     embedder's vector (embedder.h), sliced from the module's memory
+//     (wasm_runtime.js), cloned into the reply; then kept as it arrives
+//     (search_index.js). A thousand passages hold 3 MB of vectors (GDSA.6).
 //   - A query: the same, once, then the ranking's P × 768 multiply-adds
 //     (search_index.js), about a millisecond for a thousand passages by an
 //     estimate, not a measurement, beside the query's own encode.
+//   - Between steps the GPU waits on two message hops and the next
+//     passage's encode on the CPU. The loop stays in the page, and the index
+//     with it: in the worker, it would save the hops and the vector's clone
+//     each passage, but the worker would hold an index across requests, a
+//     second owner of state beside the module in the file contract 11 keeps
+//     to crossings. The hops are the one per-call cost here with no figure
+//     on the target; the page measurement of indexing calibrates them
+//     against the steps' estimates, and a share of the indexing that
+//     matters moves the loop.
+//   - The copies are kept: encoding into the module's memory directly
+//     (encodeInto) saves B bytes of a send, a few KiB, and is the
+//     boundary's choice for generate as for embed; transferring the vector
+//     instead of cloning it saves 3 KiB. Beside a 6 ms step, neither is
+//     worth a change to the boundary.
 //   - One passage a step, as the embedder takes them. Several in one step
-//     would share only the step's fixed cost, about 1 ms of the 6.6 a
-//     60-token paragraph takes by the estimates above, since every
-//     passage's products scale with its own tokens either way; and the
-//     embedder would have to mask attention and pool by passage (GPU.6), a
-//     change to the encode path's design, not to this page.
+//     would share the mapping, about 0.5 ms of the 6.1 a 60-token paragraph
+//     takes, and the padding of each passage's last tile; the products and
+//     the weights' reads scale with tokens either way. The embedder would
+//     have to mask attention and pool by passage (GPU.6), a change to the
+//     encode path's design, not to this page.
 //
 // Verification: in the app's Chromium with EmbeddingGemma 2, the document
 // in tests/fixtures/search/ — paragraphs on unrelated subjects, one of them
