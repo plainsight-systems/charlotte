@@ -100,6 +100,15 @@ struct Conventions {
                                              model::ModelDescription& out,
                                              std::span<const LayerHeads> heads = {});
 
+// One layer's tensors by role, named <prefix><layer>.<suffix> — "blk." for a
+// text architecture, "v.blk." for a vision encoder (arch/gemma4v) — each
+// checked against the shape its role requires for `heads`, gains F32, into
+// `out`'s tensors. describe_layers calls it for every layer.
+[[nodiscard]] DescribeResult describe_layer_tensors(const gguf::TensorIndex& index, std::string_view prefix,
+                                                    std::uint32_t layer, const Hyperparameters& hp,
+                                                    LayerHeads heads, std::span<const RoleName> roles,
+                                                    model::LayerDescription& out);
+
 // Reads an optional "<arch>.<key>": `fallback` when the file omits it, an
 // error when it declares it with another type.
 [[nodiscard]] DescribeResult read_u32_or(const gguf::TensorIndex& index, std::string_view arch,

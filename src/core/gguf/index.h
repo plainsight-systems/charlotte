@@ -101,6 +101,9 @@ public:
     [[nodiscard]] MetadataError read_u32_array(std::string_view key, std::vector<std::uint32_t>& out) const;
     // A short array of flags: BOOL elements, as read_u32_array reads counts.
     [[nodiscard]] MetadataError read_bool_array(std::string_view key, std::vector<bool>& out) const;
+    // A short array of values: FLOAT32 elements, as a vision encoder's
+    // clip.vision.image_mean is (arch/gemma4v).
+    [[nodiscard]] MetadataError read_f32_array(std::string_view key, std::vector<float>& out) const;
 
 private:
     friend ReadResult read_index(ByteSource& source, TensorIndex& out);

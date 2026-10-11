@@ -198,7 +198,7 @@ void EncoderBuilder::embed(float scale) {
     // An encoder never feeds a step, so the gather's record binding, which
     // only a fed step reads, takes the embedding buffer, read-only and unread
     // (kernels/gather/gather.h).
-    append(*out_, kernels::gather_launches(view(model_->token_embedding), buffers_.hidden, buffers_.embedding, scale));
+    append(*out_, kernels::gather_launches(view(*model_->token_embedding), buffers_.hidden, buffers_.embedding, scale));
     named(*out_, at, "embed");
 }
 
@@ -359,7 +359,7 @@ GraphResult EncoderBuilder::pooled_output() {
     }
     const Buffers& b = buffers_;
     std::size_t at = out_->size();
-    out_->push_back(norm(view(model_->output_norm), true));
+    out_->push_back(norm(view(*model_->output_norm), true));
     named(*out_, at, "output.norm");
     at = out_->size();
     out_->push_back(kernels::mean_launch(b.normed, b.pooled, model_->embedding_width));

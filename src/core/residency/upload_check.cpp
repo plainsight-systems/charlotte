@@ -111,7 +111,7 @@ UploadCheck::UploadCheck(const Upload& upload, std::size_t max_chunk)
     : instance_(gpu::retain(upload.instance())),
       device_(gpu::retain(upload.device())),
       upload_(upload),
-      writer_(upload.routes(), max_chunk),
+      writer_(upload.routes(), max_chunk, upload.ranges()),
       pending_(std::make_shared<CheckState>()) {
     CheckState& s = *pending_;
     s.instance = gpu::retain(upload.instance());

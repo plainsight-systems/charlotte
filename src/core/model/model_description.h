@@ -64,6 +64,11 @@ enum class RotaryPairing {
     // Dimensions k and k + d / 2: NEOX, Hugging Face's rotate_half. Qwen3,
     // Gemma 3.
     Halves,
+    // Each half of the head NEOX-paired within itself — dimensions k and k +
+    // d / 4 of the first half, turned by the patch's column, and the same
+    // within the second half, turned by its row: Gemma 4's vision encoder,
+    // rope_type axial (kernels/rope/rope.h).
+    Axial,
 };
 
 // The activation a gated feed-forward block applies to its gate before
@@ -115,13 +120,30 @@ struct EncoderDescription {
     Pooling pooling;
 };
 
+// What a vision encoder has beside its layers (graph/vision.h): the patch
+// embedding, F32, 3 P² to W; the learned position table, F32, W ×
+// `positions` × 2, the column table then the row table; the pooling of the
+// patch grid, k × k; and the projection, W to the text model's width.
+struct VisionDescription {
+    gguf::TensorId patch_embedding;
+    std::uint32_t patch_size;
+    gguf::TensorId position_table;
+    std::uint32_t positions;
+    std::uint32_t pooling;
+    gguf::TensorId projection;
+    std::uint32_t projection_width;
+};
+
 struct ModelDescription {
     std::uint32_t vocabulary_size;
     std::uint32_t embedding_width;
     std::uint32_t trained_context;
     float norm_epsilon;
-    gguf::TensorId token_embedding;
-    gguf::TensorId output_norm;
+    // Every text architecture's; absent only for a vision encoder, which has
+    // no vocabulary (`vision` below). The decoder's and encoder's builders
+    // require both.
+    std::optional<gguf::TensorId> token_embedding;
+    std::optional<gguf::TensorId> output_norm;
     // Empty when the output head reads the token embedding.
     std::optional<gguf::TensorId> output_head;
     // The architecture's, set by its describe.
@@ -146,6 +168,9 @@ struct ModelDescription {
     // (arch/architecture.h): what the planner sizes its working buffers by,
     // and what makes it plan no cache.
     std::optional<EncoderDescription> encoder;
+    // Set by a vision encoder's describe and by no other
+    // (arch/vision_encoder.h).
+    std::optional<VisionDescription> vision;
     std::vector<LayerDescription> layers;
 };
 

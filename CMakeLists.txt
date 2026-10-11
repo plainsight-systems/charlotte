@@ -32,6 +32,8 @@ add_library(charlotte_core STATIC
     src/core/arch/qwen3/qwen3.cpp
     src/core/graph/graph.cpp
     src/core/graph/encoder.cpp
+    src/core/graph/vision.cpp
+    src/core/arch/gemma4v/gemma4v.cpp
     src/core/capability/capability.cpp
     src/core/gguf/arrays.cpp
     src/core/gguf/index.cpp
@@ -73,6 +75,7 @@ add_library(charlotte_core STATIC
     src/core/runtime/ends.cpp
     src/core/runtime/stops.cpp
     src/core/residency/routes.cpp
+    src/core/residency/file_ranges.cpp
     src/core/gpu/dispatch_math.cpp
     src/core/media/image.cpp
 )

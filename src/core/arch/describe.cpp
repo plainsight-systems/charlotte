@@ -271,19 +271,28 @@ DescribeResult describe_layers(const gguf::TensorIndex& index, const Hyperparame
         }
         out.layers.push_back(model::LayerDescription{hp.head_count, h.key_value_heads, h.head_dimension,
                                                      hp.feed_forward_length, hp.context_length, hp.rope_base, {}});
-        const std::string prefix = "blk." + std::to_string(layer) + ".";
-        for (const RoleName& rn : roles) {
-            const Shape shape = shape_of(rn.role, hp, h);
-            auto& slot = out.layers[layer].tensors[static_cast<std::size_t>(rn.role)];
-            const std::string name = prefix + std::string(rn.suffix);
-            if (auto r = find_tensor(index, name, shape.dimension_count, shape.dimensions[0], shape.dimensions[1],
-                                     true, slot);
-                !r.ok()) {
-                return r;
-            }
-            if (is_gain(rn.role)) {
-                if (auto r = require_f32(index, slot, name); !r.ok()) return r;
-            }
+        if (auto r = describe_layer_tensors(index, "blk.", layer, hp, h, roles, out.layers[layer]); !r.ok()) {
+            return r;
+        }
+    }
+    return {};
+}
+
+DescribeResult describe_layer_tensors(const gguf::TensorIndex& index, std::string_view prefix, std::uint32_t layer,
+                                      const Hyperparameters& hp, LayerHeads heads, std::span<const RoleName> roles,
+                                      model::LayerDescription& out) {
+    const std::string layer_prefix = std::string(prefix) + std::to_string(layer) + ".";
+    for (const RoleName& rn : roles) {
+        const Shape shape = shape_of(rn.role, hp, heads);
+        auto& slot = out.tensors[static_cast<std::size_t>(rn.role)];
+        const std::string name = layer_prefix + std::string(rn.suffix);
+        if (auto r = find_tensor(index, name, shape.dimension_count, shape.dimensions[0], shape.dimensions[1], true,
+                                 slot);
+            !r.ok()) {
+            return r;
+        }
+        if (is_gain(rn.role)) {
+            if (auto r = require_f32(index, slot, name); !r.ok()) return r;
         }
     }
     return {};

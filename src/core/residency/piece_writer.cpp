@@ -85,10 +85,12 @@ std::span<std::byte> take(std::span<std::byte> staging, std::size_t& staged, std
 
 }  // namespace
 
-PieceWriter::PieceWriter(std::span<const Route> routes, std::size_t max_chunk)
+PieceWriter::PieceWriter(std::span<const Route> routes, std::size_t max_chunk, std::span<const FileRange> ranges)
     : routes_(routes),
       max_chunk_(max_chunk),
+      ranges_(ranges.begin(), ranges.end()),
       staging_(staging_bound(routes.size(), max_chunk)) {
+    if (!ranges_.empty()) next_offset_ = ranges_[0].begin;
     while (route_ < routes_.size() && routes_[route_].blocks == 0) ++route_;
     // Where each buffer's pieces have reached, walking the routes in order.
     std::vector<std::uint64_t> reached;
@@ -105,7 +107,13 @@ WriteError PieceWriter::accept(std::uint64_t file_offset, std::span<const std::b
     if (failed_ != WriteError::Ok) return failed_;
     if (chunk.size() > max_chunk_) return failed_ = WriteError::ChunkTooLarge;
     std::uint64_t end = 0;
-    if (file_offset != next_offset_ || !gguf::checked_add(file_offset, chunk.size(), end)) {
+    if (!ranges_.empty() && next_offset_ == ranges_[range_].end && range_ + 1 < ranges_.size()) {
+        // The last chunk ended its range: the next starts the next range.
+        ++range_;
+        next_offset_ = ranges_[range_].begin;
+    }
+    if (file_offset != next_offset_ || !gguf::checked_add(file_offset, chunk.size(), end) ||
+        (!ranges_.empty() && end > ranges_[range_].end)) {
         return failed_ = WriteError::OutOfOrder;
     }
 
@@ -254,7 +262,10 @@ std::optional<std::uint64_t> PieceWriter::joinable_padding() const {
 
 WriteError PieceWriter::finish(std::uint64_t file_size) {
     if (failed_ != WriteError::Ok) return failed_;
-    if (route_ < routes_.size() || next_offset_ != file_size) return failed_ = WriteError::Unfinished;
+    const std::uint64_t last = ranges_.empty() ? file_size : ranges_.back().end;
+    if (route_ < routes_.size() || next_offset_ != last || (!ranges_.empty() && range_ + 1 != ranges_.size())) {
+        return failed_ = WriteError::Unfinished;
+    }
     return WriteError::Ok;
 }
 

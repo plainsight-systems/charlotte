@@ -145,7 +145,7 @@ TEST_CASE("a file too short for its tensors is refused before any byte arrives")
 TEST_CASE("a confirmed copy is not routed: it reads what it copies, and its buffers go uncreated") {
     const auto p = planned("tiny_qwen3_output_copy");
     const auto head = *p.model.output_head;
-    const auto embedding = p.model.token_embedding;
+    const auto embedding = *p.model.token_embedding;
 
     // Unconfirmed, the candidate is routed like any tensor.
     std::vector<Route> routes;
@@ -180,7 +180,7 @@ TEST_CASE("a confirmed copy is not routed: it reads what it copies, and its buff
 
 TEST_CASE("confirming a tensor the plan never marked a candidate is refused by name") {
     const auto p = planned("tiny_qwen3_output_copy");
-    const gguf::TensorId confirmed[] = {p.model.token_embedding};
+    const gguf::TensorId confirmed[] = {*p.model.token_embedding};
     std::vector<Route> routes;
     ResidencyPlan carried;
     const auto r = residency::plan_routes(p.index, p.plan, p.bytes.size(), both, confirmed, routes, carried);

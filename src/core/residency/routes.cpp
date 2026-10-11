@@ -34,7 +34,7 @@ const PlannedTensor* planned(const ResidencyPlan& plan, gguf::TensorId id) {
 // Routes one tensor's pieces, each a run of whole rows, so whole blocks.
 RouteResult route_tensor(const gguf::TensorEntry& entry, const PlannedTensor& planned_tensor,
                          const ResidencyPlan& plan, std::uint64_t file_size, FindFormat find_format,
-                         std::vector<Route>& routes) {
+                         std::span<const FileRange> ranges, std::vector<Route>& routes) {
     // A format not listed is refused whatever the tensor's size, so the
     // refusal does not depend on whether it has rows.
     const formats::Format* format = find_format(entry.type);
@@ -57,7 +57,9 @@ RouteResult route_tensor(const gguf::TensorEntry& entry, const PlannedTensor& pl
             !checked_mul(piece.row_count, row_bytes, bytes) ||
             !range_within(offset_in_tensor, bytes, entry.data_length) ||
             !range_within(entry.data_offset, offset_in_tensor, file_size) ||
-            !range_within(entry.data_offset + offset_in_tensor, bytes, file_size)) {
+            !range_within(entry.data_offset + offset_in_tensor, bytes, file_size) ||
+            (!ranges.empty() &&
+             !within(ranges, entry.data_offset + offset_in_tensor, entry.data_offset + offset_in_tensor + bytes))) {
             return failure(RouteError::OutOfRange, entry.name);
         }
         const auto buffer = static_cast<std::size_t>(piece.buffer);
@@ -77,7 +79,7 @@ RouteResult route_tensor(const gguf::TensorEntry& entry, const PlannedTensor& pl
 
 RouteResult plan_routes(const gguf::TensorIndex& index, const ResidencyPlan& plan, std::uint64_t file_size,
                         FindFormat find_format, std::span<const gguf::TensorId> confirmed,
-                        std::vector<Route>& routes, ResidencyPlan& out) {
+                        std::vector<Route>& routes, ResidencyPlan& out, std::span<const FileRange> ranges) {
     ResidencyPlan carried = plan;
     for (const gguf::TensorId id : confirmed) {
         // The ids cross from the page, so one no tensor has is named, never
@@ -95,6 +97,7 @@ RouteResult plan_routes(const gguf::TensorIndex& index, const ResidencyPlan& pla
     std::vector<Route> found;
     for (std::size_t i = 0; i < plan.tensors.size(); ++i) {
         const PlannedTensor& t = plan.tensors[i];
+        if (!t.present) continue;   // outside the ranges the load reads: no route
         if (contains(confirmed, t.tensor)) {
             // A confirmed copy reads the tensor it copies, and its own buffers
             // — the plan gave it buffers no other tensor shares — go uncreated.
@@ -110,7 +113,7 @@ RouteResult plan_routes(const gguf::TensorIndex& index, const ResidencyPlan& pla
             carried.tensors[i].view = original->view;
             continue;
         }
-        if (auto r = route_tensor(index.tensor(t.tensor), t, plan, file_size, find_format, found); !r.ok()) {
+        if (auto r = route_tensor(index.tensor(t.tensor), t, plan, file_size, find_format, ranges, found); !r.ok()) {
             return r;
         }
     }

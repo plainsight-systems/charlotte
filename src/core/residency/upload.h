@@ -255,10 +255,12 @@ public:
     // largest chunk write will be given.
     // `find_format` is capability::find_format in the harness (routes.h).
     // Takes its own reference to the device and shares its status.
+    // `ranges` are the bytes of the file the load reads (file_ranges.h),
+    // which the plan was made against; empty for the whole file.
     static void begin(const gpu::Device& device, const gguf::TensorIndex& index, const ResidencyPlan& plan,
                       std::uint64_t file_size, FindFormat find_format,
                       std::span<const gguf::TensorId> confirmed_duplicates, std::size_t max_chunk,
-                      ReadyCallback ready, void* userdata);
+                      ReadyCallback ready, void* userdata, std::span<const FileRange> ranges = {});
 
     // Marks pending callbacks cancelled, then releases the buffers.
     ~Upload() noexcept;
@@ -285,6 +287,9 @@ public:
     // checks exactly these.
     [[nodiscard]] std::span<const Route> routes() const noexcept { return routes_; }
 
+    // The bytes of the file the load read; empty for the whole file.
+    [[nodiscard]] std::span<const FileRange> ranges() const noexcept { return ranges_; }
+
     [[nodiscard]] WGPUDevice device() const noexcept { return device_.get(); }
 
     // The instance the device came from. WebGPU has no way to find it from the
@@ -303,7 +308,7 @@ public:
 
 private:
     Upload(const gpu::Device& device, ResidencyPlan plan, std::vector<Route> routes, std::uint64_t file_size,
-           std::size_t max_chunk);
+           std::size_t max_chunk, std::span<const FileRange> ranges);
 
     gpu::Instance instance_;     // a reference of its own: its callbacks are the instance's
     gpu::DeviceHandle device_;   // a reference of its own, taken in begin
@@ -311,6 +316,7 @@ private:
     std::vector<std::string> tensor_names_;   // by TensorId, for the routed tensors
     ResidencyPlan plan_;
     std::vector<Route> routes_;
+    std::vector<FileRange> ranges_;
     PieceWriter writer_;         // over routes_; the Upload never moves, so the span holds
     std::uint64_t file_size_;
     std::vector<gpu::Buffer> buffers_;

@@ -80,7 +80,7 @@ namespace bllm::runtime {
 //     ranges; Describe, its projector type found (capability.h) and
 //     described (arch/gemma4v/gemma4v.h); Fit, the plan against the ranges
 //     (residency/file_ranges.h) within what the budget leaves beside the
-//     text model's plan — 2 GiB less 384 MB by default, so its 325 MB fits;
+//     text model's plan — 2 GiB less 384 MB by default, so its 320 MB fits;
 //     Upload; Run, its graph building, the text model's vocabulary holding
 //     the three image tokens, and pairs (arch/vision_encoder.h) accepting the
 //     loaded text model. A verdict names everything still missing, as a
@@ -147,7 +147,7 @@ namespace bllm::runtime {
 //     33.5 at 336 (docs/research/2026-10-11-chrome-encode-benchmark.md).
 //   - The readback: 3 KiB, about 0.5 ms, as for a text.
 //   - Memory: the slot, 7.7 MB of the module's heap at load; on the
-//     device, the encoder's 226 MB and its working set's 98 MB.
+//     device, the encoder's 226 MB and its working set's 94 MB.
 // Optimization (browser): the companion's audio encoder never fetched,
 // cached or uploaded (residency/file_ranges.h).
 // Optimization (browser): the next photo prepared while the last encodes,

@@ -4,6 +4,7 @@
 #include <array>
 #include <span>
 
+#include "core/formats/format.h"
 #include "core/gguf/checked.h"
 
 // How this file works.
@@ -129,7 +130,8 @@ bool is_tied_copy(const gguf::TensorIndex& index, const model::ModelDescription&
                   std::size_t tensor) {
     if (!model.output_head || static_cast<std::size_t>(*model.output_head) != tensor) return false;
     const gguf::TensorEntry& head = index.tensor(*model.output_head);
-    const gguf::TensorEntry& embedding = index.tensor(model.token_embedding);
+    if (!model.token_embedding) return false;
+    const gguf::TensorEntry& embedding = index.tensor(*model.token_embedding);
     return head.type == embedding.type && head.data_length == embedding.data_length &&
            std::equal(std::begin(head.dimensions), std::end(head.dimensions),
                       std::begin(embedding.dimensions));
@@ -168,11 +170,48 @@ bool span_bytes(std::span<const gguf::TensorEntry> tensors, std::size_t first, s
     return true;
 }
 
+// Every tensor the description names: what a load of part of a file must
+// hold.
+std::vector<gguf::TensorId> described_tensors(const model::ModelDescription& model) {
+    std::vector<gguf::TensorId> out;
+    const auto add = [&](const std::optional<gguf::TensorId>& t) {
+        if (t) out.push_back(*t);
+    };
+    add(model.token_embedding);
+    add(model.output_norm);
+    add(model.output_head);
+    add(model.rotary_factors);
+    if (model.vision) {
+        add(model.vision->patch_embedding);
+        add(model.vision->position_table);
+        add(model.vision->projection);
+    }
+    if (model.encoder) {
+        add(model.encoder->per_layer_projection);
+        add(model.encoder->per_layer_norm);
+        add(model.encoder->output_projection);
+    }
+    for (const model::LayerDescription& l : model.layers) {
+        for (const auto& t : l.tensors) add(t);
+    }
+    return out;
+}
+
+// Whether tensor `t` lies wholly inside the ranges the load reads; every
+// tensor does when the load reads the whole file.
+bool present(const gguf::TensorEntry& t, std::span<const FileRange> ranges) {
+    return ranges.empty() || within(ranges, t.data_offset, t.data_offset + t.data_length);
+}
+
 PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescription& model,
-                         const DeviceLimits& limits, ResidencyPlan& out) {
+                         const DeviceLimits& limits, std::span<const FileRange> ranges, ResidencyPlan& out) {
     Packer packer{out.buffers, Pool::Weights, limits};
     const std::uint64_t limit = range_limit(limits);
     const auto tensors = index.tensors();
+    for (const gguf::TensorId id : described_tensors(model)) {
+        const gguf::TensorEntry& t = index.tensor(id);
+        if (!present(t, ranges)) return failure(PlanError::MissingTensorBytes, t.name);
+    }
 
     // Groups whose members agree in format and input width, by the file
     // index of their first member, and the bytes of their span.
@@ -187,6 +226,10 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
             first = std::min(first, static_cast<std::size_t>(g.members[m]));
             last = std::max(last, static_cast<std::size_t>(g.members[m]));
         }
+        // A span holding a tensor the load does not read is not a group.
+        for (std::size_t k = first; k <= last; ++k) {
+            if (!present(tensors[k], ranges)) return true;
+        }
         std::uint64_t bytes = 0;
         if (!span_bytes(tensors, first, last, limits, bytes) || bytes > limit) return true;
         reserve_before[first] = std::max(reserve_before[first], bytes);
@@ -199,11 +242,18 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
         const gguf::TensorShape shape{t.dimension_count,
                                       {t.dimensions[0], t.dimensions[1], t.dimensions[2], t.dimensions[3]},
                                       t.element_count};
+        if (!present(t, ranges)) {
+            out.tensors.push_back({static_cast<gguf::TensorId>(i), WeightView{t.type, shape, {}}, std::nullopt,
+                                   false});
+            continue;
+        }
         const bool tied = is_tied_copy(index, model, i);
         std::vector<WeightPiece> pieces;
 
-        // A row is the first dimension: whole blocks, never split.
-        const std::uint64_t rows = t.dimensions[0] == 0 ? 0 : t.element_count / t.dimensions[0];
+        // A row is every dimension but the last (formats/format.h): whole
+        // blocks, never split.
+        const std::uint64_t row = formats::row_elements(t);
+        const std::uint64_t rows = row == 0 ? 0 : t.element_count / row;
         if (rows != 0) {
             const std::uint64_t row_bytes = t.data_length / rows;
             if (row_bytes > limit) return failure(PlanError::RowExceedsBinding, t.name);
@@ -216,7 +266,7 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
             }
         }
         out.tensors.push_back({static_cast<gguf::TensorId>(i), WeightView{t.type, shape, std::move(pieces)},
-                               tied ? std::optional{model.token_embedding} : std::nullopt});
+                               tied ? model.token_embedding : std::nullopt});
     }
 
     // Each group's span, now its members are placed: one buffer, from the
@@ -378,8 +428,9 @@ PlanResult place_cache(const model::ModelDescription& model, const DeviceLimits&
 
 // Without a cache: the context one step holds, and the fit of what is placed.
 PlanResult place_no_cache(const model::ModelDescription& model, const policy::LoadPolicy& policy,
-                          ResidencyPlan& out) {
-    out.context_offered = std::min<std::uint32_t>(kPrefillBlock, model.trained_context);
+                          const WorkingSet& working, ResidencyPlan& out) {
+    out.context_offered = working.step_rows != 0 ? working.step_rows
+                                                 : std::min<std::uint32_t>(kPrefillBlock, model.trained_context);
     std::uint64_t total = 0;
     if (!checked_add(out.weight_bytes, out.scratch_bytes, total)) return failure(PlanError::Overflow);
     if (total > policy.memory_budget) {
@@ -393,14 +444,14 @@ PlanResult place_no_cache(const model::ModelDescription& model, const policy::Lo
 
 PlanResult plan_residency(const gguf::TensorIndex& index, const model::ModelDescription& model,
                           const DeviceLimits& limits, const policy::LoadPolicy& policy, const WorkingSet& working,
-                          ResidencyPlan& out) {
+                          ResidencyPlan& out, std::span<const FileRange> ranges) {
     out = ResidencyPlan{};
     out.cache_type = storage_type(policy.cache_precision);
-    if (auto r = place_weights(index, model, limits, out); !r.ok()) return r;
+    if (auto r = place_weights(index, model, limits, ranges, out); !r.ok()) return r;
     out.weight_bytes = pool_bytes(out.buffers, Pool::Weights);
     if (auto r = place_scratch(working, limits, out); !r.ok()) return r;
     out.scratch_bytes = pool_bytes(out.buffers, Pool::Scratch);
-    if (auto r = working.cache ? place_cache(model, limits, policy, out) : place_no_cache(model, policy, out);
+    if (auto r = working.cache ? place_cache(model, limits, policy, out) : place_no_cache(model, policy, working, out);
         !r.ok()) {
         return r;
     }

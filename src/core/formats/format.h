@@ -137,9 +137,21 @@ namespace bllm::formats {
 // The weights unpack returns at a time: every kernel's step along a row.
 inline constexpr std::uint64_t kUnpackGroup = 32;
 
+// The values in one of `tensor`'s rows: every dimension but the last, so a
+// matrix of K × N is N rows of K, as GGUF stores it, and a convolution's
+// weight of (16, 16, 3, 768) — a vision encoder's patch embedding
+// (graph/vision.h) — is 768 rows of 3 × 16 × 16, the rows its matrix
+// product reads. A vector is one row. For every one- and two-dimensional
+// tensor this is the first dimension.
+[[nodiscard]] constexpr std::uint64_t row_elements(const gguf::TensorEntry& tensor) noexcept {
+    if (tensor.dimension_count < 2) return tensor.dimensions[0];
+    const std::uint64_t last = tensor.dimensions[tensor.dimension_count - 1];
+    return last == 0 ? 0 : tensor.element_count / last;
+}
+
 // Whether a kernel can step through `tensor`'s rows, a group at a time.
 [[nodiscard]] constexpr bool steps_by_groups(const gguf::TensorEntry& tensor) noexcept {
-    return tensor.dimensions[0] % kUnpackGroup == 0;
+    return row_elements(tensor) % kUnpackGroup == 0;
 }
 
 // Whether a tensor is one value, read whole by the kernel that reads it.

@@ -1,6 +1,8 @@
 #include "core/gguf/index.h"
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 
 namespace bllm::gguf {
 namespace {
@@ -86,6 +88,19 @@ MetadataError TensorIndex::read_bool_array(std::string_view key, std::vector<boo
     std::vector<bool> values;
     values.reserve(a.decoded.size());
     for (const std::uint64_t v : a.decoded) values.push_back(v != 0);
+    out = std::move(values);
+    return MetadataError::Ok;
+}
+
+MetadataError TensorIndex::read_f32_array(std::string_view key, std::vector<float>& out) const {
+    const MetadataEntry* e = entry(key);
+    if (e == nullptr) return MetadataError::MissingKey;
+    if (e->type != ValueType::Array) return MetadataError::WrongType;
+    const ArrayLocation& a = std::get<ArrayLocation>(e->value);
+    if (a.element_type != ValueType::Float32 || a.decoded.size() != a.element_count) return MetadataError::WrongType;
+    std::vector<float> values;
+    values.reserve(a.decoded.size());
+    for (const std::uint64_t v : a.decoded) values.push_back(std::bit_cast<float>(static_cast<std::uint32_t>(v)));
     out = std::move(values);
     return MetadataError::Ok;
 }

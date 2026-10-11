@@ -197,7 +197,7 @@ void Builder::product(const residency::WeightView& weight, const residency::Buff
 
 void Builder::embed(float scale) {
     const std::size_t at = out_->size();
-    append(*out_, kernels::gather_launches(view(model_->token_embedding), buffers_.hidden, buffers_.sampled, scale));
+    append(*out_, kernels::gather_launches(view(*model_->token_embedding), buffers_.hidden, buffers_.sampled, scale));
     named(*out_, at, "embed");
 }
 
@@ -297,10 +297,10 @@ GraphResult Builder::output() {
     }
     const Buffers& b = buffers_;
     std::size_t at = out_->size();
-    out_->push_back(kernels::norm_launch({&view(model_->output_norm), pending_.post_gain, pending_.written, b.output,
+    out_->push_back(kernels::norm_launch({&view(*model_->output_norm), pending_.post_gain, pending_.written, b.output,
                                           b.hidden, b.normed, model_->norm_epsilon, kernels::Rows::LastToken}));
     named(*out_, at, "output.norm");
-    const residency::WeightView& head = view(model_->output_head.value_or(model_->token_embedding));
+    const residency::WeightView& head = view(model_->output_head.value_or(*model_->token_embedding));
     at = out_->size();
     product(head, b.normed, b.logits, kernels::Rows::LastToken);
     named(*out_, at, "output.head");

@@ -117,7 +117,7 @@ struct Write {
 
 enum class WriteError {
     Ok,
-    OutOfOrder,         // a chunk did not start where the last one ended
+    OutOfOrder,         // a chunk did not start where the last one ended, or the next range began, or crossed a range's end
     ChunkTooLarge,      // larger than the staging the writer was given
     Unfinished,         // the file ended before every route was filled
 };
@@ -136,18 +136,23 @@ public:
     }
 
     // `routes` in file order, as plan_routes gives them; `max_chunk` the
-    // largest chunk accept will be given. Precondition: `routes` outlives
-    // the writer.
-    PieceWriter(std::span<const Route> routes, std::size_t max_chunk);
+    // largest chunk accept will be given; `ranges` the bytes the load reads
+    // (file_ranges.h), which check_ranges accepted — empty for the whole
+    // file. Precondition: `routes` outlives the writer.
+    PieceWriter(std::span<const Route> routes, std::size_t max_chunk, std::span<const FileRange> ranges = {});
 
     // The writes the chunk at `file_offset` completes, appended to `out`. On
     // failure `out` is left as it was and the writer accepts nothing more.
+    // Chunks are contiguous within a range; once a range's last byte has
+    // come, the next chunk starts the next range, and none crosses a range's
+    // end.
     [[nodiscard]] WriteError accept(std::uint64_t file_offset, std::span<const std::byte> chunk,
                                     std::vector<Write>& out);
 
     // Called once the file has ended at `file_size`: Unfinished unless the
-    // chunks reached it and every route was filled. Unfinished is a failure
-    // like the others: from then on accept refuses every chunk.
+    // chunks reached it — the last range's end, for a load of ranges — and
+    // every route was filled. Unfinished is a failure like the others: from
+    // then on accept refuses every chunk.
     [[nodiscard]] WriteError finish(std::uint64_t file_size);
 
 private:
@@ -178,6 +183,8 @@ private:
     std::size_t route_ = 0;            // the first route not yet filled
     std::uint64_t blocks_done_ = 0;    // of route_, the blocks already written
     std::uint64_t next_offset_ = 0;    // where the next chunk must start
+    std::vector<FileRange> ranges_;    // the bytes the load reads; empty for the whole file
+    std::size_t range_ = 0;            // the range the next chunk lies in
     // A block of route_ cut off at the last chunk's end: fewer than its
     // layout's block_bytes, so never more than kMaxBlockBytes - 1.
     std::array<std::byte, formats::kMaxBlockBytes> held_{};

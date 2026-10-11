@@ -97,10 +97,14 @@ struct RouteResult {
 // as upload carries it out: each confirmed duplicate's view reads the tensor
 // it copies, the buffers only it used are left uncreated (size 0), and the
 // weight and total bytes are recounted without them. `out` and `routes` are
-// left untouched unless it succeeds.
+// left untouched unless it succeeds. A tensor the plan marks not present has
+// no route; every route lies within `ranges`, the bytes the load reads
+// (file_ranges.h), or the tensor is refused, OutOfRange. Empty: the whole
+// file.
 [[nodiscard]] RouteResult plan_routes(const gguf::TensorIndex& index, const ResidencyPlan& plan,
                                       std::uint64_t file_size, FindFormat find_format,
                                       std::span<const gguf::TensorId> confirmed,
-                                      std::vector<Route>& routes, ResidencyPlan& out);
+                                      std::vector<Route>& routes, ResidencyPlan& out,
+                                      std::span<const FileRange> ranges = {});
 
 }  // namespace bllm::residency

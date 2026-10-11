@@ -117,15 +117,16 @@ namespace bllm::graph {
 // The working set (vision_working_set below), at f32, R the plan's rows,
 // 2,520: `pixels` R × 3 P², 7.7 MB, which the program writes each image;
 // `hidden`, `normed`, `output`, `query`, `key`, `value` and `attention`, R ×
-// W, 7.7 MB each; `activation` R × F, 31.0 MB; `soft_tokens` R × the
-// projection's width, 5.2 MB; `range_sums` one float, so no product
+// W, 7.7 MB each; `activation` R × F, 31.0 MB; `soft_tokens` the pooled
+// rows R / k² × the projection's width, 573 KB; `range_sums` one float, so no product
 // splits along K: none over N patches would, and the projection over M
 // rows, which the gate would split at 192 or fewer, is at most 7.5 × 10⁷
 // multiply-adds, where splitting would save tens of microseconds for 12.6
 // MB of range sums; the buffer's capacity keeps it tiled
 // (kernels/matmul/matmul.h);
-// `pooled` is `normed`, below. About 98 MB, beside the encoder's 226 MB of
-// weights; no cache.
+// `pooled` is `normed`, below. About 94 MB, beside the encoder's 226 MB of
+// weights; no cache. The plan offers R rows, the working set's step rows
+// (residency/plan.h).
 //
 // What a step costs, counted, for EmbeddingGemma 2's vision encoder at Q8_0
 // and N = 2,520 patches, M = 280:

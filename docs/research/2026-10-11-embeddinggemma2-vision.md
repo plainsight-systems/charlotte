@@ -184,8 +184,8 @@ rows (`<|image>`, the rows, `<image|>` and the ends):
   for the horizontal pass over every source row and 3.5 × 10⁷ for the
   vertical, about 0.1 to 0.2 s in the module, by estimate.
 - Memory: the vision span, 226 MB of weights, and its working buffers at
-  2,520 rows, about 98 MB, of which the feed-forward's 31 MB is the largest:
-  about 325 MB beside the text model's 384.
+  2,520 rows, about 94 MB, of which the feed-forward's 31 MB is the largest:
+  about 320 MB beside the text model's 384.
 - Download: 226.4 MB for the header and the vision span, against 554.8 MB
   for the whole mmproj.
 

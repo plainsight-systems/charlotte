@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "core/gguf/index.h"
 #include "core/model/model_description.h"
 #include "core/policy/policy.h"
+#include "core/residency/file_ranges.h"
 #include "core/residency/weight_view.h"
 
 namespace bllm::residency {
@@ -77,6 +79,16 @@ namespace bllm::residency {
 //     sliding-window cache the same way.
 //   - The context offered is the largest that fits the memory budget and the
 //     binding limit, capped at the context the model was trained for.
+//   - A load may read part of its file (file_ranges.h): a companion's
+//     header and its encoder's span. Then only the tensors wholly inside
+//     the ranges are placed; every other keeps its entry, not present, with
+//     no place and no route, so the plan's tensors stay indexed by id; and a
+//     tensor the description names that lies outside is refused,
+//     MissingTensorBytes, before anything is placed. A fused group whose
+//     span holds a tensor not read is not a group.
+//   - A row is every dimension but the last (formats/format.h), so a
+//     convolution's weight splits, where it must, between the rows its
+//     product reads.
 //   - The fit counts every tensor. An output head stored as a byte-for-byte
 //     copy of the token embedding — tied weights written twice — is marked a
 //     candidate duplicate and given buffers of its own, which upload does not
@@ -122,6 +134,10 @@ struct WorkingSet {
     std::vector<ScratchNeed> needs;
     bool cache = true;
     std::uint32_t partial_rows = 0;
+    // The most rows one step holds, where a graph's step is not a prefill
+    // block of tokens: a vision encoder's patches (graph/vision.h). 0 for a
+    // step of tokens.
+    std::uint32_t step_rows = 0;
 };
 
 // The limits the device was granted. How many bytes the plan may place on the
@@ -159,6 +175,11 @@ struct PlannedTensor {
     WeightView view;
     // Set when this tensor may be a byte-for-byte copy of an earlier one.
     std::optional<gguf::TensorId> candidate_duplicate_of;
+    // False for a tensor whose bytes lie outside the ranges the load reads
+    // (file_ranges.h): it has no place, no route, and no description names
+    // it. Every tensor keeps an entry, so the plan's tensors stay indexed by
+    // tensor id.
+    bool present = true;
 };
 
 // One layer's cache storage. Position p lives in slot p mod slots; for a
@@ -219,6 +240,9 @@ enum class PlanError {
     UnsupportedCachePrecision,
     // A size that overflows 64 bits: a file no device could hold.
     Overflow,
+    // A tensor the description names lies outside the ranges the load reads
+    // (file_ranges.h). The subject names it.
+    MissingTensorBytes,
 };
 
 struct PlanResult {
@@ -231,12 +255,17 @@ struct PlanResult {
 // Plans `model` for `limits` and `policy`, placing the working set its
 // graph declared. Without a cache the context offered is the smaller of
 // kPrefillBlock and the trained context — the most one step holds — and the
-// fit is the weights' and working buffers' bytes against the budget.
+// fit is the weights' and working buffers' bytes against the budget; a
+// working set that gives its step's rows offers those, a vision encoder's
+// patches. `ranges`, which check_ranges accepted, are the bytes the load reads: only
+// the tensors wholly inside them are placed, and one the description names
+// that is not is refused, MissingTensorBytes. Empty: the whole file.
 [[nodiscard]] PlanResult plan_residency(const gguf::TensorIndex& index,
                                         const model::ModelDescription& model,
                                         const DeviceLimits& limits,
                                         const policy::LoadPolicy& policy,
                                         const WorkingSet& working,
-                                        ResidencyPlan& out);
+                                        ResidencyPlan& out,
+                                        std::span<const FileRange> ranges = {});
 
 }  // namespace bllm::residency

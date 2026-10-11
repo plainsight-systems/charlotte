@@ -377,3 +377,82 @@ TEST_CASE("staging holds the case its bound is set by: a held block, then many p
     CHECK(writer.finish(f.file.size()) == WriteError::Ok);
     check_settled(f, device, expected(f));
 }
+
+namespace {
+
+// The fixture with only routes `first` .. `last_before_gap` and from
+// `after_gap` on, and the ranges that hold them: the header and those routes'
+// bytes, the routes between them never read — a companion file's header and
+// its encoder's span (residency/file_ranges.h).
+struct Ranged {
+    Fixture fixture;
+    std::vector<residency::FileRange> ranges;
+};
+
+Ranged ranged(const Fixture& f, std::size_t last_before_gap, std::size_t after_gap) {
+    Ranged r{f, {}};
+    const Route& before = f.routes[last_before_gap];
+    const std::uint64_t first_end = before.file_offset + before.blocks * before.layout->block_bytes;
+    const std::uint64_t second_begin = f.routes[after_gap].file_offset;
+    r.ranges = {{0, first_end}, {second_begin, f.file.size()}};
+    r.fixture.routes.clear();
+    for (std::size_t i = 0; i < f.routes.size(); ++i) {
+        if (i <= last_before_gap || i >= after_gap) r.fixture.routes.push_back(f.routes[i]);
+    }
+    return r;
+}
+
+// Streams each range in chunks of `chunk_size`, never across its end.
+Device upload_ranges(const Ranged& r, std::size_t chunk_size) {
+    PieceWriter writer(r.fixture.routes, chunk_size, r.ranges);
+    Device device(r.fixture);
+    for (const residency::FileRange& range : r.ranges) {
+        for (std::uint64_t at = range.begin; at < range.end; at += chunk_size) {
+            const auto chunk = std::span(r.fixture.file).subspan(at, std::min<std::uint64_t>(chunk_size, range.end - at));
+            std::vector<Write> writes;
+            REQUIRE(writer.accept(at, chunk, writes) == WriteError::Ok);
+            for (const Write& w : writes) device.apply(w);
+        }
+    }
+    CHECK(writer.finish(r.fixture.file.size()) == WriteError::Ok);
+    return device;
+}
+
+}  // namespace
+
+TEST_CASE("a load of ranges writes exactly what its routes hold, the gap never read") {
+    const Ranged r = ranged(make(kEveryLayout), 3, 6);
+    const Buffers want = expected(r.fixture);
+    for (const std::size_t chunk : {std::size_t{1}, std::size_t{7}, std::size_t{64}, r.fixture.file.size()}) {
+        CAPTURE(chunk);
+        check_settled(r.fixture, upload_ranges(r, chunk), want);
+    }
+}
+
+TEST_CASE("a chunk in the gap, across a range's end or skipping a range is refused; the last range ends it") {
+    const Ranged r = ranged(make(kEveryLayout), 3, 6);
+    const auto& file = r.fixture.file;
+    const auto first = r.ranges[0];
+    const auto second = r.ranges[1];
+    std::vector<Write> writes;
+
+    PieceWriter across(r.fixture.routes, file.size(), r.ranges);
+    CHECK(across.accept(0, std::span(file).first(first.end + 1), writes) == WriteError::OutOfOrder);
+
+    PieceWriter in_gap(r.fixture.routes, file.size(), r.ranges);
+    REQUIRE(in_gap.accept(0, std::span(file).first(first.end), writes) == WriteError::Ok);
+    CHECK(in_gap.accept(first.end, std::span(file).subspan(first.end, 4), writes) == WriteError::OutOfOrder);
+
+    PieceWriter skipping(r.fixture.routes, file.size(), r.ranges);
+    CHECK(skipping.accept(second.begin, std::span(file).subspan(second.begin, 4), writes) == WriteError::OutOfOrder);
+
+    PieceWriter short_of_last(r.fixture.routes, file.size(), r.ranges);
+    REQUIRE(short_of_last.accept(0, std::span(file).first(first.end), writes) == WriteError::Ok);
+    CHECK(short_of_last.finish(file.size()) == WriteError::Unfinished);
+
+    PieceWriter whole(r.fixture.routes, file.size(), r.ranges);
+    REQUIRE(whole.accept(0, std::span(file).first(first.end), writes) == WriteError::Ok);
+    REQUIRE(whole.accept(second.begin, std::span(file).subspan(second.begin, second.end - second.begin), writes) ==
+            WriteError::Ok);
+    CHECK(whole.finish(file.size()) == WriteError::Ok);
+}

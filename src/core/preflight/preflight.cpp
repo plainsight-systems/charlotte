@@ -130,6 +130,8 @@ std::string fit_failure(const residency::PlanResult& r, const residency::Residen
             return "the cache precision cannot store the head dimension of " + r.subject;
         case PlanError::Overflow:
             return "sizes overflow (" + r.subject + ")";
+        case PlanError::MissingTensorBytes:
+            return r.subject + " lies outside the bytes the load reads";
     }
     return "unrecognised error";
 }
@@ -216,7 +218,7 @@ void check_rows(const gguf::TensorIndex& index, Verdict& verdict) {
     verdict.blockers.push_back(
         {Stage::Upload, "rows must be a multiple of " + std::to_string(formats::kUnpackGroup) + " weights (" +
                          std::to_string(short_rows) + (short_rows == 1 ? " tensor" : " tensors") +
-                         ", first " + first->name + ", rows of " + std::to_string(first->dimensions[0]) + ")"});
+                         ", first " + first->name + ", rows of " + std::to_string(formats::row_elements(*first)) + ")"});
 }
 
 // Run needs the tokenizer, and the pre-tokenizer when the tokenizer splits

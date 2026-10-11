@@ -120,7 +120,7 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
                                      kernels::kSplitGate, range_sums));
     };
 
-    add(kernels::gather_launches(view(m.token_embedding), hidden, buffer("sampled"), scale));
+    add(kernels::gather_launches(view(*m.token_embedding), hidden, buffer("sampled"), scale));
     const residency::WeightView* carried = nullptr;   // the post-norm of what `output` holds
     for (std::uint32_t i = 0; i < m.layers.size(); ++i) {
         const model::LayerDescription& l = m.layers[i];
@@ -153,9 +153,9 @@ std::vector<kernels::Launch> stated_order(const model::ModelDescription& m, cons
         write(at(i, Role::Down), activation, output, kernels::Rows::EveryToken);
         carried = at(i, Role::PostFeedForwardNorm);
     }
-    out.push_back(kernels::norm_launch({&view(m.output_norm), carried, true, output, hidden, normed, m.norm_epsilon,
+    out.push_back(kernels::norm_launch({&view(*m.output_norm), carried, true, output, hidden, normed, m.norm_epsilon,
                                         kernels::Rows::LastToken}));
-    write(&view(m.output_head.value_or(m.token_embedding)), normed, logits, kernels::Rows::LastToken);
+    write(&view(m.output_head.value_or(*m.token_embedding)), normed, logits, kernels::Rows::LastToken);
     add(kernels::topk_launches(logits, m.vocabulary_size, buffer("partials_a"), buffer("partials_b"),
                                buffer("candidates")));
     out.push_back(sampler::draw_launch(buffer("candidates"), buffer("sampled")));

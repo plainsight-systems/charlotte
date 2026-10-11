@@ -273,13 +273,14 @@ void request_work_done(const std::shared_ptr<UploadState>& state) {
 }  // namespace
 
 Upload::Upload(const gpu::Device& device, ResidencyPlan plan, std::vector<Route> routes,
-               std::uint64_t file_size, std::size_t max_chunk)
+               std::uint64_t file_size, std::size_t max_chunk, std::span<const FileRange> ranges)
     : instance_(gpu::retain(device.instance())),
       device_(gpu::retain(device.handle())),
       device_status_(device.status()),
       plan_(std::move(plan)),
       routes_(std::move(routes)),
-      writer_(routes_, max_chunk),
+      ranges_(ranges.begin(), ranges.end()),
+      writer_(routes_, max_chunk, ranges_),
       file_size_(file_size),
       pending_(std::make_shared<UploadState>()) {
     pending_->instance = gpu::retain(device.instance());
@@ -292,10 +293,11 @@ Upload::Upload(const gpu::Device& device, ResidencyPlan plan, std::vector<Route>
 void Upload::begin(const gpu::Device& device, const gguf::TensorIndex& index, const ResidencyPlan& plan,
                    std::uint64_t file_size, FindFormat find_format,
                    std::span<const gguf::TensorId> confirmed_duplicates, std::size_t max_chunk,
-                   ReadyCallback ready, void* userdata) {
+                   ReadyCallback ready, void* userdata, std::span<const FileRange> ranges) {
     std::vector<Route> routes;
     ResidencyPlan carried;
-    if (const auto r = plan_routes(index, plan, file_size, find_format, confirmed_duplicates, routes, carried);
+    if (const auto r =
+            plan_routes(index, plan, file_size, find_format, confirmed_duplicates, routes, carried, ranges);
         !r.ok()) {
         ready(nullptr, from_route(r.error), r.subject.c_str(), userdata);
         return;
@@ -304,7 +306,7 @@ void Upload::begin(const gpu::Device& device, const gguf::TensorIndex& index, co
     // The constructor is private, so make_unique cannot reach it; the
     // pointer is owned from the expression that makes it (R.11).
     auto job = std::make_shared<Creation>();
-    job->upload.reset(new Upload(device, std::move(carried), std::move(routes), file_size, max_chunk));
+    job->upload.reset(new Upload(device, std::move(carried), std::move(routes), file_size, max_chunk, ranges));
     job->ready = ready;
     job->userdata = userdata;
     Upload& u = *job->upload;
