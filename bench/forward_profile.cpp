@@ -726,6 +726,13 @@ int main(int argc, char** argv) {
     Observed observed;
     bool checks_held = true;
     const std::uint32_t context = loaded->upload->plan().context_offered;
+    // Every kind of step the profile times, run once unprofiled first, so no
+    // workload is the first to meet a pipeline or a GPU at rest: without it
+    // decode@0, the first, took 42 to 63 ms where prefill1, the same step
+    // later, took 2.4, and failed its repetition check.
+    for (const std::uint32_t tokens : {1u, 8u, 16u, 32u, 64u, 128u, 512u}) {
+        for (int i = 0; i < kWarmUps; ++i) run(instance.get(), *loaded->program, step_at(0, tokens));
+    }
     for (const std::uint32_t position : {0u, 1024u, 8192u}) {
         if (position + 1 > context) continue;
         // The cache filled to `position` by prefill, unprofiled.
