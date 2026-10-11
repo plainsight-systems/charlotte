@@ -177,6 +177,18 @@ struct CompanionHost {
                                           const residency::DeviceLimits& limits, const policy::LoadPolicy& policy,
                                           media::ImageBudget budget, const CompanionHost& host);
 
+// For an audio encoder (runtime/audio.h), both take the companion's kind,
+// arch/media_encoder.h's MediaKind: the encoder found by the kind's key,
+// clip.vision.projector_type or clip.audio.projector_type; its working set
+// the kind's — an image's from the budget's most tokens, an audio clip's
+// rows the text model's context less its ends and the two audio tokens; Run
+// checking the kind's three tokens in the vocabulary and, for audio, the
+// setup graph building. The image budget becomes an image's alone, unused
+// for audio. CompanionHost's text_bytes becomes resident_bytes, every plan
+// already loaded — the text model's and the other kind's companion's, when
+// it is — which the companion shares the budget with; and the host gains
+// the text model's context offered.
+
 // What a companion's load carries out: its description and the plan its
 // verdict judged Fit. Returns what stops it, or an empty string.
 [[nodiscard]] std::string plan_companion(const gguf::TensorIndex& index, std::span<const residency::FileRange> ranges,

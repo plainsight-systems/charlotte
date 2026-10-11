@@ -26,6 +26,10 @@ namespace bllm::capability {
 
 [[nodiscard]] const arch::Architecture* find_architecture(std::string_view general_architecture) noexcept;
 
+// Becoming find_media_encoder(arch::MediaKind, projector_type) for every
+// kind of media encoder (arch/media_encoder.h): the table keyed by kind and
+// type, "gemma4v" the image kind's one entry and "gemma4a" the audio kind's.
+//
 // A companion file's vision encoder, by its clip.vision.projector_type
 // (arch/vision_encoder.h): the identifier that names the encoder, where its
 // general.architecture, "clip", names none.

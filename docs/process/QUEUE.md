@@ -49,6 +49,19 @@ This file tracks active and accepted work.
   runtime, photos come from the library and the ranged download is
   verified and cached.
 
+- **Audio, through EmbeddingGemma 2's audio encoder** — recordings embedded
+  into the same space as text and photos, cut into clips of up to 20 s, so
+  a query finds where in a recording it is answered; the companion file's
+  header and audio span, one 328.5 MB range
+  (`research/2026-10-11-embeddinggemma2-audio.md`). Designed in its file
+  headers (`media/audio.h`, `arch/media_encoder.h`, `arch/gemma4a`,
+  `graph/audio.h`, `runtime/audio.h`, `runtime/media_stage.h`, the
+  subsample, local attention and light convolution kernels, the matrix
+  product's clamped, biased and activated options, the norm's audio
+  variants, the plan's product spans, `web/audio_input.js`,
+  `web/recordings.js`). The spectrogram follows Google's log floor where
+  llama.cpp's differs; the oracle is llama.cpp with that one line set.
+
 ## Accepted
 
 - **Generation in the browser** — accepted 2026-10-07, designed in its file

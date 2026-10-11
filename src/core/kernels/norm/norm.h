@@ -73,15 +73,34 @@ namespace bllm::kernels {
 //         rows_per_token rows of `width`, workgroup w the row w — the
 //         per-layer inputs, 24 rows of 512 a token, each normalized on its
 //         own. Not with a launch over the last token.
+//     An audio encoder's (graph/audio.h) take three more, each changing one
+//     launch's form and none of the others':
+//       `post_scale` (requires `post_norm`): y, through its post-norm, times
+//         the constants' post_scale before the add — the half-step
+//         feed-forward's residual weight, 0.5: X + c × postnorm(y), as
+//         llama.cpp's gemma4a graph adds ggml_scale of the post-normed
+//         result. 1 elsewhere, and not applied.
+//       `renorm` (requires `add`): after the add, X replaced by its own
+//         norm with the layer's output gain, written back as X, and then,
+//         where the launch normalizes, normalized again with its gain into
+//         `normed` — a Conformer layer's closing norm and the next layer's
+//         first in one launch. A third reduction where the post-norm makes
+//         two; the barrier between each and the next, as between the
+//         post-norm's and X's.
+//       `unit_gain`: g = 1, its binding bound to the input in its place —
+//         the multimodal embedder's RMS norm without a gain, at a width of
+//         1,536, which no other norm here has; the width's override covers
+//         it, two vec4s an invocation, the second guarded.
 //     Every binding is declared in every variant, so a launch that does not
 //     add still binds the output buffer and, without a post-norm or a scale,
 //     binds its gain in their places: all read-only, so none aliases a
 //     buffer the kernel writes.
 //   - Constants (binding 1), as WGSL lays them out:
-//       struct Norm { epsilon: f32 }
+//       struct Norm { epsilon: f32, post_scale: f32 }
 //     Bindings: 2 the gain, 3 the post-norm's gain, 4 the block's output y,
 //     read-only; 5 the hidden buffer X; 6 the normed buffer; 7 the scale,
-//     one f32, read-only.
+//     one f32, read-only; 8 the re-norm's gain, read-only. Seven storage
+//     bindings, within WebGPU's default of 8 a stage.
 //   - Gains are F32 and one piece: a norm's weight is one row of the hidden
 //     width, far under a binding (format.h's F32).
 //   - It reads the plan's `output` working buffer: a block's last matmul
@@ -142,7 +161,12 @@ namespace bllm::kernels {
 
 // The encoder's variants, likewise, at EmbeddingGemma 2's width of 512: a
 // scaled add, X then normalized; an add alone, normed untouched; and 2 rows a
-// token over 2 tokens, each row normalized on its own, with an ε of its own.//
+// token over 2 tokens, each row normalized on its own, with an ε of its own.
+// The audio encoder's, at its width of 1,024 and the unit gain's 1,536: a
+// post-norm at a scale of 0.5; a re-norm then a norm, and a re-norm alone,
+// X written as the re-norm left it; a unit gain, normed equal to the f64
+// RMS norm without one.
+//
 // Guidelines, by corpus:
 //   C++ performance guidelines
 //     GDSA.2 Declare each floating-point reduction's determinism level — as

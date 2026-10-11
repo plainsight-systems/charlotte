@@ -174,6 +174,25 @@ namespace bllm::runtime {
 //     them, refused after its encode with the count it made. ends.h's
 //     refusals, on the CPU, over headers with each flag removed or retyped.
 //
+// Media (runtime/media_stage.h). An encode may carry one medium, an image
+// or an audio clip, whose rows stand where the text writes its kind's
+// placeholder. The embedder holds at most one stage a kind, attached once
+// that kind's companion has loaded and released with the embedder or by
+// attaching null; it knows each only through media_stage.h's interface and
+// its kind's three tokens. So:
+//   - attach(MediaKind, std::unique_ptr<MediaStage>, MediaTokens, width)
+//     in place of attach(Vision, ImageTokens, width); stage(kind) the stage
+//     attached, or null, in place of vision();
+//   - start(text, std::optional<MediaKind>, done, userdata) in place of
+//     start(text, bool image, …): none, or the kind whose prepared medium
+//     the encode carries;
+//   - MediaNotReady in place of ImageNotReady — the kind asked for has no
+//     stage attached or nothing prepared;
+//   - Placeholder, as media_stage.h states: the encode's kind's placeholder
+//     other than once, or any other attached kind's at all.
+// Nothing an encode computes changes: the stage's step, its link's copy and
+// the text step, in that order on the queue, as an image's are now.
+//
 // Guidelines, by corpus:
 //   C++ Core Guidelines
 //     I.11   Never transfer ownership by a raw pointer — the tokenizer and the

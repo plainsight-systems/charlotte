@@ -89,6 +89,9 @@ flowchart LR
     img["Image<br/>decoded by the page"] --> prep["Prepare<br/>size, resample, patches"]
     prep --> vis["Vision step<br/>every patch, once"]
     vis --> soft["Soft tokens<br/>rows of the text width"]
+    aud["Audio clip<br/>decoded, mono, 16 kHz,<br/>cut by the page"] --> mel["Prepare<br/>log-mel spectrogram"]
+    mel --> aenc["Audio step<br/>every frame, once"]
+    aenc --> soft
     txt["Text<br/>with its placeholder"] --> tok["Tokenize<br/>and wrap"]
     tok --> place["Place<br/>rows where the<br/>placeholder stood"]
     soft --> place
@@ -98,7 +101,7 @@ flowchart LR
     classDef fork fill:#FAECE7,stroke:#D85A30,color:#993C1D
     classDef policy fill:#EEEDFE,stroke:#534AB7,color:#3C3489
     classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
-    class prep,vis,tok fork
+    class prep,vis,mel,aenc,tok fork
     class soft policy
     class step regime
 ```
@@ -116,6 +119,17 @@ text are in the same space, so a page ranks photos and paragraphs by one
 query. The companion is loaded the first time it is needed, and only the
 part of its file the encoder reads: an encoder for audio beside it in the
 same file is neither fetched nor uploaded.
+
+**Encode an audio clip**, the same path with another encoder in front. The
+page decodes a recording, mixes it to mono at 16 kHz and cuts it into clips
+of equal length, each short enough that its rows and the text fit one step:
+20 s at a context of 512. Each clip's spectrogram is computed on the CPU —
+frames of 10 ms, 128 mel bins — and the audio encoder runs one step over
+its frames, 25 soft tokens a second. Those stand where the text writes the
+audio placeholder, and the encode is the text's. A recording is as many
+embeddings as it has clips, so a search finds where in it a query is
+answered. Its encoder is another companion, the same file's other range,
+loaded the first time a recording is indexed.
 
 ```mermaid
 flowchart TD
@@ -263,6 +277,31 @@ streamed through workgroup memory. After the last layer the patches are
 averaged over squares of the grid into the image's soft tokens, each
 normalized and projected to the text model's width.
 
+```mermaid
+flowchart TD
+    mf["Spectrogram<br/>frames × 128 bins"] --> sub["Subsample<br/>two strided convolutions,<br/>4 times fewer rows"]
+    subgraph clayer["Each layer, in order"]
+        f1["Feed-forward<br/>half-step"] --> la["Attention<br/>each row and its 11 before,<br/>a term by distance"]
+        la --> cv["Convolution<br/>gated, 5 rows back"]
+        cv --> f2["Feed-forward<br/>half-step"]
+    end
+    sub --> f1
+    f2 --> out["Project<br/>to the text width"]
+    classDef default fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
+    class la,f1,f2,out regime
+```
+
+**Inside the audio encoder.** A Conformer. Two convolutions of stride 2
+shrink the spectrogram 4 times in time and in frequency, so each row is 40
+ms. Every layer sandwiches attention and a convolution between two half
+feed-forwards, each added at half weight. Attention is local and causal:
+each row sees itself and the 11 rows before it, with a learned term for
+how far back each is, so its cost grows with the clip, not its square. The
+convolution looks 5 rows back. Every product clamps what goes in and what
+comes out to bounds stored beside its weight. After the last layer the rows
+are projected to the text model's width.
+
 ## Principles
 
 These decide how any difference between models is handled. Each was tested
@@ -280,7 +319,8 @@ against real files, but none is specific to the files tested.
    tokenization algorithm, and `tokenizer.ggml.pre`, where present, selects the
    pre-tokenizer that splits text before the algorithm runs.
    `clip.vision.projector_type` selects a vision encoder in a companion
-   file, whose `general.architecture` names no encoder. These are
+   file, whose `general.architecture` names no encoder, and
+   `clip.audio.projector_type` an audio encoder in the same way. These are
    independent: families share algorithms without sharing pre-tokenizers,
    formats cross families, and any combination can appear in a file. The
    mapping is many-to-one — several identifier values may select the same
@@ -361,10 +401,14 @@ and which principle handles it.
 | Per-layer inputs | Gemma 4's, or none | graph |
 | Layer output scale | present or absent | graph; applied in the next norm's add |
 | Pooling | mean, or another | file parameter, and a shared kernel (3, 6) |
-| Media input | text alone, or images through an encoder in a companion file | the encoder found by its projector type (2); the image prepared on the CPU, as text is tokenized |
+| Media input | text alone, or images or audio through encoders in a companion file | the encoder found by its kind and projector type (2); the image or the clip prepared on the CPU, as text is tokenized |
 | Position in two dimensions | a learned table by column and row; rotary halves by column and row | a shared kernel's form and the encoder's convention (6) |
 | Grid pooling | k × k patches to a soft token | file parameter, and a shared kernel's form (3, 6) |
 | Feed-forward activation the file does not state | GELU's tanh form for Gemma 4's vision encoder, where llama.cpp's default differs | the encoder's convention, from its trained configuration (3) |
+| Clamped products | bounds on a product's input and output, stored beside its weight, or none | file data, read by the shared product from the weight's binding (3, 6) |
+| Local attention | each row against a window of earlier rows, with a relative term and a softcap | a shared kernel's form and the encoder's convention (6) |
+| Convolutional front end and light convolution | strided convolutions with layer norms; a gated depthwise convolution | shared kernels' forms (6) |
+| Spectrogram's log floor | log(x + floor) as Google trained, where llama.cpp takes log(max(x, floor)) | the preparation's convention, from the trained feature extractor (3) |
 
 Two consequences are worth stating outright:
 
@@ -480,8 +524,9 @@ and the file's declared context: the most one step holds.
 **Where policy lives.** The curated model list is a list of measured
 configurations — file, hash, cache precision, memory budget, sampling per
 mode, affordances, for a model that embeds the task prompts its card
-gives, and for one whose images a companion file encodes, that file's
-ranges, their hash and the image token budget its card gives — not a list
+gives, and for one whose images or audio a companion file encodes, each
+kind's ranges of that file, their hash and, for images, the token budget
+its card gives — not a list
 of URLs. It changes when a model is measured. The capability table
 changes when code is written. Different reasons, so they are two things. A
 model loaded from a pasted URL gets defaults and is shown as unmeasured;
@@ -513,8 +558,8 @@ before it:
 
 A companion file is judged the same way, stage by stage, beside the model
 it serves: its encoder found by projector type, planned within what the
-budget leaves beside that model, its rows read by that model, and the image
-tokens in that model's vocabulary. Its Download is the part of the file its
+budget leaves beside that model and any other companion loaded, its rows
+read by that model, and its kind's tokens in that model's vocabulary. Its Download is the part of the file its
 encoder reads, verified against a hash of those bytes pinned in the curated
 list, as a whole file is against its own.
 

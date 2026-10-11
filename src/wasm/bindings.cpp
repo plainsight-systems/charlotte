@@ -184,6 +184,19 @@
 //     page frees once the call returns. Answers whether the image is ready
 //     to embed, or the band's refusal.
 //
+// The audio companion, designed (runtime/audio.h): the companion crossings
+// take a kind after the request, 0 image or 1 audio, each kind's companion
+// held and released apart; one loading at a time. An audio companion's
+// finish runs its setup step once and answers with the most samples a clip
+// may hold. Then:
+//   bllm_audio_prepare(request, samples, count)
+//     A clip's samples, f32 at 16 kHz mono, which the page frees once the
+//     call returns: its spectrogram computed into the audio stage's slot.
+//     Answers with its frames and rows, or its refusal, named — too short,
+//     too long, or no audio encoder loaded.
+//   bllm_embed's `image` becomes `media`: 0 none, 1 the image stage's, 2 the
+//   audio stage's.
+//
 // A diagnostic build adds the check of a finished load, the same three
 // crossings over the file streamed a second time (residency/upload_check.h);
 // the clean build compiles none of them, so its module has no such exports:

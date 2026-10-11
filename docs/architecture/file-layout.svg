@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="680" height="1045" viewBox="0 0 680 1045" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="1097" viewBox="0 0 680 1097" role="img">
 <title>File layout and boundaries</title>
 <desc>Three layers: JavaScript files in web/, the boundary between worker.js and bindings.cpp, and the C++ core in src/core/, whose modules each change on one axis and depend on a band of contract headers. Modules that hold GPU objects have dashed borders.</desc>
 <style>
@@ -14,8 +14,8 @@
   .arr { stroke: #888780; stroke-width: 1.5; fill: none; }
 </style>
 <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
-<rect class="bg" x="0" y="0" width="680" height="1045"/>
-<rect class="frame" x="40" y="20" width="600" height="242" rx="8"/>
+<rect class="bg" x="0" y="0" width="680" height="1097"/>
+<rect class="frame" x="40" y="20" width="600" height="294" rx="8"/>
 <text class="th" x="56" y="40">web/ — JavaScript</text>
 <g class="gray"><rect x="52" y="52" width="180" height="44" rx="4"/><text class="th" x="142" y="71" text-anchor="middle">picker.js</text><text class="ts" x="142" y="87" text-anchor="middle">H · choose a model</text></g>
 <g class="gray"><rect x="250" y="52" width="180" height="44" rx="4"/><text class="th" x="340" y="71" text-anchor="middle">models.json</text><text class="ts" x="340" y="87" text-anchor="middle">J · measured policy</text></g>
@@ -29,47 +29,50 @@
 <g class="gray"><rect x="52" y="208" width="180" height="44" rx="4"/><text class="th" x="142" y="227" text-anchor="middle">companion.js</text><text class="ts" x="142" y="243" text-anchor="middle">H · companion, on first use</text></g>
 <g class="gray"><rect x="250" y="208" width="180" height="44" rx="4"/><text class="th" x="340" y="227" text-anchor="middle">image_input.js</text><text class="ts" x="340" y="243" text-anchor="middle">N · decode, bands of rows</text></g>
 <g class="gray"><rect x="448" y="208" width="180" height="44" rx="4"/><text class="th" x="538" y="227" text-anchor="middle">photos.js</text><text class="ts" x="538" y="243" text-anchor="middle">H · photos for the search</text></g>
-<line class="arr" x1="340" y1="262" x2="340" y2="282" marker-end="url(#a)"/>
-<g class="coral"><rect x="40" y="284" width="600" height="52" rx="4"/><text class="th" x="340" y="303" text-anchor="middle">The boundary: worker.js ⇄ bindings.cpp</text><text class="ts" x="340" y="319" text-anchor="middle">preflight · load: begin, chunk, finish · generate · cancel · embed · companion · image bands</text></g>
-<line class="arr" x1="340" y1="336" x2="340" y2="356" marker-end="url(#a)"/>
-<rect class="frame" x="40" y="358" width="600" height="368" rx="8"/>
-<text class="th" x="56" y="378">src/core/ — C++, builds and tests natively</text>
-<g class="gray"><rect x="52" y="390" width="104" height="44" rx="4"/><text class="th" x="104" y="409" text-anchor="middle">gguf/</text><text class="ts" x="104" y="425" text-anchor="middle">C · reader</text></g>
-<g class="gray"><rect x="170" y="390" width="104" height="44" rx="4"/><text class="th" x="222" y="409" text-anchor="middle">capability/</text><text class="ts" x="222" y="425" text-anchor="middle">I · one table</text></g>
-<g class="gray"><rect x="288" y="390" width="104" height="44" rx="4"/><text class="th" x="340" y="409" text-anchor="middle">preflight/</text><text class="ts" x="340" y="425" text-anchor="middle">I · four gates</text></g>
-<g class="gray"><rect x="406" y="390" width="104" height="44" rx="4"/><text class="th" x="458" y="409" text-anchor="middle">arch/*</text><text class="ts" x="458" y="425" text-anchor="middle">A · per arch</text></g>
-<g class="gray"><rect x="524" y="390" width="104" height="44" rx="4"/><text class="th" x="576" y="409" text-anchor="middle">formats/*</text><text class="ts" x="576" y="425" text-anchor="middle">B · device layout</text></g>
-<g class="gray"><rect x="52" y="446" width="180" height="44" rx="4"/><text class="th" x="142" y="465" text-anchor="middle">residency/plan</text><text class="ts" x="142" y="481" text-anchor="middle">D · pure, no GPU</text></g>
-<g class="gray"><rect x="250" y="446" width="180" height="44" rx="4"/><text class="th" x="340" y="465" text-anchor="middle">residency/routes</text><text class="ts" x="340" y="481" text-anchor="middle">D · pure, file to buffers</text></g>
-<g class="gray"><rect x="448" y="446" width="180" height="44" rx="4"/><text class="th" x="538" y="465" text-anchor="middle">residency/piece_writer</text><text class="ts" x="538" y="481" text-anchor="middle">D · pure, chunks to writes</text></g>
-<g class="gray gpu"><rect x="52" y="502" width="180" height="44" rx="4"/><text class="th" x="142" y="521" text-anchor="middle">residency/upload</text><text class="ts" x="142" y="537" text-anchor="middle">D · owns every buffer</text></g>
-<g class="gray gpu"><rect x="250" y="502" width="180" height="44" rx="4"/><text class="th" x="340" y="521" text-anchor="middle">residency/upload_check</text><text class="ts" x="340" y="537" text-anchor="middle">D · diagnostic readback</text></g>
-<g class="gray gpu"><rect x="448" y="502" width="180" height="44" rx="4"/><text class="th" x="538" y="521" text-anchor="middle">gpu/</text><text class="ts" x="538" y="537" text-anchor="middle">D · device, dispatch</text></g>
-<g class="gray"><rect x="52" y="558" width="135" height="44" rx="4"/><text class="th" x="119.5" y="577" text-anchor="middle">tokenizer/*</text><text class="ts" x="119.5" y="593" text-anchor="middle">K · per algorithm</text></g>
-<g class="gray"><rect x="199" y="558" width="135" height="44" rx="4"/><text class="th" x="266.5" y="577" text-anchor="middle">pretokenize</text><text class="ts" x="266.5" y="593" text-anchor="middle">K · split patterns</text></g>
-<g class="gray"><rect x="346" y="558" width="135" height="44" rx="4"/><text class="th" x="413.5" y="577" text-anchor="middle">cache/prefix</text><text class="ts" x="413.5" y="593" text-anchor="middle">G · pure diff</text></g>
-<g class="gray"><rect x="493" y="558" width="135" height="44" rx="4"/><text class="th" x="560.5" y="577" text-anchor="middle">cache/kv</text><text class="ts" x="560.5" y="593" text-anchor="middle">G · bookkeeping</text></g>
-<g class="gray gpu"><rect x="52" y="614" width="135" height="44" rx="4"/><text class="th" x="119.5" y="633" text-anchor="middle">kernels/*</text><text class="ts" x="119.5" y="649" text-anchor="middle">E · per kernel</text></g>
-<g class="gray"><rect x="199" y="614" width="135" height="44" rx="4"/><text class="th" x="266.5" y="633" text-anchor="middle">graph/</text><text class="ts" x="266.5" y="649" text-anchor="middle">A · three kinds of graph</text></g>
-<g class="gray"><rect x="346" y="614" width="135" height="44" rx="4"/><text class="th" x="413.5" y="633" text-anchor="middle">sampler/</text><text class="ts" x="413.5" y="649" text-anchor="middle">F · top-k candidates</text></g>
-<g class="gray"><rect x="493" y="614" width="135" height="44" rx="4"/><text class="th" x="560.5" y="633" text-anchor="middle">runtime/</text><text class="ts" x="560.5" y="649" text-anchor="middle">M · turns, encodes</text></g>
-<g class="gray"><rect x="52" y="670" width="180" height="44" rx="4"/><text class="th" x="142" y="689" text-anchor="middle">media/</text><text class="ts" x="142" y="705" text-anchor="middle">N · pure, image to patches</text></g>
-<g class="gray"><rect x="250" y="670" width="180" height="44" rx="4"/><text class="th" x="340" y="689" text-anchor="middle">residency/file_ranges</text><text class="ts" x="340" y="705" text-anchor="middle">D · pure, ranges a load reads</text></g>
-<line class="arr" x1="340" y1="726" x2="340" y2="746" marker-end="url(#a)"/>
-<rect class="frame" x="40" y="748" width="600" height="250" rx="8"/>
-<text class="th" x="56" y="768">Contract headers — no axis; modules depend on these</text>
-<g class="purple"><rect x="52" y="780" width="180" height="44" rx="4"/><text class="th" x="142" y="799" text-anchor="middle">gguf/byte_source.h</text><text class="ts" x="142" y="815" text-anchor="middle">1 · byte source</text></g>
-<g class="purple"><rect x="250" y="780" width="180" height="44" rx="4"/><text class="th" x="340" y="799" text-anchor="middle">gguf/index.h</text><text class="ts" x="340" y="815" text-anchor="middle">2 · tensor index</text></g>
-<g class="purple"><rect x="448" y="780" width="180" height="44" rx="4"/><text class="th" x="538" y="799" text-anchor="middle">model/</text><text class="ts" x="538" y="815" text-anchor="middle">4 · model description</text></g>
-<g class="purple"><rect x="52" y="834" width="180" height="44" rx="4"/><text class="th" x="142" y="853" text-anchor="middle">weight_view.h</text><text class="ts" x="142" y="869" text-anchor="middle">6 · weight view</text></g>
-<g class="purple"><rect x="250" y="834" width="180" height="44" rx="4"/><text class="th" x="340" y="853" text-anchor="middle">kernels/interface.h</text><text class="ts" x="340" y="869" text-anchor="middle">7 · kernel launch</text></g>
-<g class="purple"><rect x="448" y="834" width="180" height="44" rx="4"/><text class="th" x="538" y="853" text-anchor="middle">tokenizer.h</text><text class="ts" x="538" y="869" text-anchor="middle">9 · tokenizer</text></g>
-<g class="purple"><rect x="52" y="888" width="180" height="44" rx="4"/><text class="th" x="142" y="907" text-anchor="middle">policy/</text><text class="ts" x="142" y="923" text-anchor="middle">12 · policy</text></g>
-<g class="purple"><rect x="250" y="888" width="180" height="44" rx="4"/><text class="th" x="340" y="907" text-anchor="middle">arch/architecture.h</text><text class="ts" x="340" y="923" text-anchor="middle">what an arch supplies</text></g>
-<g class="purple"><rect x="448" y="888" width="180" height="44" rx="4"/><text class="th" x="538" y="907" text-anchor="middle">formats/format.h</text><text class="ts" x="538" y="923" text-anchor="middle">what a format supplies</text></g>
-<g class="purple"><rect x="52" y="942" width="180" height="44" rx="4"/><text class="th" x="142" y="961" text-anchor="middle">arch/vision_encoder.h</text><text class="ts" x="142" y="977" text-anchor="middle">what an encoder supplies</text></g>
-<g class="gray"><rect x="40" y="1008" width="12" height="12" rx="2"/></g><text class="ts" x="58" y="1018">module, one axis</text>
-<g class="purple"><rect x="180" y="1008" width="12" height="12" rx="2"/></g><text class="ts" x="198" y="1018">contract, no axis</text>
-<g class="coral"><rect x="330" y="1008" width="12" height="12" rx="2"/></g><text class="ts" x="348" y="1018">boundary</text>
-<g class="gray gpu"><rect x="420" y="1008" width="12" height="12" rx="2"/></g><text class="ts" x="438" y="1018">holds GPU objects</text>
+<g class="gray"><rect x="52" y="260" width="180" height="44" rx="4"/><text class="th" x="142" y="279" text-anchor="middle">audio_input.js</text><text class="ts" x="142" y="295" text-anchor="middle">N · decode, mono, clips</text></g>
+<g class="gray"><rect x="250" y="260" width="180" height="44" rx="4"/><text class="th" x="340" y="279" text-anchor="middle">recordings.js</text><text class="ts" x="340" y="295" text-anchor="middle">H · recordings for the search</text></g>
+<line class="arr" x1="340" y1="314" x2="340" y2="334" marker-end="url(#a)"/>
+<g class="coral"><rect x="40" y="336" width="600" height="52" rx="4"/><text class="th" x="340" y="355" text-anchor="middle">The boundary: worker.js ⇄ bindings.cpp</text><text class="ts" x="340" y="371" text-anchor="middle">preflight · load: begin, chunk, finish · generate · cancel · embed · companion · image bands · audio clips</text></g>
+<line class="arr" x1="340" y1="388" x2="340" y2="408" marker-end="url(#a)"/>
+<rect class="frame" x="40" y="410" width="600" height="368" rx="8"/>
+<text class="th" x="56" y="430">src/core/ — C++, builds and tests natively</text>
+<g class="gray"><rect x="52" y="442" width="104" height="44" rx="4"/><text class="th" x="104" y="461" text-anchor="middle">gguf/</text><text class="ts" x="104" y="477" text-anchor="middle">C · reader</text></g>
+<g class="gray"><rect x="170" y="442" width="104" height="44" rx="4"/><text class="th" x="222" y="461" text-anchor="middle">capability/</text><text class="ts" x="222" y="477" text-anchor="middle">I · one table</text></g>
+<g class="gray"><rect x="288" y="442" width="104" height="44" rx="4"/><text class="th" x="340" y="461" text-anchor="middle">preflight/</text><text class="ts" x="340" y="477" text-anchor="middle">I · four gates</text></g>
+<g class="gray"><rect x="406" y="442" width="104" height="44" rx="4"/><text class="th" x="458" y="461" text-anchor="middle">arch/*</text><text class="ts" x="458" y="477" text-anchor="middle">A · per arch</text></g>
+<g class="gray"><rect x="524" y="442" width="104" height="44" rx="4"/><text class="th" x="576" y="461" text-anchor="middle">formats/*</text><text class="ts" x="576" y="477" text-anchor="middle">B · device layout</text></g>
+<g class="gray"><rect x="52" y="498" width="180" height="44" rx="4"/><text class="th" x="142" y="517" text-anchor="middle">residency/plan</text><text class="ts" x="142" y="533" text-anchor="middle">D · pure, no GPU</text></g>
+<g class="gray"><rect x="250" y="498" width="180" height="44" rx="4"/><text class="th" x="340" y="517" text-anchor="middle">residency/routes</text><text class="ts" x="340" y="533" text-anchor="middle">D · pure, file to buffers</text></g>
+<g class="gray"><rect x="448" y="498" width="180" height="44" rx="4"/><text class="th" x="538" y="517" text-anchor="middle">residency/piece_writer</text><text class="ts" x="538" y="533" text-anchor="middle">D · pure, chunks to writes</text></g>
+<g class="gray gpu"><rect x="52" y="554" width="180" height="44" rx="4"/><text class="th" x="142" y="573" text-anchor="middle">residency/upload</text><text class="ts" x="142" y="589" text-anchor="middle">D · owns every buffer</text></g>
+<g class="gray gpu"><rect x="250" y="554" width="180" height="44" rx="4"/><text class="th" x="340" y="573" text-anchor="middle">residency/upload_check</text><text class="ts" x="340" y="589" text-anchor="middle">D · diagnostic readback</text></g>
+<g class="gray gpu"><rect x="448" y="554" width="180" height="44" rx="4"/><text class="th" x="538" y="573" text-anchor="middle">gpu/</text><text class="ts" x="538" y="589" text-anchor="middle">D · device, dispatch</text></g>
+<g class="gray"><rect x="52" y="610" width="135" height="44" rx="4"/><text class="th" x="119.5" y="629" text-anchor="middle">tokenizer/*</text><text class="ts" x="119.5" y="645" text-anchor="middle">K · per algorithm</text></g>
+<g class="gray"><rect x="199" y="610" width="135" height="44" rx="4"/><text class="th" x="266.5" y="629" text-anchor="middle">pretokenize</text><text class="ts" x="266.5" y="645" text-anchor="middle">K · split patterns</text></g>
+<g class="gray"><rect x="346" y="610" width="135" height="44" rx="4"/><text class="th" x="413.5" y="629" text-anchor="middle">cache/prefix</text><text class="ts" x="413.5" y="645" text-anchor="middle">G · pure diff</text></g>
+<g class="gray"><rect x="493" y="610" width="135" height="44" rx="4"/><text class="th" x="560.5" y="629" text-anchor="middle">cache/kv</text><text class="ts" x="560.5" y="645" text-anchor="middle">G · bookkeeping</text></g>
+<g class="gray gpu"><rect x="52" y="666" width="135" height="44" rx="4"/><text class="th" x="119.5" y="685" text-anchor="middle">kernels/*</text><text class="ts" x="119.5" y="701" text-anchor="middle">E · per kernel</text></g>
+<g class="gray"><rect x="199" y="666" width="135" height="44" rx="4"/><text class="th" x="266.5" y="685" text-anchor="middle">graph/</text><text class="ts" x="266.5" y="701" text-anchor="middle">A · four kinds of graph</text></g>
+<g class="gray"><rect x="346" y="666" width="135" height="44" rx="4"/><text class="th" x="413.5" y="685" text-anchor="middle">sampler/</text><text class="ts" x="413.5" y="701" text-anchor="middle">F · top-k candidates</text></g>
+<g class="gray"><rect x="493" y="666" width="135" height="44" rx="4"/><text class="th" x="560.5" y="685" text-anchor="middle">runtime/</text><text class="ts" x="560.5" y="701" text-anchor="middle">M · turns, encodes</text></g>
+<g class="gray"><rect x="52" y="722" width="180" height="44" rx="4"/><text class="th" x="142" y="741" text-anchor="middle">media/</text><text class="ts" x="142" y="757" text-anchor="middle">N · pure, images and audio</text></g>
+<g class="gray"><rect x="250" y="722" width="180" height="44" rx="4"/><text class="th" x="340" y="741" text-anchor="middle">residency/file_ranges</text><text class="ts" x="340" y="757" text-anchor="middle">D · pure, ranges a load reads</text></g>
+<line class="arr" x1="340" y1="778" x2="340" y2="798" marker-end="url(#a)"/>
+<rect class="frame" x="40" y="800" width="600" height="250" rx="8"/>
+<text class="th" x="56" y="820">Contract headers — no axis; modules depend on these</text>
+<g class="purple"><rect x="52" y="832" width="180" height="44" rx="4"/><text class="th" x="142" y="851" text-anchor="middle">gguf/byte_source.h</text><text class="ts" x="142" y="867" text-anchor="middle">1 · byte source</text></g>
+<g class="purple"><rect x="250" y="832" width="180" height="44" rx="4"/><text class="th" x="340" y="851" text-anchor="middle">gguf/index.h</text><text class="ts" x="340" y="867" text-anchor="middle">2 · tensor index</text></g>
+<g class="purple"><rect x="448" y="832" width="180" height="44" rx="4"/><text class="th" x="538" y="851" text-anchor="middle">model/</text><text class="ts" x="538" y="867" text-anchor="middle">4 · model description</text></g>
+<g class="purple"><rect x="52" y="886" width="180" height="44" rx="4"/><text class="th" x="142" y="905" text-anchor="middle">weight_view.h</text><text class="ts" x="142" y="921" text-anchor="middle">6 · weight view</text></g>
+<g class="purple"><rect x="250" y="886" width="180" height="44" rx="4"/><text class="th" x="340" y="905" text-anchor="middle">kernels/interface.h</text><text class="ts" x="340" y="921" text-anchor="middle">7 · kernel launch</text></g>
+<g class="purple"><rect x="448" y="886" width="180" height="44" rx="4"/><text class="th" x="538" y="905" text-anchor="middle">tokenizer.h</text><text class="ts" x="538" y="921" text-anchor="middle">9 · tokenizer</text></g>
+<g class="purple"><rect x="52" y="940" width="180" height="44" rx="4"/><text class="th" x="142" y="959" text-anchor="middle">policy/</text><text class="ts" x="142" y="975" text-anchor="middle">12 · policy</text></g>
+<g class="purple"><rect x="250" y="940" width="180" height="44" rx="4"/><text class="th" x="340" y="959" text-anchor="middle">arch/architecture.h</text><text class="ts" x="340" y="975" text-anchor="middle">what an arch supplies</text></g>
+<g class="purple"><rect x="448" y="940" width="180" height="44" rx="4"/><text class="th" x="538" y="959" text-anchor="middle">formats/format.h</text><text class="ts" x="538" y="975" text-anchor="middle">what a format supplies</text></g>
+<g class="purple"><rect x="52" y="994" width="180" height="44" rx="4"/><text class="th" x="142" y="1013" text-anchor="middle">arch/media_encoder.h</text><text class="ts" x="142" y="1029" text-anchor="middle">what an encoder supplies</text></g>
+<g class="purple"><rect x="250" y="994" width="180" height="44" rx="4"/><text class="th" x="340" y="1013" text-anchor="middle">runtime/media_stage.h</text><text class="ts" x="340" y="1029" text-anchor="middle">what a media stage supplies</text></g>
+<g class="gray"><rect x="40" y="1060" width="12" height="12" rx="2"/></g><text class="ts" x="58" y="1070">module, one axis</text>
+<g class="purple"><rect x="180" y="1060" width="12" height="12" rx="2"/></g><text class="ts" x="198" y="1070">contract, no axis</text>
+<g class="coral"><rect x="330" y="1060" width="12" height="12" rx="2"/></g><text class="ts" x="348" y="1070">boundary</text>
+<g class="gray gpu"><rect x="420" y="1060" width="12" height="12" rx="2"/></g><text class="ts" x="438" y="1070">holds GPU objects</text>
 </svg>

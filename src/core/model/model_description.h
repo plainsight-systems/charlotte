@@ -171,6 +171,11 @@ struct ModelDescription {
     // Set by a vision encoder's describe and by no other
     // (arch/vision_encoder.h).
     std::optional<VisionDescription> vision;
+    // An audio encoder's, set by its describe and by no other, as `vision`
+    // is: the AudioDescription arch/gemma4a/gemma4a.h sets out — its
+    // subsampling, its Conformer layers with each product's bounds, its
+    // output and multimodal projections. `layers` stays empty: a Conformer's
+    // layer is not the transformer's LayerDescription.
     std::vector<LayerDescription> layers;
 };
 

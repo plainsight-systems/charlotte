@@ -4,6 +4,18 @@
 // controller's lifecycle (model_controller.js), for a file that is never
 // chosen alone and is read in part.
 //
+// Each kind of medium has its own companion (arch/media_encoder.h): the
+// catalog's `vision` and `audio` entries, for EmbeddingGemma 2 two ranges of
+// one mmproj, each cached as its own file. createCompanion takes `kind`,
+// 'image' or 'audio', and reads its entry, `vision` or `audio`, crossing it
+// to the worker with PREFLIGHT_COMPANION and LOAD_COMPANION's `kind`; the
+// page holds one a kind, loaded apart, released together with the model.
+// An audio companion's load answers { mostSamples }, the most a clip may
+// hold (runtime/audio.h), where an image's answers { imageTokens }; the
+// state's text names its encoder, "the image encoder" or "the audio
+// encoder". One companion loads at a time: the search panel asks for the
+// next kind's once the last's ensure has settled.
+//
 // createCompanion({ client, cache, onChange, onCacheChanged, loadPolicyOf,
 // fetchRange, openRange }) returns { ensure(model) → Promise, state,
 // release() }; the two fetches are fetch.js's unless given, and

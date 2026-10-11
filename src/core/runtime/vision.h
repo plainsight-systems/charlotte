@@ -13,6 +13,11 @@ namespace bllm::runtime {
 
 // Axis M (encode): changes with a new stage in the encode path.
 //
+// The image kind of runtime/media_stage.h's stage: Vision implements its
+// interface, ready_tokens() becoming ready_rows() and ImageTokens
+// media_stage.h's MediaTokens; the embedder holds it as a MediaStage
+// (runtime/embedder.h's Media). Nothing below that it computes changes.
+//
 // The image stage of an encode: an image becomes rows of the text model's
 // width, and those rows stand in the text step where the image's
 // placeholder stood, so one embedding represents the text and the image

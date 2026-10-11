@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="680" height="1374" viewBox="0 0 680 1374" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="1596" viewBox="0 0 680 1596" role="img">
 <title>Each logical box mapped to the files that implement it, with each file's change axis</title>
 <desc>Twenty-three logical boxes, in four groups — Load, Generate, Encode and Encode an image — each with the files that implement it and the axis each file changes on. Twelve boxes span more than one axis and split into files on different axes: Pick, Preflight, Gates, Upload, KV cache, Prefill and Decode, Emit, Encode, Read back, Vision step, Place, and Companion load. Files are coloured by layer: JavaScript, C++ core, or the WASM boundary.</desc>
 <style>
@@ -17,7 +17,7 @@
     <path d="M 0 1 L 8 5 L 0 9" fill="none" stroke="#888780" stroke-width="1.5"/>
   </marker>
 </defs>
-<rect class="bg" x="0" y="0" width="680" height="1374"/>
+<rect class="bg" x="0" y="0" width="680" height="1596"/>
 
 <text class="th" x="40" y="44">Logical box</text>
 <text class="th" x="192" y="44">Files, and the axis each changes on</text>
@@ -136,7 +136,7 @@
 
 <g class="gray"><rect x="40" y="1024" width="134" height="32" rx="6"/><text class="th" x="107" y="1045" text-anchor="middle">Prepare</text></g>
 <line class="arr" x1="174" y1="1040" x2="190" y2="1040" marker-end="url(#a)"/>
-<g class="purple"><rect x="192" y="1026" width="92" height="28" rx="5"/><text class="ts" x="238" y="1044" text-anchor="middle">media · N</text></g>
+<g class="purple"><rect x="192" y="1026" width="120" height="28" rx="5"/><text class="ts" x="252" y="1044" text-anchor="middle">media/image · N</text></g>
 
 <g class="coral"><rect x="40" y="1064" width="134" height="66" rx="6"/><text class="th" x="107" y="1102" text-anchor="middle">Vision step</text></g>
 <line class="arr" x1="174" y1="1080" x2="190" y2="1080" marker-end="url(#a)"/>
@@ -165,13 +165,39 @@
 <g class="purple"><rect x="515" y="1220" width="92" height="28" rx="5"/><text class="ts" x="561" y="1238" text-anchor="middle">preflight · I</text></g>
 <g class="purple"><rect x="192" y="1254" width="100" height="28" rx="5"/><text class="ts" x="242" y="1272" text-anchor="middle">capability · I</text></g>
 
-<g class="coral"><rect x="40" y="1298" width="12" height="12" rx="2"/></g>
-<text class="ts" x="60" y="1309">spans more than one change axis, so its files split</text>
-<g class="teal"><rect x="40" y="1320" width="12" height="12" rx="2"/></g>
-<text class="ts" x="60" y="1331">JavaScript</text>
-<g class="purple"><rect x="150" y="1320" width="12" height="12" rx="2"/></g>
-<text class="ts" x="170" y="1331">C++ core</text>
-<g class="gray"><rect x="250" y="1320" width="12" height="12" rx="2"/></g>
-<text class="ts" x="270" y="1331">WASM boundary</text>
-<text class="ts" x="40" y="1358">A file in more than one row serves several boxes, always on its one axis.</text>
+<text class="ts" x="40" y="1308">Encode an audio clip</text>
+
+<g class="gray"><rect x="40" y="1316" width="134" height="32" rx="6"/><text class="th" x="107" y="1337" text-anchor="middle">Audio clip</text></g>
+<line class="arr" x1="174" y1="1332" x2="190" y2="1332" marker-end="url(#a)"/>
+<g class="teal"><rect x="192" y="1318" width="128" height="28" rx="5"/><text class="ts" x="256" y="1336" text-anchor="middle">web/recordings · H</text></g>
+<g class="teal"><rect x="328" y="1318" width="150" height="28" rx="5"/><text class="ts" x="403" y="1336" text-anchor="middle">web/audio_input · N</text></g>
+
+<g class="gray"><rect x="40" y="1356" width="134" height="32" rx="6"/><text class="th" x="107" y="1377" text-anchor="middle">Prepare</text></g>
+<line class="arr" x1="174" y1="1372" x2="190" y2="1372" marker-end="url(#a)"/>
+<g class="purple"><rect x="192" y="1358" width="120" height="28" rx="5"/><text class="ts" x="252" y="1376" text-anchor="middle">media/audio · N</text></g>
+
+<g class="coral"><rect x="40" y="1396" width="134" height="66" rx="6"/><text class="th" x="107" y="1434" text-anchor="middle">Audio step</text></g>
+<line class="arr" x1="174" y1="1412" x2="190" y2="1412" marker-end="url(#a)"/>
+<line class="arr" x1="174" y1="1446" x2="190" y2="1446" marker-end="url(#a)"/>
+<g class="purple"><rect x="192" y="1398" width="140" height="28" rx="5"/><text class="ts" x="262" y="1416" text-anchor="middle">runtime/audio · M</text></g>
+<g class="purple"><rect x="340" y="1398" width="150" height="28" rx="5"/><text class="ts" x="415" y="1416" text-anchor="middle">arch/&lt;projector&gt; · A</text></g>
+<g class="purple"><rect x="498" y="1398" width="118" height="28" rx="5"/><text class="ts" x="557" y="1416" text-anchor="middle">graph/audio · A</text></g>
+<g class="purple"><rect x="192" y="1432" width="105" height="28" rx="5"/><text class="ts" x="244" y="1450" text-anchor="middle">kernels/* · E</text></g>
+<g class="purple"><rect x="305" y="1432" width="140" height="28" rx="5"/><text class="ts" x="375" y="1450" text-anchor="middle">kernels/program · D</text></g>
+
+<g class="coral"><rect x="40" y="1476" width="134" height="32" rx="6"/><text class="th" x="107" y="1497" text-anchor="middle">Place</text></g>
+<line class="arr" x1="174" y1="1492" x2="190" y2="1492" marker-end="url(#a)"/>
+<g class="purple"><rect x="192" y="1478" width="140" height="28" rx="5"/><text class="ts" x="262" y="1496" text-anchor="middle">runtime/audio · M</text></g>
+<g class="purple"><rect x="340" y="1478" width="140" height="28" rx="5"/><text class="ts" x="410" y="1496" text-anchor="middle">kernels/program · D</text></g>
+<g class="purple"><rect x="488" y="1478" width="128" height="28" rx="5"/><text class="ts" x="552" y="1496" text-anchor="middle">kernels/gather · E</text></g>
+
+<g class="coral"><rect x="40" y="1520" width="12" height="12" rx="2"/></g>
+<text class="ts" x="60" y="1531">spans more than one change axis, so its files split</text>
+<g class="teal"><rect x="40" y="1542" width="12" height="12" rx="2"/></g>
+<text class="ts" x="60" y="1553">JavaScript</text>
+<g class="purple"><rect x="150" y="1542" width="12" height="12" rx="2"/></g>
+<text class="ts" x="170" y="1553">C++ core</text>
+<g class="gray"><rect x="250" y="1542" width="12" height="12" rx="2"/></g>
+<text class="ts" x="270" y="1553">WASM boundary</text>
+<text class="ts" x="40" y="1580">A file in more than one row serves several boxes, always on its one axis.</text>
 </svg>

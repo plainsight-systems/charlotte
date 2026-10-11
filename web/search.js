@@ -68,6 +68,23 @@
 //     indexing finds it further on.
 //     Under ?fake-runtime=embedder a photo's vector is a hash of its pixels
 //     (dev/fake_runtime.js), never shown as a model's.
+//   - Recordings, for a model whose catalog entry names an audio companion
+//     (catalog.js, runtime/audio.h), likewise: chosen or dropped beside the
+//     document and the photos (recordings.js), joining the same index after
+//     the photos. The first recording indexed loads the audio companion, 328
+//     MB the first time, once the image companion's ensure, if any, has
+//     settled. Each recording is decoded on the page and cut into clips of
+//     at most the module's mostSamples, equal in length (audio_input.js),
+//     and each clip is one entry of the index, embedded alone as
+//     `<|audio|>` with no prompt, as the card says: a query finds where in a
+//     recording it is answered, as it finds a passage of a document.
+//     Indexing sends each clip's PREPARE_AUDIO and its EMBED, the next
+//     clip's PREPARE_AUDIO sent once that EMBED is, as a photo's bands are;
+//     a clip's failure ends the indexing, whole or not at all. A clip's
+//     result is the recording's name, its span — "0:20–0:40" — a player for
+//     that span, and its score. Under ?fake-runtime=embedder a clip's vector
+//     is its energy over time, binned (dev/fake_runtime.js), never shown as
+//     a model's.
 //   - Closing the panel, as choosing another model does, abandons an
 //     indexing in progress: no further passage is sent, and an answer still
 //     on its way is ignored. The companion is released with it. The next load cancels an encode still running
@@ -121,6 +138,12 @@
 //     by passage (GPU.6), a change to the encode path's design, not to this
 //     page.
 //
+// A recording, for EmbeddingGemma 2 on the target, by runtime/audio.h's
+// estimates: the browser's decode; then a clip of 20 s a crossing of 1.28
+// MB, its spectrogram a few milliseconds, overlapped with the last clip's
+// encode; the audio step about 0.1 s; the text step about 45 ms. About
+// 0.15 s a 20 s clip: a 5 minute recording, 15 clips, in about 2.3 s.
+//
 // A photo, for EmbeddingGemma 2 on the target, by runtime/vision.h's
 // estimates: decoding by the browser, its pixels a band a crossing — 4 MiB
 // bands, 12 for a 12-megapixel photo — the module's resample, 0.1 to 0.2 s,
@@ -140,7 +163,11 @@
 // (tools/make_vision_photos.py), each query of
 // tests/fixtures/reference/vision_embeddings.inc ranks its own scene first,
 // among the photos and the paragraphs, each score llama.cpp's to three
-// places; a file that is not an image is refused by name. On a phone
+// places; a file that is not an image is refused by name. With the four
+// recordings of tests/fixtures/audio/ added, each of their queries ranks its
+// own recording first among the recordings, the photos and the paragraphs,
+// each score llama.cpp's to three places; a 5 minute recording is indexed
+// as 15 clips, the one a query names ranked with its span. On a phone
 // screen, in iOS Safari under
 // ?fake-runtime=embedder (dev/fake_runtime.js), the panel with the
 // on-screen keyboard up.

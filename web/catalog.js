@@ -7,6 +7,14 @@
 // task prompts its card gives (task_prompt.js), each a string, or the entry
 // is refused naming the one at fault; a pasted URL's model has none.
 //
+// `audio`, for a model whose audio is encoded by a companion file
+// (runtime/audio.h), is { url, sizeBytes, ranges, rangesSha256 }: as
+// `vision`'s, without a budget — a clip's rows are bounded by the text
+// model's context — each field checked the same way, refused naming
+// "audio.<field>". EmbeddingGemma 2's names the same mmproj as its
+// `vision`, one range, [0, 328,492,448): the header and the audio encoder,
+// pinned by tools/pin_ranges.py with the prefixes a. and mm.a.
+//
 // `vision`, for a model whose images are encoded by a companion file
 // (runtime/vision.h), is { url, sizeBytes, ranges, rangesSha256, tokens }:
 // the companion's published file and size; the byte ranges a load reads,

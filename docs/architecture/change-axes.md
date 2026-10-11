@@ -24,7 +24,7 @@ files. It does not list the files; that is [`file-mapping.md`](file-mapping.md).
 | **K** | a new tokenization algorithm or pre-tokenizer | that algorithm, or that pre-tokenizer's split pattern |
 | **L** | a browser network or storage API, or how we download | fetch transport, OPFS model cache |
 | **M** | a new stage in a model's loop | the runtime that sequences it: diff, prefill, decode and sample for a generator; encode, one step and read back for an embedder |
-| **N** | a new kind of media input, or how one is prepared for its encoder | that preparation: an image's size, resample and patches in the module, its decode in the page |
+| **N** | a new kind of media input, or how one is prepared for its encoder | that preparation: an image's size, resample and patches in the module, its decode in the page; an audio clip's spectrogram in the module, its decode, mono mix and cutting into clips in the page |
 
 Every file maps to exactly one row. Two rows means it splits. Two files that
 always change together means they merge — unless they cannot, for a reason
@@ -106,7 +106,10 @@ The test is E's: **a stage added to one loop must produce a diff that touches
 no other loop's files.** What the two share is below them — the program, the
 tokenizer, the plan — each on its own axis. An image's stage is M(encode)'s:
 the vision step run and its rows placed in the text step add to the encode
-loop and touch nothing of generate's.
+loop and touch nothing of generate's. So is an audio clip's, and the two are
+one stage's two kinds: the embedder holds a stage a kind behind one
+interface, so a third kind adds a stage and touches neither the embedder's
+loop nor the other kinds' stages.
 
 ## N is not K
 
@@ -120,7 +123,9 @@ vision encoder's A: the same preparation would serve another encoder that
 takes the same patches, and a change to how an encoder computes leaves how
 its input is prepared alone. The test is the usual one: a resampler fixed
 for one image size touches no graph, and a graph changed touches no
-resampler.
+resampler. A waveform's spectrogram is the same case: llama.cpp's mel
+spectrogram against the module's, a tolerance where the resampler has bytes,
+and a fix to the log's floor touches no Conformer block.
 
 ## The boxes that are already one axis
 
@@ -128,8 +133,8 @@ resampler.
 it renders a template it does not interpret), `Graph` (A — one per
 architecture), `Tokenize` (K — one per tokenization algorithm, with pre-tokenizer split
 patterns selected by name), `Wrap` (M(encode) — the file's ends around a
-text), `Pool` (E), `Prepare` (N — an image's size, resample and patches),
-and each kernel (E).
+text), `Pool` (E), `Prepare` (N — an image's size, resample and patches;
+an audio clip's spectrogram), and each kernel (E).
 
 ## The boxes that are compound
 
@@ -143,6 +148,7 @@ and each kernel (E).
 | **Working buffers** | A, D | each graph's working set — which buffers it binds, how large · the planner's placement of them |
 | **Encode** | M, A, E, D | the embedder · the architecture's graph, composed from the encoder's blocks · the kernels · the program |
 | **Encode an image** | N, M, A, E, D | the image's preparation, in the page and the module · the vision stage, which places the image's rows in the text step · the vision encoder's graph, composed from the vision blocks · the kernels · the program and its link between two programs |
+| **Encode an audio clip** | N, M, A, E, D | the clip's preparation: decode, mono mix and clips in the page, the spectrogram in the module · the audio stage, which places the clip's rows in the text step · the audio encoder's graph and its setup, composed from the Conformer blocks · the kernels · the program, its setup step and its link |
 
 **Diff and KV cache** is the split worth insisting on.
 `longest_common_prefix(old, new) → length` is a pure function over two integer
@@ -229,6 +235,20 @@ change to one should never re-verify the other.
 and the draw and bind a cache; an encoder's end in a pooled vector and bind
 none. A builder serving both would change whenever either did. They share the
 kernels and the residual convention, not code.
+
+**An audio encoder is a media encoder of another kind, not a new
+contract.** Image and audio encoders describe a companion file, build a
+graph and pair with a text model; they differ in which key names them and
+what stage feeds them. One contract with a kind, MediaKind, found by kind
+and projector type: a second contract would duplicate the first, and a
+third kind, video's frames, needs no contract at all.
+
+**A clamp's bounds live in the weight's binding, not on the host.** They
+are numbers in the file, so they could be read at load and baked into each
+launch. That would make the upload read values for the graph, crossing D
+into A. Kept beside the weight they clamp, in one binding the product
+already reads, the plan places them (D), the product reads them (E), and
+the graph only names them (A).
 
 **A vision encoder is not an architecture.** Both describe a file and
 build a graph, and an architecture's entry could have held a third kind of

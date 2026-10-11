@@ -226,6 +226,38 @@ namespace bllm::kernels {
 //     form for Gemma 3, as the model description states — never gate or up
 //     themselves. The down projection reads it.
 //
+//   Three options of a product, for an audio encoder's (graph/audio.h),
+//   each an override constant beside the epilogue, so a product without
+//   them builds the pipeline it builds now:
+//     - clipped: the input clamped to [in_min, in_max] as it is staged —
+//       decode's registers, the tiled and split forms' workgroup tile —
+//       and each output clamped to [out_min, out_max] before anything else
+//       the epilogue does: clamp(W clamp(x)), llama.cpp's build_mm for a
+//       clippable linear, ggml_clamp either side of ggml_mul_mat. The
+//       bounds are four F32 scalars beside the weight in the file, which
+//       the plan keeps with the weight in one buffer within one binding
+//       (residency/plan.h's product span). So the weights binding is the
+//       span, as a fused group's is, and each workgroup reads the bounds
+//       from it once — 4 words at the first words the constants give,
+//       bitcast to f32 — with no binding of their own and nothing read on
+//       the host. A clamp is exact, so it adds no rounding; the staging's
+//       clamp is 2 compares a float staged.
+//     - biased: Write adds b[o] after the clamp, b an F32 row in the same
+//       span, its first word in the constants — the audio encoder's output
+//       projection, the one product here with a bias.
+//     - activated: Write applies the activation to each output last — the
+//       ungated feed-forward's up projection through SiLU, its e^x as the
+//       gated epilogue takes it, explicit arithmetic.
+//     The split form clamps its input in split_ranges' staging and leaves
+//     the rest to combine_write, which clamps, biases and activates the
+//     total; the decode form does all three as Write does. The fused QKV
+//     and gated epilogues take none of them: an audio encoder's Q, K and V
+//     each have bounds of their own, and its feed-forward is not gated.
+//     Constants: `clip: vec4<u32>`, the bounds' first words — in_min,
+//     in_max, out_min, out_max — and `bias: vec4<u32>`, the bias's first
+//     word then padding: 96 bytes for every launch, as gate_input's slot is
+//     every launch's.
+//
 //   - Pieces. A weight larger than one binding is split by rows
 //     (residency/plan.h): one launch a piece, each covering its rows. The
 //     head of Llama 3.2 is 2 launches, Gemma 3's 3. Every listed Q, K, V,
@@ -256,6 +288,10 @@ namespace bllm::kernels {
 //     the split form above lays them out, o the product's row.
 //
 // What it asks of the other contracts:
+//   - residency/plan.h, for the three options above: a product span — a
+//     weight, its four bounds and its bias, as the description names them,
+//     in one buffer within one binding, recorded with the span — as a fused
+//     group is recorded, the members' formats free to differ.
 //   - kernels/interface.h: a launch may run in a range of token counts
 //     only — a regime's, Decode a step of one token and Prefill one of more
 //     (regime_for, tokens_of), or part of one, as the three prefill tiles
@@ -494,6 +530,11 @@ namespace bllm::kernels {
 // kPrefillBlock once — and split_tokens at each listed model's products, as
 // above; a step whose range sums would not fit the buffer left tiled; and the
 // graphs' working sets holding `range_sums` at their products' most.
+// The options: clipped, biased and activated each in the decode, tiled and
+// split forms, against f64 with bounds that bind — inputs and outputs past
+// both ends — and with bounds that never do, whose bits equal the product
+// without the option; the bounds read from a span whose weight lies between
+// them, as the audio encoder's file lays them out.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines

@@ -50,8 +50,10 @@ module's own header, and contract 11 in the two boundary files.
 | `web/photos.js` | H | the photos chosen for the search panel: added or dropped, each checked by decoding it, shown as thumbnails |
 | `web/passages.js` | H | a document cut into passages, and a passage the runtime refused cut into pieces that fit |
 | `web/search_index.js` | H | the passages' vectors, and a query ranked against them by dot product |
-| `web/companion.js` | H | a loaded model's companion file: checked, its ranges downloaded and verified, loaded, the first time the page needs it |
+| `web/companion.js` | H | a loaded model's companion for one kind of medium: checked, its ranges downloaded and verified, loaded, the first time the page needs it |
 | `web/image_input.js` | N | a photo decoded in the worker and handed to the module a band of rows at a time |
+| `web/recordings.js` | H | the recordings chosen for the search panel: added or dropped, each checked by decoding it, listed with its length |
+| `web/audio_input.js` | N | a recording decoded on the page, mixed to mono at 16 kHz and cut into clips of equal length |
 | `web/fetch.js` | L | range and streaming fetch, with progress |
 | `web/preflight.js` | L | fetching the front of a file until the reader has its whole index |
 | `web/opfs.js` | L | the model file cache; a file is listed only once complete and verified |
@@ -73,12 +75,14 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/arch/architecture.h` | contract | what every architecture supplies, and which kind of graph: a generator's or an embedder's |
 | `src/core/arch/describe` | C | what describing shares: GGUF's `<arch>.<key>` and `blk.<layer>.<suffix>` naming, and the shape each role's weight has |
 | `src/core/arch/<arch>/` | A | reading its numbers into the model description, and its graph |
-| `src/core/arch/vision_encoder.h` | contract | what every vision encoder supplies: describe, its graph, and whether a text model reads its rows |
-| `src/core/arch/<projector>/` | A | a vision encoder: reading its numbers, its graph, the text models it pairs with |
+| `src/core/arch/media_encoder.h` | contract | what every media encoder supplies, image or audio: its kind, describe, its graph and setup, and whether a text model reads its rows |
+| `src/core/arch/<projector>/` | A | a media encoder: reading its numbers, its graph, the text models it pairs with |
 | `src/core/graph/graph` | A | the blocks a generator's graph composes — embed, attention against the cache, gated feed-forward, output — and the working buffers they bind |
 | `src/core/graph/encoder` | A | the blocks an embedder's graph composes — embed, per-layer inputs, attention both ways, gated feed-forward, per-layer block, pooled output — and the working buffers they bind |
 | `src/core/graph/vision` | A | the blocks a vision encoder's graph composes — patch embedding, positions, attention over every patch, gated feed-forward, pooled projection — and the working buffers they bind |
-| `src/core/media/` | N | an image's preparation: its size for the budget, its resample, its patches |
+| `src/core/graph/audio` | A | the blocks an audio encoder's graph composes — subsampling, half-step feed-forwards, local attention, light convolution, output — its setup, and the working buffers they bind |
+| `src/core/media/image` | N | an image's preparation: its size for the budget, its resample, its patches |
+| `src/core/media/audio` | N | an audio clip's preparation: its frames and rows, its log-mel spectrogram |
 | `src/core/formats/format.h` | contract | what every weight format supplies |
 | `src/core/formats/<format>/` | B | device layout, pack and unpack in WGSL |
 | `src/core/residency/plan` | D | the planner, pure: where the weights, a generator's cache and the working set a graph declares lie, and the context offered |
@@ -98,7 +102,9 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/sampler/` | F | sampling methods; settings and seed are passed in |
 | `src/core/runtime/runtime`, `generator`, `stops` | M (generate) | the turn loop: diff, prefill, decode, sample; and the tokens that stop it |
 | `src/core/runtime/embedder`, `ends` | M (encode) | the encode path: wrap a text in the file's ends, one step, read back a vector |
+| `src/core/runtime/media_stage.h` | contract | what the embedder asks of a media stage: rows ready, the step, the link |
 | `src/core/runtime/vision` | M (encode) | an encode's image stage: the image's staging slot, the vision step, its rows placed in the text step |
+| `src/core/runtime/audio` | M (encode) | an encode's audio stage: the clip's staging slot, the setup once, the audio step, its rows placed in the text step |
 
 Rows marked *contract* carry no axis. A contract header changes only
 when the contract itself changes, which is cross-cutting by definition: every
@@ -135,6 +141,9 @@ and production never materialises a dequantized weight.
 | **Pool** | `core/kernels/pool` E · `core/kernels/matmul` E | no |
 | **Read back** | `core/kernels/program` D · the boundary | yes |
 | **Image**, decoded | `web/photos.js` H · `web/image_input.js` N | no |
+| **Audio clip**, decoded, mono, cut | `web/recordings.js` H · `web/audio_input.js` N | no |
+| **Prepare** an audio clip | `core/media/audio` N | no |
+| **Audio step** | `core/runtime/audio` M · `core/arch/<projector>` A · `core/graph/audio` A · `core/kernels/*` E · `core/kernels/program` D | yes |
 | **Prepare** | `core/media` N | no |
 | **Vision step** | `core/runtime/vision` M · `core/arch/<projector>` A · `core/graph/vision` A · `core/kernels/*` E · `core/kernels/program` D | yes |
 | **Place** | `core/runtime/vision` M · `core/kernels/program` D, its link · `core/kernels/gather` E | yes |
@@ -211,6 +220,29 @@ attention's streaming form and pooling's grid form.
 | **Pool**: k × k patches a soft token, normalized | `core/kernels/pool` E, its grid form |
 | **Project** to the text width | `core/kernels/matmul` E · `core/formats/<format>` B |
 
+## Inside an audio step, block to files
+
+The **Audio step** box, opened up: each block of the audio encoder in
+[`logical-overview.md`](logical-overview.md), with the files that implement
+it. Three kernels are new — the subsampling's convolutions, local attention
+and the light convolution — and two shared ones gain forms: the matrix
+product's clamped, biased and activated options, and the norm's scaled
+post-norm, re-norm and unit gain.
+
+| Block | Files, with axis |
+|---|---|
+| Order of every block below, per audio encoder | `core/arch/<projector>` A, composing `core/graph/audio` A |
+| Step parameters: position 0, the rows, the clip's frames | `core/kernels/interface` contract · `core/runtime/audio` M |
+| The spectrogram written, the step launched, its rows copied to the text step; the setup run once | `core/kernels/program` D |
+| Working buffers: mel, subsampled, hidden, normed, query, key, value, attention, output, activation, pointwise, projected, soft tokens, positions, relative | declared by `core/graph/audio` A · placed by `core/residency/plan` D |
+| **Subsample**: two strided convolutions, layer norms, ReLU | `core/kernels/subsample` E · `core/formats/f32` B |
+| **Norms**, each with the residual add, its post-norm and weight, and the layer's re-norm | `core/kernels/norm` E · `core/formats/f32` B |
+| **Products**, clamped to bounds beside each weight; SiLU on the feed-forward's up; the output's bias | `core/kernels/matmul` E · `core/formats/<format>` B · `core/residency/plan` D, its product spans |
+| **Relative tables**, once at load | `core/kernels/matmul` E, the setup's products |
+| **Local attention**: each row and its 11 before, a term by distance, capped | `core/kernels/local_attention` E |
+| **Light convolution**: GLU, 5 rows back, norm, SiLU | `core/kernels/light_conv` E |
+| **Project** to the text width, after a norm without a gain | `core/kernels/norm` E · `core/kernels/matmul` E · `core/formats/<format>` B |
+
 ## Files that serve several boxes
 
 A file used by two boxes is where its interface matters most. Each still
@@ -232,7 +264,8 @@ changes on exactly one axis.
   of each: a generator's drawn token, an embedder's vector. For an image it
   also writes the patches into the vision step and copies the vision step's
   rows into the text step, between two programs on one device, holding both
-  buffers so neither program binds the other's.
+  buffers so neither program binds the other's; an audio clip's the same,
+  after a setup step run once.
 - **The shared kernels** — gather, norm, rope, the matrix products — serve a
   generator's pass and an embedder's. A form one of them needs, such as rope's
   encode form, is a variant its graph selects; the kernel never learns which

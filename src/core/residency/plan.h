@@ -86,6 +86,19 @@ namespace bllm::residency {
 //     tensor the description names that lies outside is refused,
 //     MissingTensorBytes, before anything is placed. A fused group whose
 //     span holds a tensor not read is not a group.
+//   - A product span: a weight and the F32 tensors its product reads from
+//     the weight's own binding — an audio encoder's clamp bounds, four one-
+//     float tensors around each clipped weight, and its output projection's
+//     bias (kernels/matmul/matmul.h) — kept in one buffer within one
+//     binding, as a fused group is, opening a new buffer before the span
+//     when the open one cannot hold it, and recorded: the weight, the
+//     tensors by role, and the range from the first's first byte to the
+//     last's last. Unlike a group's, its members' formats differ; the
+//     weight is one piece. The description names the spans
+//     (arch/gemma4a/gemma4a.h); the plan refuses, naming the weight, a span
+//     wider than a binding or holding a tensor not read, since the product
+//     could not bind its bounds otherwise. In EmbeddingGemma 2's file a
+//     span is its weight and 4 × 32 bytes, the tensors' alignment.
 //   - A row is every dimension but the last (formats/format.h), so a
 //     convolution's weight splits, where it must, between the rows its
 //     product reads.

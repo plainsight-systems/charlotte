@@ -196,6 +196,58 @@ long splits along K.
 The image's rows then reach the text step by one copy between the two
 programs before the text step's pass, not a launch.
 
+## An audio encoder's step
+
+An audio encoder runs one step over a clip's spectrogram
+(`core/graph/audio.h`). The rules above hold, with four more:
+
+- **Every block boundary is one norm.** A Conformer layer has four
+  residual adds, two at half weight, three post-norms and a closing norm
+  that replaces the residual stream. Each add, its post-norm, its weight,
+  the closing norm and the next block's norm are one launch, so a layer's
+  norms are four launches, one a block.
+- **The clamps ride in the products.** Each product reads its four bounds
+  from its own weight's binding and clamps its input as it stages it and
+  its output before it writes; no clamp is a pass.
+- **The light convolution is one launch.** The GLU, the depthwise
+  convolution over 5 rows, its norm and SiLU, a workgroup a row, where
+  llama.cpp's graph makes five passes.
+- **Attention is the window alone.** Each row against its 11 predecessors
+  and itself, the relative term read from a table computed once at load,
+  where llama.cpp's blocked form scores 24 keys a row and masks half.
+
+For one layer, in order:
+
+| # | Launch | Fused into it |
+|---|---|---|
+| 1 | norm | the last layer's output through its post-norm at half weight, the layer's closing norm, then this layer's feed-forward norm; or, in layer 0, the input projection's rows normalized |
+| 2 | matmul | the up projection, clamped, through SiLU |
+| 3 | matmul | the down projection, clamped |
+| 4 | norm | that output through its post-norm at half weight; the attention norm |
+| 5–7 | matmul | Q, K and V, each clamped |
+| 8 | local attention | scores, the relative term, the cap, softmax and the weighted sum over the window |
+| 9 | matmul | the output projection, clamped |
+| 10 | norm | that output through its post-norm; the convolution module's norm |
+| 11 | matmul | the first pointwise projection, clamped |
+| 12 | light convolution | GLU, depthwise convolution, norm, SiLU |
+| 13 | matmul | the second pointwise projection, clamped |
+| 14 | norm | that output added; the second feed-forward's norm |
+| 15 | matmul | its up projection, clamped, through SiLU |
+| 16 | matmul | its down projection, clamped |
+
+Around the layers: before them the two convolutions and the input
+projection; after them the last layer's output added and closed, the
+output projection with its bias, a norm without a gain, and the projection
+to the text width. A short clip's products may split along K, adding their
+combines. Once, at load, a setup step of 12 products computes the relative
+tables.
+
+| Model | Layers | Subsampling | Layers × 16 | Close, project, norm, project | Launches a step | At 1.5 µs each |
+|---|---|---|---|---|---|---|
+| EmbeddingGemma 2's audio encoder | 12 | 3 | 192 | 4 | 199 | 0.30 ms |
+
+The clip's rows reach the text step as an image's do, by one copy.
+
 ## Levers not taken
 
 - **The norm folded into the matmul after it.** Each matmul workgroup would
