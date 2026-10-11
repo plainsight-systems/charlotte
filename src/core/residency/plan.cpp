@@ -186,6 +186,28 @@ std::vector<gguf::TensorId> described_tensors(const model::ModelDescription& mod
         add(model.vision->position_table);
         add(model.vision->projection);
     }
+    if (model.audio) {
+        const model::AudioDescription& a = *model.audio;
+        for (const gguf::TensorId t : {a.convolution[0], a.convolution[1], a.convolution_norm[0],
+                                       a.convolution_norm[1], a.input_projection, a.projection}) {
+            add(t);
+        }
+        for (const model::ConformerLayer& l : a.layers) {
+            for (const gguf::TensorId t : {l.ffn_norm, l.ffn_up.weight, l.ffn_down.weight, l.ffn_post_norm,
+                                           l.attention_norm, l.query.weight, l.key.weight, l.value.weight,
+                                           l.per_dim_scale, l.relative, l.attention_output.weight,
+                                           l.attention_post_norm, l.convolution_norm, l.pointwise_in.weight,
+                                           l.depthwise, l.depthwise_norm, l.pointwise_out.weight, l.ffn_norm_1,
+                                           l.ffn_up_1.weight, l.ffn_down_1.weight, l.ffn_post_norm_1,
+                                           l.output_norm}) {
+                add(t);
+            }
+        }
+    }
+    // Every member of a product span: the bounds and biases above leave out.
+    for (const model::ProductSpan& s : model.product_spans) {
+        for (const gguf::TensorId t : s.members) add(t);
+    }
     if (model.encoder) {
         add(model.encoder->per_layer_projection);
         add(model.encoder->per_layer_norm);
@@ -235,6 +257,24 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
         reserve_before[first] = std::max(reserve_before[first], bytes);
         return false;
     });
+    // Product spans, which unlike groups must hold: each kept in one buffer
+    // by reserving its bytes before its first member, as a group's are.
+    for (const model::ProductSpan& s : model.product_spans) {
+        std::size_t first = tensors.size(), last = 0;
+        for (const gguf::TensorId t : s.members) {
+            first = std::min(first, static_cast<std::size_t>(t));
+            last = std::max(last, static_cast<std::size_t>(t));
+        }
+        const std::string& weight = index.tensor(s.weight).name;
+        for (std::size_t k = first; k <= last; ++k) {
+            if (!present(tensors[k], ranges)) return failure(PlanError::UnboundSpan, weight);
+        }
+        std::uint64_t bytes = 0;
+        if (!span_bytes(tensors, first, last, limits, bytes) || bytes > limit) {
+            return failure(PlanError::UnboundSpan, weight);
+        }
+        reserve_before[first] = std::max(reserve_before[first], bytes);
+    }
 
     for (std::size_t i = 0; i < tensors.size(); ++i) {
         if (reserve_before[i] != 0 && !packer.reserve(reserve_before[i])) return failure(PlanError::Overflow);
@@ -285,6 +325,20 @@ PlanResult place_weights(const gguf::TensorIndex& index, const model::ModelDescr
             g.span = {head.buffer, begin, end - begin};
             out.groups.push_back(g);
         }
+    }
+    for (const model::ProductSpan& s : model.product_spans) {
+        const WeightPiece& head = out.tensors[static_cast<std::size_t>(s.weight)].view.pieces().front();
+        std::uint64_t begin = head.offset, end = head.offset + head.length;
+        for (const gguf::TensorId t : s.members) {
+            const auto& pieces = out.tensors[static_cast<std::size_t>(t)].view.pieces();
+            if (pieces.size() != 1 || pieces.front().buffer != head.buffer) {
+                return failure(PlanError::UnboundSpan, index.tensor(s.weight).name);
+            }
+            begin = std::min(begin, pieces.front().offset);
+            end = std::max(end, pieces.front().offset + pieces.front().length);
+        }
+        if (end - begin > limit) return failure(PlanError::UnboundSpan, index.tensor(s.weight).name);
+        out.spans.push_back({s.weight, {head.buffer, begin, end - begin}});
     }
     return {};
 }

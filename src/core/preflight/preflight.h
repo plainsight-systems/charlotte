@@ -165,6 +165,9 @@ struct CompanionHost {
     std::string_view text_architecture;
     const tokenizer::Vocabulary& vocabulary;
     std::uint64_t resident_bytes;
+    // The most rows a medium may make in one encode (runtime/embedder.h):
+    // an audio clip's step is planned for them.
+    std::uint32_t most_media_rows;
 };
 
 // A companion's verdict for its encoder of `kind`, judged stage by stage as a
@@ -172,7 +175,7 @@ struct CompanionHost {
 // encoder found by the kind's projector key (arch/media_encoder.h) and
 // described; Fit, planned against its ranges within what the budget leaves
 // beside the plans loaded, its step's rows the kind's — for an image the
-// budget's most patches; Upload, the formats and rows of the tensors inside
+// budget's most patches, for an audio clip the host's most media rows; Upload, the formats and rows of the tensors inside
 // the ranges; Run, its graphs building, pairs accepting the model, and the
 // encoder's three tokens in the model's vocabulary. `index_end` is where the
 // header and index end. The image budget is an image's alone.

@@ -62,3 +62,14 @@ test("a vision companion's fields are checked, the entry refused naming the one 
   refused({ tokens: { least: 300, most: 280 } }, 'tokens');
   refused({ tokens: undefined }, 'tokens');
 });
+
+test("an audio companion's fields are checked as a vision companion's, without a token budget", () => {
+  const entry = { id: 'e', name: 'E', url: 'https://a/e.gguf', sizeBytes: 1, sha256: '0'.repeat(64) };
+  const audio = { url: 'https://a/m.gguf', sizeBytes: 100, ranges: [[0, 60]], rangesSha256: 'b'.repeat(64) };
+  const [model] = parseCatalog({ models: [{ ...entry, audio }] });
+  assert.deepEqual(model.audio, audio);
+  assert.throws(() => parseCatalog({ models: [{ ...entry, audio: { ...audio, ranges: [[5, 60]] } }] }),
+    (error) => error instanceof CatalogError && error.message.includes('audio.ranges'));
+  assert.throws(() => parseCatalog({ models: [{ ...entry, audio: { ...audio, rangesSha256: 'x' } }] }),
+    (error) => error instanceof CatalogError && error.message.includes('audio.rangesSha256'));
+});

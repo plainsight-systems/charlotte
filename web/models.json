@@ -35,6 +35,12 @@
         "ranges": [[0, 58656], [328492448, 554821024]],
         "rangesSha256": "b3956354ba5f7e4961e44977a6d441c043e50ccffa00400941ffd6016aa07edc",
         "tokens": { "least": 70, "most": 280 }
+      },
+      "audio": {
+        "url": "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/main/mmproj-embeddinggemma-2-Q8_0.gguf",
+        "sizeBytes": 554821024,
+        "ranges": [[0, 328492448]],
+        "rangesSha256": "5451da575615885f80311e44e1acb3c8ab67f86935eb13663d22c6dffcbb5d30"
       }
     }
   ]

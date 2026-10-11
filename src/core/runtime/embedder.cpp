@@ -250,6 +250,12 @@ EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind
 
 std::uint32_t Embedder::context() const noexcept { return state_->context; }
 
+std::uint32_t Embedder::most_media_rows() const noexcept {
+    const State& s = *state_;
+    const std::uint32_t reserved = (s.ends.bos ? 1u : 0u) + (s.ends.eos ? 1u : 0u) + 2u;
+    return s.context > reserved ? s.context - reserved : 0;
+}
+
 std::uint32_t Embedder::dimensions() const noexcept { return state_->dimensions; }
 
 }  // namespace bllm::runtime

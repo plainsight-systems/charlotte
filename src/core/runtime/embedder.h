@@ -289,6 +289,11 @@ public:
     // The most tokens one encode holds, its ends included.
     [[nodiscard]] std::uint32_t context() const noexcept;
 
+    // The most rows one medium may make: the context less the file's ends
+    // and the medium's two tokens — 508 for EmbeddingGemma 2 — so a medium
+    // alone with its placeholder fits one encode.
+    [[nodiscard]] std::uint32_t most_media_rows() const noexcept;
+
     // The embedding's length: embedding_length_out, 768 for EmbeddingGemma 2.
     [[nodiscard]] std::uint32_t dimensions() const noexcept;
 

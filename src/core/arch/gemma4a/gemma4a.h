@@ -75,29 +75,10 @@ namespace bllm::arch {
 //
 // The description it fills (model_description.h): no layer in `layers` —
 // the Conformer's blocks are not the transformer's — no token embedding, no
-// output norm, no vocabulary, the file's ε; and its audio description:
-//     struct AudioDescription {
-//       Subsampling { TensorId convolution[2]; TensorId norm[2];
-//                     uint32_t channels[2]; TensorId input_projection; };
-//       struct Product { TensorId weight; std::optional<Bounds> bounds; };
-//         Bounds { TensorId input_min, input_max, output_min, output_max; }
-//       struct ConformerLayer {
-//         TensorId ffn_norm, ffn_post_norm; Product ffn_up, ffn_down;
-//         TensorId attention_norm, attention_post_norm, per_dim_scale;
-//         Product query, key, value, attention_output; TensorId relative;
-//         TensorId convolution_norm, depthwise, depthwise_norm;
-//         Product pointwise_in, pointwise_out;
-//         TensorId ffn_norm_1, ffn_post_norm_1; Product ffn_up_1, ffn_down_1;
-//         TensorId output_norm; };
-//       std::vector<ConformerLayer> layers;
-//       uint32_t width, heads, feed_forward, kernel, chunk, window;
-//       float residual_weight, softcap, q_scale, k_scale;
-//       TensorId output_projection, output_bias;
-//       uint32_t output_width;          // 1,536
-//       TensorId projection; uint32_t projection_width;   // 512
-//     };
-//   as std::optional<AudioDescription> audio, set by an audio encoder's
-//   describe and no other, as `vision` is by an image encoder's.
+// output norm, no vocabulary, the file's ε; its AudioDescription, each
+// layer's tensors by role and each product with its bounds; and a product
+// span for every product with bounds, and for the output projection's
+// weight and bias (residency/plan.h).
 //
 // pairs: the text model reads these rows when its architecture is
 // "gemma-embedding2" and its hidden width is the projection's, 512, as
@@ -139,6 +120,11 @@ namespace bllm::arch {
 //            past describe; the conformer's layer its own struct.
 //   C++ performance guidelines
 //     WASM.4 Reduce indirect dispatch in hot paths — chosen once, at load.
+
+// Its describe and pairs, which kGemma4Audio composes with its graphs.
+[[nodiscard]] DescribeResult describe_gemma4a(const gguf::TensorIndex& index, model::ModelDescription& out);
+[[nodiscard]] DescribeResult pairs_gemma4a(const model::ModelDescription& audio, const model::ModelDescription& text,
+                                           std::string_view text_architecture);
 
 extern const MediaEncoder kGemma4Audio;
 

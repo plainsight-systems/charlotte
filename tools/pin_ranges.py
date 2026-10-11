@@ -56,16 +56,18 @@ def main() -> int:
 
     by_offset = sorted(found)
     ranges = [[0, data_start]]
+    kept = 0
     for i, (offset, name) in enumerate(by_offset):
         if not name.startswith(prefixes):
             continue
+        kept += 1
         begin = data_start + offset
         end = data_start + by_offset[i + 1][0] if i + 1 < len(by_offset) else size
         if ranges[-1][1] == begin:
             ranges[-1][1] = end
         else:
             ranges.append([begin, end])
-    if len(ranges) == 1:
+    if kept == 0:
         print("no tensor begins with the prefixes given", file=sys.stderr)
         return 1
 

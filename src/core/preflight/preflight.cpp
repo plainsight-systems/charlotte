@@ -10,6 +10,7 @@
 #include "core/formats/format.h"
 #include "core/graph/encoder.h"
 #include "core/graph/graph.h"
+#include "core/graph/audio.h"
 #include "core/graph/vision.h"
 #include "core/kernels/interface.h"
 #include "core/model/model_description.h"
@@ -134,6 +135,8 @@ std::string fit_failure(const residency::PlanResult& r, const residency::Residen
             return "sizes overflow (" + r.subject + ")";
         case PlanError::MissingTensorBytes:
             return r.subject + " lies outside the bytes the load reads";
+        case PlanError::UnboundSpan:
+            return r.subject + " and the bounds its product reads cannot share one storage binding";
     }
     return "unrecognised error";
 }
@@ -395,10 +398,17 @@ policy::LoadPolicy companion_policy(const policy::LoadPolicy& policy, const Comp
 // The working buffers a companion's step binds: its kind's, at its most
 // rows. Null, with a blocker, for a kind this build has no working set for.
 std::optional<residency::WorkingSet> working_set(const DescribedEncoder& d, media::ImageBudget budget,
-                                                 Verdict& verdict) {
+                                                 const CompanionHost& host, Verdict& verdict) {
     if (d.description.vision) {
         const std::uint32_t pooling = d.description.vision->pooling;
         return graph::vision_working_set(d.description, budget.most * pooling * pooling);
+    }
+    if (d.description.audio) {
+        if (host.most_media_rows == 0) {
+            verdict.blockers.push_back({Stage::Fit, "the model loaded has no room in an encode for an audio clip"});
+            return std::nullopt;
+        }
+        return graph::audio_working_set(d.description, host.most_media_rows);
     }
     verdict.blockers.push_back({Stage::Fit, std::string(kind_name(d.encoder->kind)) + " " + quoted(d.projector) +
                                                 " has no working set in this build"});
@@ -407,8 +417,8 @@ std::optional<residency::WorkingSet> working_set(const DescribedEncoder& d, medi
 
 void check_fit(const gguf::TensorIndex& index, const DescribedEncoder& d, std::span<const residency::FileRange> ranges,
                const residency::DeviceLimits& limits, const policy::LoadPolicy& policy, media::ImageBudget budget,
-               Verdict& verdict, residency::ResidencyPlan& plan) {
-    const auto set = working_set(d, budget, verdict);
+               const CompanionHost& host, Verdict& verdict, residency::ResidencyPlan& plan) {
+    const auto set = working_set(d, budget, host, verdict);
     if (!set) return;
     if (const auto r = residency::plan_residency(index, d.description, limits, policy, *set, plan, ranges); !r.ok()) {
         verdict.blockers.push_back({Stage::Fit, r.error == residency::PlanError::ExceedsBudget
@@ -432,7 +442,7 @@ std::string plan_companion(arch::MediaKind kind, const gguf::TensorIndex& index,
     Verdict verdict;
     const auto described = check_encoder(kind, index, verdict);
     if (!described) return verdict.blockers.front().detail;
-    check_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, verdict, plan);
+    check_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, host, verdict, plan);
     if (!verdict.fit) return verdict.blockers.front().detail;
     description = described->description;
     return {};
@@ -452,7 +462,7 @@ Verdict preflight_companion(arch::MediaKind kind, const gguf::TensorIndex& index
     if (described) {
         const std::string named = std::string(kind_name(kind)) + " " + quoted(described->projector);
         residency::ResidencyPlan plan;
-        check_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, verdict, plan);
+        check_fit(index, *described, ranges, limits, companion_policy(policy, host), budget, host, verdict, plan);
         if (verdict.fit) {
             for (const arch::MediaGraphFn graph : {described->encoder->graph, described->encoder->setup}) {
                 if (graph == nullptr) continue;

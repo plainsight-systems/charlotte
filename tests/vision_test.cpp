@@ -241,7 +241,7 @@ TEST_CASE("a companion's verdict: Run beside EmbeddingGemma 2, each stage it can
     std::unique_ptr<tokenizer::Tokenizer> t;
     REQUIRE(preflight::load_tokenizer(source, text.index, t).empty());
     const media::ImageBudget budget{70, 280};
-    const preflight::CompanionHost host{embedder, "gemma-embedding2", t->vocabulary(), 384ull << 20};
+    const preflight::CompanionHost host{embedder, "gemma-embedding2", t->vocabulary(), 384ull << 20, 508};
 
     const auto verdict = preflight::preflight_companion(arch::MediaKind::Image, h.index, kVisionRanges, kFileSize, 58'656, kDefaults,
                                                         policy::LoadPolicy{}, budget, host);
@@ -267,7 +267,7 @@ TEST_CASE("a companion's verdict: Run beside EmbeddingGemma 2, each stage it can
     tight.memory_budget = 500ull << 20;
     CHECK(preflight::preflight_companion(arch::MediaKind::Image, h.index, kVisionRanges, kFileSize, 58'656, kDefaults, tight, budget, host)
               .reached() == preflight::Stage::Describe);
-    const preflight::CompanionHost other{embedder, "qwen3", t->vocabulary(), 384ull << 20};
+    const preflight::CompanionHost other{embedder, "qwen3", t->vocabulary(), 384ull << 20, 508};
     CHECK(preflight::preflight_companion(arch::MediaKind::Image, h.index, kVisionRanges, kFileSize, 58'656, kDefaults, policy::LoadPolicy{},
                                          budget, other)
               .reached() == preflight::Stage::Upload);

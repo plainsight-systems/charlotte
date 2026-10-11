@@ -134,6 +134,83 @@ struct VisionDescription {
     std::uint32_t projection_width;
 };
 
+// A product's clamp bounds: four one-float F32 tensors beside its weight
+// (arch/gemma4a/gemma4a.h), what its input and its output are clamped to.
+struct ClampBounds {
+    gguf::TensorId input_min;
+    gguf::TensorId input_max;
+    gguf::TensorId output_min;
+    gguf::TensorId output_max;
+};
+
+// A product of an audio encoder: its weight, and its bounds where it clamps.
+struct AudioProduct {
+    gguf::TensorId weight;
+    std::optional<ClampBounds> bounds;
+};
+
+// One layer of a Conformer (graph/audio.h): two half-step feed-forwards,
+// attention over a window, a convolution module, a closing norm.
+struct ConformerLayer {
+    gguf::TensorId ffn_norm;
+    AudioProduct ffn_up;
+    AudioProduct ffn_down;
+    gguf::TensorId ffn_post_norm;
+    gguf::TensorId attention_norm;
+    AudioProduct query;
+    AudioProduct key;
+    AudioProduct value;
+    gguf::TensorId per_dim_scale;
+    gguf::TensorId relative;
+    AudioProduct attention_output;
+    gguf::TensorId attention_post_norm;
+    gguf::TensorId convolution_norm;
+    AudioProduct pointwise_in;
+    gguf::TensorId depthwise;
+    gguf::TensorId depthwise_norm;
+    AudioProduct pointwise_out;
+    gguf::TensorId ffn_norm_1;
+    AudioProduct ffn_up_1;
+    AudioProduct ffn_down_1;
+    gguf::TensorId ffn_post_norm_1;
+    gguf::TensorId output_norm;
+};
+
+// What an audio encoder is (arch/gemma4a/gemma4a.h): its subsampling, its
+// Conformer layers, its output and multimodal projections, and the numbers
+// its file does not carry.
+struct AudioDescription {
+    std::uint32_t mel_bins;
+    std::array<gguf::TensorId, 2> convolution;        // F32, 3 × 3, stride 2
+    std::array<gguf::TensorId, 2> convolution_norm;   // F32, a gain a channel
+    std::array<std::uint32_t, 2> channels;
+    gguf::TensorId input_projection;                  // F32
+    std::vector<ConformerLayer> layers;
+    std::uint32_t width;
+    std::uint32_t heads;
+    std::uint32_t feed_forward;
+    std::uint32_t kernel;                             // the depthwise convolution's
+    std::uint32_t chunk;
+    std::uint32_t window;                             // a row and its window − 1 before
+    float residual_weight;
+    float softcap;
+    float q_scale;
+    float k_scale;
+    gguf::TensorId output_projection;
+    gguf::TensorId output_bias;
+    std::uint32_t output_width;
+    gguf::TensorId projection;
+    std::uint32_t projection_width;
+};
+
+// A weight and the F32 tensors its product reads from the weight's own
+// binding — clamp bounds, a bias — which the plan keeps in one buffer within
+// one binding (residency/plan.h).
+struct ProductSpan {
+    gguf::TensorId weight;
+    std::vector<gguf::TensorId> members;   // the weight among them
+};
+
 struct ModelDescription {
     std::uint32_t vocabulary_size;
     std::uint32_t embedding_width;
@@ -171,12 +248,11 @@ struct ModelDescription {
     // Set by a vision encoder's describe and by no other
     // (arch/media_encoder.h).
     std::optional<VisionDescription> vision;
-    // An audio encoder's, set by its describe and by no other, as `vision`
-    // is (and FeedForwardActivation gains Sigmoid, the gate of its GLU,
-    // kernels/matmul's gated form over a weight's halves): the AudioDescription arch/gemma4a/gemma4a.h sets out — its
-    // subsampling, its Conformer layers with each product's bounds, its
-    // output and multimodal projections. `layers` stays empty: a Conformer's
-    // layer is not the transformer's LayerDescription.
+    // Set by an audio encoder's describe and by no other, as `vision` is.
+    // `layers` stays empty: a Conformer's layer is not LayerDescription.
+    std::optional<AudioDescription> audio;
+    // The products whose weights carry their bounds or bias in their binding.
+    std::vector<ProductSpan> product_spans;
     std::vector<LayerDescription> layers;
 };
 

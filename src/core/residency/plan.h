@@ -217,10 +217,18 @@ struct PlannedGroup {
     BufferRange span;
 };
 
+// A product span: its weight, and the range from its first member's first
+// byte to its last member's last, in one buffer.
+struct PlannedSpan {
+    gguf::TensorId weight;
+    BufferRange span;
+};
+
 struct ResidencyPlan {
     std::vector<PlannedBuffer> buffers;
     std::vector<PlannedTensor> tensors;
     std::vector<PlannedGroup> groups;
+    std::vector<PlannedSpan> spans;
     std::vector<PlannedCacheLayer> cache;
     // The type the cache is stored in, from the policy's precision; set by
     // plan_residency before anything else, so a failed plan has it too.
@@ -256,6 +264,10 @@ enum class PlanError {
     // A tensor the description names lies outside the ranges the load reads
     // (file_ranges.h). The subject names it.
     MissingTensorBytes,
+    // A product span (above) cannot be one range of one binding: its members
+    // are more than one piece, wider than a binding together, or hold a
+    // tensor the load does not read. The subject names its weight.
+    UnboundSpan,
 };
 
 struct PlanResult {

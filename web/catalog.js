@@ -57,31 +57,34 @@ export function parseCatalog(json) {
         }
       }
     }
-    if (entry.vision !== undefined) checkVision(entry.vision, position);
+    if (entry.vision !== undefined) checkCompanion(entry.vision, 'vision', position);
+    if (entry.audio !== undefined) checkCompanion(entry.audio, 'audio', position);
     return { ...entry, measured: entry.policy !== undefined };
   });
 }
 
 const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
 
-// A `vision` entry's fields, each checked, refused naming the one at fault.
-function checkVision(vision, position) {
-  const refuse = (what) => { throw new CatalogError(`model ${position + 1} needs "vision.${what}`); };
-  if (typeof vision?.url !== 'string') refuse('url" as a string');
-  if (!isCount(vision.sizeBytes)) refuse('sizeBytes" as a whole number');
-  if (typeof vision.rangesSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(vision.rangesSha256)) {
+// A `vision` or `audio` entry's fields, each checked, refused naming the
+// one at fault; `tokens` a vision entry's alone.
+function checkCompanion(companion, field, position) {
+  const refuse = (what) => { throw new CatalogError(`model ${position + 1} needs "${field}.${what}`); };
+  if (typeof companion?.url !== 'string') refuse('url" as a string');
+  if (!isCount(companion.sizeBytes)) refuse('sizeBytes" as a whole number');
+  if (typeof companion.rangesSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(companion.rangesSha256)) {
     refuse('rangesSha256" as 64 hex digits');
   }
-  const { ranges } = vision;
+  const { ranges } = companion;
   if (!Array.isArray(ranges) || ranges.length === 0) refuse('ranges" as a list of [begin, end] pairs');
   let end = 0;
   ranges.forEach((range, i) => {
     const ok = Array.isArray(range) && range.length === 2 && isCount(range[0]) && isCount(range[1]) &&
-      range[0] < range[1] && (i === 0 || range[0] > end) && range[1] <= vision.sizeBytes && (i > 0 || range[0] === 0);
+      range[0] < range[1] && (i === 0 || range[0] > end) && range[1] <= companion.sizeBytes && (i > 0 || range[0] === 0);
     if (!ok) refuse(`ranges" in order within the file, the first from 0 (range ${i + 1})`);
     end = range[1];
   });
-  const { least, most } = vision.tokens ?? {};
+  if (field !== 'vision') return;
+  const { least, most } = companion.tokens ?? {};
   if (!isCount(least) || !isCount(most) || least < 1 || least > most) {
     refuse('tokens" as { least, most }, 1 ≤ least ≤ most');
   }

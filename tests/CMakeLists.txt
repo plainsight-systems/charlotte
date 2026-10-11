@@ -64,6 +64,7 @@ add_executable(charlotte_tests
     media_audio_test.cpp
     residency_file_ranges_test.cpp
     vision_test.cpp
+    audio_test.cpp
     main_test.cpp
 )
 

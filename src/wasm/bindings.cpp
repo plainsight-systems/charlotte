@@ -1063,7 +1063,8 @@ std::optional<bllm::preflight::CompanionHost> host_of(const Session& s, bllm::ar
         if (k != index_of(kind) && s.companion_loaded[k] != nullptr) resident += s.companion_loaded[k]->plan().total_bytes;
     }
     return bllm::preflight::CompanionHost{s.loaded_description, s.loaded_architecture,
-                                          s.embedder->tokenizer().vocabulary(), resident};
+                                          s.embedder->tokenizer().vocabulary(), resident,
+                                          s.embedder->most_media_rows()};
 }
 
 // A kind as the page writes it: 0 image, 1 audio.

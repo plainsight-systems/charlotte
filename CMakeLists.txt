@@ -33,7 +33,9 @@ add_library(charlotte_core STATIC
     src/core/graph/graph.cpp
     src/core/graph/encoder.cpp
     src/core/graph/vision.cpp
+    src/core/graph/audio.cpp
     src/core/arch/gemma4v/gemma4v.cpp
+    src/core/arch/gemma4a/gemma4a.cpp
     src/core/capability/capability.cpp
     src/core/gguf/arrays.cpp
     src/core/gguf/index.cpp
