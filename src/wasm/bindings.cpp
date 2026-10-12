@@ -196,21 +196,24 @@
 //   bllm_embed's `image` becomes `media`: 0 none, 1 the image stage's, 2 the
 //   audio stage's, 3 the video stage's.
 //
-// Video, designed (runtime/video.h): no companion of its own. An image
-// companion whose encoder names video tokens (arch/media_encoder.h) attaches
-// a video stage beside its image stage at finish, the two sharing the
-// encoder's program; its finish answers as an image companion's does, and
-// whether video is attached. Then:
+// Video (runtime/video.h): no companion of its own. An image companion
+// whose encoder names video tokens (arch/media_encoder.h), found in the
+// loaded model's vocabulary, attaches a video stage beside its image stage
+// at finish, the two sharing the encoder's program — where the image
+// budget's most is at least a frame's 140 tokens, since a frame's patches
+// go into the encoder's `pixels`, sized by that budget. Its finish answers
+// as an image companion's does, and whether video is attached; replacing
+// the image companion releases both stages. Then:
 //   bllm_video_plan(request, width, height, duration)
 //     What a video of that size and duration becomes, changing nothing:
 //     its frames at 1 a second, the grid each frame takes — its tokens and
 //     its size — and the frames a clip holds; or the refusal, named — a
-//     frame size the encoder cannot take, or no video stage attached.
+//     frame size the encoder cannot take, no duration, or no video stage
+//     attached.
 //   bllm_video_begin(request, width, height, frames)
-//     Starts a clip of `frames` frames in the video stage's free slot set,
-//     discarding what that set held; answers with its tokens a frame, or
-//     the refusal — too many frames or none, the set still in use, the
-//     size's.
+//     Starts a clip of `frames` frames in a slot set no encode is using,
+//     discarding what that set held; answers once begun, or with the
+//     refusal — too many frames or none, the size's.
 //   bllm_video_rows(request, frame, first_row, pixels, length)
 //     Frame `frame`'s next band, whole RGBA rows from `first_row`, which the
 //     page frees once the call returns; answers whether the clip is ready,
@@ -259,6 +262,7 @@
 #include "core/runtime/ends.h"
 #include "core/runtime/generator.h"
 #include "core/runtime/stops.h"
+#include "core/runtime/video.h"
 #include "core/runtime/vision.h"
 #include "core/sampler/sampler.h"
 #include "core/tokenizer/tokenizer.h"
@@ -1107,6 +1111,34 @@ bllm::runtime::Vision* vision_of(Session& s) {
     return dynamic_cast<bllm::runtime::Vision*>(s.embedder->stage(bllm::arch::MediaKind::Image));
 }
 
+// The video stage attached, or null.
+bllm::runtime::Video* video_of(Session& s) {
+    if (s.embedder == nullptr) return nullptr;
+    // C.146: the stage is held by its interface; the video kind's is a Video.
+    return dynamic_cast<bllm::runtime::Video*>(s.embedder->stage(bllm::arch::MediaKind::Video));
+}
+
+// A video's refusal, by name.
+std::string video_failure(const bllm::runtime::VideoResult& r) {
+    using bllm::runtime::VideoError;
+    switch (r.error) {
+        case VideoError::NoFrames: return failure_json("the video has no duration");
+        case VideoError::TooManyFrames: return failure_json("the clip has more frames than a clip holds, or none");
+        case VideoError::BadFrame: return failure_json("the band is for a frame the clip does not have");
+        case VideoError::Image:
+            switch (r.image) {
+                case bllm::media::ImageError::Empty: return failure_json("the video has no pixels");
+                case bllm::media::ImageError::TooLarge:
+                    return failure_json("a side of the video is over 16,384 pixels");
+                case bllm::media::ImageError::BadBand:
+                    return failure_json("the band is out of order or not whole rows");
+                default: return failure_json("the frame cannot be prepared");
+            }
+        case VideoError::Ok: break;
+    }
+    return failure_json("the video cannot be prepared");
+}
+
 // The audio stage attached, or null.
 bllm::runtime::Audio* audio_of(Session& s) {
     if (s.embedder == nullptr) return nullptr;
@@ -1211,12 +1243,33 @@ void on_media_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kerne
         return;
     }
     const bllm::model::VisionDescription& v = *load->description.vision;
+    // F.27: the image and video stages share the encoder's program.
+    const std::shared_ptr<bllm::kernels::Program> shared = std::move(program);
     s.embedder->attach(load->kind,
-                       std::make_unique<bllm::runtime::Vision>(std::move(program), std::move(link),
+                       std::make_unique<bllm::runtime::Vision>(shared, std::move(link),
                                                                scratch(encoder_plan, "pixels"), load->budget,
                                                                v.patch_size, v.pooling),
                        tokens, s.loaded_description.embedding_width);
-    bllm_reply(request, ("{\"ok\":true,\"imageTokens\":" + std::to_string(load->budget.most) + "}").c_str());
+    // The video stage, where the encoder names a video's tokens, the model
+    // has them, and a frame's patches fit `pixels`.
+    const auto& video_texts = load->encoder->video_tokens;
+    const auto placeholder = video_texts[0].empty() ? std::nullopt : vocabulary.find(video_texts[0]);
+    const auto begin = video_texts[1].empty() ? std::nullopt : vocabulary.find(video_texts[1]);
+    const auto end = video_texts[2].empty() ? std::nullopt : vocabulary.find(video_texts[2]);
+    const bool video = placeholder && begin && end && load->budget.most >= bllm::media::kFrameTokens;
+    if (video) {
+        auto video_link = std::make_unique<bllm::kernels::ProgramLink>(
+            *loaded, scratch(encoder_plan, "soft_tokens"), *s.loaded, scratch(s.loaded->plan(), "hidden"));
+        s.embedder->attach(bllm::arch::MediaKind::Video,
+                           std::make_unique<bllm::runtime::Video>(shared, std::move(video_link),
+                                                                  scratch(encoder_plan, "pixels"), v.patch_size,
+                                                                  v.pooling, s.embedder->room()),
+                           bllm::runtime::MediaTokens{*placeholder, *begin, *end},
+                           s.loaded_description.embedding_width);
+    }
+    bllm_reply(request, ("{\"ok\":true,\"imageTokens\":" + std::to_string(load->budget.most) +
+                         ",\"video\":" + (video ? "true" : "false") + "}")
+                            .c_str());
 }
 
 // The setup's step has run: the step's program built next.
@@ -1574,13 +1627,14 @@ EMSCRIPTEN_KEEPALIVE void bllm_cancel(std::uint32_t request, std::uint32_t targe
 EMSCRIPTEN_KEEPALIVE void bllm_embed(std::uint32_t request, const char* text, std::uint32_t text_length,
                                      std::uint32_t media) {
     Session& s = session();
-    // 0 none, 1 the image stage's, 2 the audio stage's.
-    if (media > 2) {
+    // 0 none, 1 the image stage's, 2 the audio stage's, 3 the video stage's.
+    if (media > 3) {
         bllm_reply(request, failure_json("the medium passed in is not one this build names").c_str());
         return;
     }
-    const std::optional<bllm::arch::MediaKind> kind =
-        media == 0 ? std::nullopt : kind_of(media - 1);
+    const std::optional<bllm::arch::MediaKind> kind = media == 0   ? std::nullopt
+                                                      : media == 3 ? std::optional{bllm::arch::MediaKind::Video}
+                                                                   : kind_of(media - 1);
     if (s.embedder == nullptr) {
         bllm_reply(request, failure_json(s.generator != nullptr ? "the model generates; it does not embed"
                                                                 : "no model is loaded")
@@ -1742,7 +1796,13 @@ EMSCRIPTEN_KEEPALIVE void bllm_companion_load_begin(std::uint32_t request, std::
     (void)index.read_string(bllm::arch::projector_key(*kind), projector);
     // A companion of this kind loaded before is replaced: its stage first,
     // then its buffers. The other kind's stays.
-    if (s.embedder != nullptr) s.embedder->attach(*kind, nullptr, {}, s.loaded_description.embedding_width);
+    if (s.embedder != nullptr) {
+        s.embedder->attach(*kind, nullptr, {}, s.loaded_description.embedding_width);
+        // The video stage borrows the image companion's buffers too.
+        if (*kind == bllm::arch::MediaKind::Image) {
+            s.embedder->attach(bllm::arch::MediaKind::Video, nullptr, {}, s.loaded_description.embedding_width);
+        }
+    }
     s.companion_loaded[index_of(*kind)].reset();
     s.companion = std::make_unique<CompanionLoad>();
     CompanionLoad& load = *s.companion;
@@ -1821,6 +1881,57 @@ EMSCRIPTEN_KEEPALIVE void bllm_image_rows(std::uint32_t request, std::uint32_t f
         return;
     }
     bllm_reply(request, !vision->ready_segments().empty() ? "{\"ok\":true,\"ready\":true}" : "{\"ok\":true,\"ready\":false}");
+}
+
+// What a video of `width` × `height` and `duration` seconds becomes.
+EMSCRIPTEN_KEEPALIVE void bllm_video_plan(std::uint32_t request, std::uint32_t width, std::uint32_t height,
+                                          double duration) {
+    const bllm::runtime::Video* video = video_of(session());
+    if (video == nullptr) {
+        bllm_reply(request, failure_json("no video encoder is attached").c_str());
+        return;
+    }
+    bllm::runtime::VideoPlan plan{};
+    if (const auto r = video->plan(width, height, duration, plan); r.error != bllm::runtime::VideoError::Ok) {
+        bllm_reply(request, video_failure(r).c_str());
+        return;
+    }
+    bllm_reply(request, ("{\"ok\":true,\"frames\":" + std::to_string(plan.frames) + ",\"tokens\":" +
+                         std::to_string(plan.grid.tokens) + ",\"width\":" + std::to_string(plan.grid.width) +
+                         ",\"height\":" + std::to_string(plan.grid.height) + ",\"clipFrames\":" +
+                         std::to_string(plan.clip_frames) + "}")
+                            .c_str());
+}
+
+// Starts a clip of `frames` frames of `width` × `height`.
+EMSCRIPTEN_KEEPALIVE void bllm_video_begin(std::uint32_t request, std::uint32_t width, std::uint32_t height,
+                                           std::uint32_t frames) {
+    bllm::runtime::Video* video = video_of(session());
+    if (video == nullptr) {
+        bllm_reply(request, failure_json("no video encoder is attached").c_str());
+        return;
+    }
+    if (const auto r = video->begin(width, height, frames); r.error != bllm::runtime::VideoError::Ok) {
+        bllm_reply(request, video_failure(r).c_str());
+        return;
+    }
+    bllm_reply(request, "{\"ok\":true}");
+}
+
+// Frame `frame`'s next band, `length` RGBA bytes at `pixels`.
+EMSCRIPTEN_KEEPALIVE void bllm_video_rows(std::uint32_t request, std::uint32_t frame, std::uint32_t first_row,
+                                          const std::uint8_t* pixels, std::uint32_t length) {
+    bllm::runtime::Video* video = video_of(session());
+    if (video == nullptr) {
+        bllm_reply(request, failure_json("no video encoder is attached").c_str());
+        return;
+    }
+    if (const auto r = video->rows(frame, first_row, {pixels, length}); r.error != bllm::runtime::VideoError::Ok) {
+        bllm_reply(request, video_failure(r).c_str());
+        return;
+    }
+    bllm_reply(request,
+               !video->ready_segments().empty() ? "{\"ok\":true,\"ready\":true}" : "{\"ok\":true,\"ready\":false}");
 }
 
 // A clip's `count` samples at `samples`, prepared in the audio stage's slot:
