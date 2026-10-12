@@ -310,6 +310,10 @@ public:
     // (media/video.h).
     [[nodiscard]] std::uint32_t most_media_rows() const noexcept;
 
+    // The context less the file's ends: the rows a medium's segments and
+    // their tokens may fill — 510 for EmbeddingGemma 2.
+    [[nodiscard]] std::uint32_t room() const noexcept;
+
     // The embedding's length: embedding_length_out, 768 for EmbeddingGemma 2.
     [[nodiscard]] std::uint32_t dimensions() const noexcept;
 

@@ -77,6 +77,7 @@ namespace bllm::arch {
 enum class MediaKind {
     Image,
     Audio,
+    Video,   // an image encoder's, by its companion (runtime/video.h)
 };
 
 // Fills `out` with every launch of a step. Preconditions: `model` is this
@@ -100,6 +101,10 @@ struct MediaEncoder {
     PairsFn pairs;
     // The placeholder, the token before the rows, the token after.
     std::array<std::string_view, 3> tokens;
+    // An image encoder's that reads a video's frames: the video's
+    // placeholder, and the tokens before and after each frame's rows; all
+    // empty otherwise.
+    std::array<std::string_view, 3> video_tokens{};
 };
 
 // The key whose value names a companion's encoder of `kind`, an image's or

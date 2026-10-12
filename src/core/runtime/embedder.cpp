@@ -12,10 +12,11 @@ namespace bllm::runtime {
 
 namespace {
 
-constexpr std::size_t kMediaKinds = 2;
+constexpr std::size_t kMediaKinds = 3;
 
 constexpr std::size_t index_of(arch::MediaKind kind) noexcept { return static_cast<std::size_t>(kind); }
-static_assert(index_of(arch::MediaKind::Image) < kMediaKinds && index_of(arch::MediaKind::Audio) < kMediaKinds);
+static_assert(index_of(arch::MediaKind::Image) < kMediaKinds && index_of(arch::MediaKind::Audio) < kMediaKinds &&
+              index_of(arch::MediaKind::Video) < kMediaKinds);
 
 }  // namespace
 
@@ -309,6 +310,12 @@ EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind
 }
 
 std::uint32_t Embedder::context() const noexcept { return state_->context; }
+
+std::uint32_t Embedder::room() const noexcept {
+    const State& s = *state_;
+    const std::uint32_t ends = (s.ends.bos ? 1u : 0u) + (s.ends.eos ? 1u : 0u);
+    return s.context > ends ? s.context - ends : 0;
+}
 
 std::uint32_t Embedder::most_media_rows() const noexcept {
     const State& s = *state_;

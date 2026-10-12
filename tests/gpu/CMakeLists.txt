@@ -13,6 +13,7 @@ add_executable(charlotte_gpu_tests
     embedder_test.cpp
     vision_embed_test.cpp
     audio_embed_test.cpp
+    video_embed_test.cpp
     profile_test.cpp
     reference_test.cpp
     attention_test.cpp

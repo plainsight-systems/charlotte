@@ -60,21 +60,23 @@ namespace bllm::runtime {
 //     MediaNotReady, the clip's frames not all prepared; Placeholder, as
 //     media_stage.h states; TooManyTokens, the text's tokens and the
 //     frames' rows past the context. And the clip's own as it is prepared:
-//     a frame size Empty or TooLarge (media/image.h); TooManyFrames, a
-//     clip of more frames than plan() allowed or none; BadBand.
+//     a frame size Empty or TooLarge (media/image.h); NoFrames, a duration
+//     not positive and finite; TooManyFrames, a clip of more frames than
+//     plan() allows or none; BadFrame, a band for a frame past the clip's,
+//     and BadBand within a frame.
 //
 // The stage's state:
 //   - Two clip sets, each kClipFrames slots — an ImageResampler and the
 //     patches of one frame, 1,260 × 3 P² floats, 3.9 MB — and the clip's
 //     own grid, frame count and segments: 8 slots, 31 MB of the module's
-//     heap, allocated at load (MEM.9). begin() fills the set the last
-//     encode did not use, so the page prepares clip c + 1 — of the same
-//     video or the next, whose grid may differ — while clip c's frames are
-//     submitted one by one from the other set, with that set's own grid
-//     and segments: a set is in use from the start() that takes it until
-//     that encode's last frame is submitted, and begin() refuses Busy for a
-//     set still in use, which the page's order — prepare, embed, prepare
-//     the next once the embed is sent — never meets.
+//     heap, allocated at load (MEM.9, C.41). begin() fills a set no encode
+//     is using, so the page prepares clip c + 1 — of the same video or the
+//     next, whose grid may differ — while clip c's frames are submitted one
+//     by one from the other set, with that set's own grid and segments: a
+//     set is in use from the run of its first frame, when the encode takes
+//     it, until its last frame is submitted. The embedder runs one encode
+//     at a time, so at most one set is in use and begin() always has the
+//     other.
 // Optimization (practice): staging double-buffered, so the CPU's resample
 // of the next clip overlaps the GPU's passes over this one, where one set
 // would make the page wait for an encode before preparing (GPU.7, MEM.4).
@@ -177,6 +179,8 @@ namespace bllm::runtime {
 //   C++ Core Guidelines
 //     F.27   Use a shared_ptr<T> to share ownership — the vision program,
 //            the image and video stages'.
+//     C.41   A constructor should create a fully initialized object — every
+//            slot's patches allocated in it.
 //     R.20   Use unique_ptr or shared_ptr to represent ownership.
 //     C.121  If a base class is used as an interface, make it a pure
 //            abstract class — MediaStage.
@@ -189,6 +193,9 @@ namespace bllm::runtime {
 //     WASM.2 Batch work across the JS boundary — a band a crossing.
 //     MEM.9  Allocate at init — the slots at load.
 
+// A clip's frames are its segments: the embedder holds as many.
+static_assert(media::kClipFrames <= kMostSegments);
+
 // What a video becomes: its frames, the grid each takes, and how many a clip
 // holds.
 struct VideoPlan {
@@ -199,10 +206,10 @@ struct VideoPlan {
 
 enum class VideoError {
     Ok,
-    Image,           // the frame size's, in `image`
+    Image,           // the frame size's or a band's, in `image`
+    NoFrames,        // a duration not positive and finite
     TooManyFrames,   // a clip of more frames than plan() allows, or none
-    Busy,            // the slot set begin() would fill is still in use
-    BadFrame,        // a band for a frame past the clip's
+    BadFrame,        // a band for a frame past the clip's, or none begun
 };
 
 struct VideoResult {
@@ -232,8 +239,8 @@ public:
     [[nodiscard]] VideoResult plan(std::uint32_t width, std::uint32_t height, double duration,
                                    VideoPlan& out) const noexcept;
 
-    // Starts a clip of `frames` frames of `width` × `height` in the free slot
-    // set, discarding what that set held.
+    // Starts a clip of `frames` frames of `width` × `height` in a set no
+    // encode is using, discarding what that set held.
     [[nodiscard]] VideoResult begin(std::uint32_t width, std::uint32_t height, std::uint32_t frames);
 
     // The next band of frame `frame`'s pixels; the last band writes its
@@ -270,6 +277,7 @@ private:
     };
     std::array<ClipSet, 2> sets_;
     std::uint32_t filling_ = 0;   // the set begin() filled last
+    std::uint32_t running_ = 0;   // the set the running encode took
     std::uint32_t patch_;
     std::uint32_t pooling_;
     std::uint32_t room_;
