@@ -5,6 +5,10 @@
 // viewport (--app-height, read by style.css on a narrow screen), and while
 // the keyboard takes the screen's lower part, `keyboard-open` lets the page
 // set aside what the chat does not need then: the notice and the footer.
+// Since the page no longer scrolls to the field focused, a field within a
+// panel that scrolls on its own — the search panel's query, below its
+// lists — is scrolled into view within that panel once the keyboard is up,
+// with the form around it.
 
 // The visual viewport shorter than the tallest it has been at this width by
 // more than this is the keyboard, not the browser's own bars coming and
@@ -24,7 +28,10 @@ export function fitToVisualViewport(root) {
     }
     tallest = Math.max(tallest, viewport.height);
     root.style.setProperty('--app-height', `${Math.round(viewport.height)}px`);
-    root.classList.toggle('keyboard-open', tallest - viewport.height > kKeyboardPx);
+    const keyboard = tallest - viewport.height > kKeyboardPx;
+    root.classList.toggle('keyboard-open', keyboard);
+    const field = document.activeElement;
+    if (keyboard && field?.matches?.('input, textarea')) (field.closest('form') ?? field).scrollIntoView({ block: 'nearest' });
     // iOS scrolls the page to keep the field in view; sized to fit, it need not.
     if (globalThis.scrollY !== 0) globalThis.scrollTo(0, 0);
   };
