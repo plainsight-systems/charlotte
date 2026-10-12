@@ -6,6 +6,8 @@
 //     reference_vision prepare <mmproj.gguf> <llama.cpp commit> <mmproj sha256>
 //     reference_vision embed <model.gguf> <mmproj, clip.use_gelu set> <mmproj as published>
 //                            <llama.cpp commit> <model sha256> <mmproj sha256>
+//     reference_vision video <model.gguf> <mmproj, clip.use_gelu set>
+//                            <llama.cpp commit> <model sha256> <mmproj sha256>
 //
 // The mmproj is loaded as llama.cpp loads it, with the card's default
 // budget, 280 tokens at most, and llama.cpp's own least, 70. Each image of
@@ -27,6 +29,17 @@
 // Metal, each image is embedded again from the mmproj as published, and the
 // cosine between the two written beside it: what llama.cpp's default
 // activation costs.
+//
+// video: each clip of tests/fixtures/video/scenes.h embedded as
+// EmbeddingGemma 2's video processor writes a video, not as llama.cpp's
+// video helper does (runtime/video.h): its frames, one a second, each
+// resized to the grid Google's rule gives at 140 tokens — stretched to it,
+// by llama.cpp's own resampler, img_tool, copied from the pinned source by
+// CMakeLists.txt — and encoded by llama.cpp's vision encoder at that size,
+// which its preprocessor leaves as it is; the sequence the file's ends, the
+// text before, for each frame `<|image>`, its rows and `<image|>`, then the
+// text after, run as one batch, as embed runs an image's. On the CPU and on
+// Metal, from the mmproj with clip.use_gelu set.
 
 #include <cmath>
 #include <cstdint>
@@ -43,7 +56,13 @@
 #include "llama.h"
 #include "mtmd-image.h"
 #include "mtmd.h"
+#include "tests/fixtures/video/scenes.h"
 #include "tests/fixtures/vision/scenes.h"
+
+// llama.cpp's resize, in a namespace of its own beside the library's copy.
+namespace llama_image {
+#include "img_tool.inc"
+}  // namespace llama_image
 
 namespace {
 
@@ -372,13 +391,232 @@ int embed(const char* model, const char* patched, const char* published, const c
     return 0;
 }
 
+// Google's get_aspect_ratio_preserving_size, as its Python reads, at
+// `tokens` a frame: the size a frame is resized to.
+clip_image_size google_size(int width, int height, int patch, int pooling, int tokens) {
+    const double total_px = static_cast<double>(height) * width;
+    const double target_px = static_cast<double>(tokens) * pooling * pooling * patch * patch;
+    const double factor = std::sqrt(target_px / total_px);
+    const int side = patch * pooling;
+    int h = static_cast<int>(std::floor(factor * height / side)) * side;
+    int w = static_cast<int>(std::floor(factor * width / side)) * side;
+    if (h == 0 && w == 0) std::exit(1);
+    if (h == 0) {
+        h = side;
+        w = std::min(static_cast<int>(std::floor(static_cast<double>(width) / height)) * side, tokens * side);
+    } else if (w == 0) {
+        w = side;
+        h = std::min(static_cast<int>(std::floor(static_cast<double>(height) / width)) * side, tokens * side);
+    }
+    return {w, h};
+}
+
+constexpr int kFrameTokens = 140;
+
+// One clip item: a text, and where it holds a clip, the scene, the text
+// before it and the text after.
+struct VideoItem {
+    const char* name;
+    const char* scene;   // nullptr for a text alone
+    const char* before;
+    const char* after;
+};
+
+constexpr VideoItem kVideoItems[] = {
+    {"red_ball", "red_ball", "", ""},
+    {"blue_square", "blue_square", "", ""},
+    {"green_stripes", "green_stripes", "", ""},
+    {"black_line", "black_line", "", ""},
+    {"captioned", "red_ball", "title: none | text: A clip of ", " rolling across white."},
+    {"query_red_ball", nullptr, "task: search result | query: a red ball moving across", ""},
+    {"query_blue_square", nullptr, "task: search result | query: a blue square growing on yellow", ""},
+    {"query_green_stripes", nullptr, "task: search result | query: green and white stripes scrolling", ""},
+    {"query_black_line", nullptr, "task: search result | query: a black line sweeping across white", ""},
+};
+
+const bllm::fixtures::video::Scene* video_scene_named(const char* name) {
+    for (const auto& s : bllm::fixtures::video::kScenes) {
+        if (s.name == name) return &s;
+    }
+    return nullptr;
+}
+
+// Frame `t` of `scene`, stretched by llama.cpp's resampler to `size`.
+clip_image_u8 frame_of(const bllm::fixtures::video::Scene& scene, std::uint32_t t, clip_image_size size,
+                       resize_algo algo) {
+    clip_image_u8 source;
+    source.set_size({static_cast<int>(scene.width), static_cast<int>(scene.height)}, false);
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(scene.width) * scene.height * 3);
+    for (std::uint32_t y = 0; y < scene.height; ++y) {
+        for (std::uint32_t x = 0; x < scene.width; ++x) {
+            for (std::uint32_t c = 0; c < 3; ++c) {
+                bytes[(static_cast<std::size_t>(y) * scene.width + x) * 3 + c] =
+                    bllm::fixtures::video::pixel(scene, t, x, y, c);
+            }
+        }
+    }
+    source.cpy_buf(bytes);
+    clip_image_u8 frame;
+    llama_image::img_tool::resize(source, frame, size, algo, PAD_NONE);
+    return frame;
+}
+
+// A frame's rows from the vision encoder: the frame, already at its grid,
+// handed over as an image, which llama.cpp's preprocessor leaves at that size.
+std::vector<float> frame_rows(mtmd_context* vision, const clip_image_u8& frame, std::uint32_t& rows) {
+    const clip_image_size size = frame.get_size();
+    std::vector<unsigned char> rgb(frame.get_ro_buf().begin(), frame.get_ro_buf().end());
+    mtmd_bitmap* bitmap = mtmd_bitmap_init(size.width, size.height, rgb.data());
+    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    const mtmd_bitmap* bitmaps[] = {bitmap};
+    const char* marker = mtmd_get_marker(vision);
+    mtmd_input_text text{marker, std::strlen(marker), false, true};
+    if (mtmd_tokenize(vision, chunks, &text, bitmaps, 1) != 0) std::exit(1);
+    std::vector<float> out;
+    rows = 0;
+    for (std::size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
+        const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks, i);
+        if (mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_IMAGE) continue;
+        if (mtmd_encode_chunk(vision, chunk) != 0) std::exit(1);
+        rows = static_cast<std::uint32_t>(mtmd_input_chunk_get_n_tokens(chunk));
+        const float* embd = mtmd_get_output_embd(vision);
+        out.assign(embd, embd + static_cast<std::size_t>(rows) * 512);
+    }
+    mtmd_input_chunks_free(chunks);
+    mtmd_bitmap_free(bitmap);
+    // Left at its size: its grid's 48-pixel cells, one row each.
+    if (rows != static_cast<std::uint32_t>((size.width / 48) * (size.height / 48))) {
+        std::fprintf(stderr, "reference_vision: a %dx%d frame made %u rows\n", size.width, size.height, rows);
+        std::exit(1);
+    }
+    return out;
+}
+
+struct VideoEmbedding {
+    std::vector<llama_token> before;   // the ends and the text before the clip
+    std::uint32_t frames = 0;
+    std::uint32_t rows = 0;            // each frame's
+    llama_token frame_begin = 0;
+    llama_token frame_end = 0;
+    std::vector<llama_token> after;
+    std::vector<float> vector;
+};
+
+llama_token one_token(const llama_vocab* vocab, const char* text) {
+    const std::vector<llama_token> t = tokens_of(vocab, text);
+    if (t.size() != 1) std::exit(1);
+    return t[0];
+}
+
+VideoEmbedding embed_video_item(const Backend& b, const VideoItem& item, resize_algo algo) {
+    const llama_vocab* vocab = llama_model_get_vocab(b.model);
+    VideoEmbedding e;
+    e.frame_begin = one_token(vocab, "<|image>");
+    e.frame_end = one_token(vocab, "<image|>");
+    if (llama_vocab_get_add_bos(vocab)) e.before.push_back(llama_vocab_bos(vocab));
+    for (const llama_token t : tokens_of(vocab, item.before)) e.before.push_back(t);
+    std::vector<std::vector<float>> frames;
+    if (item.scene != nullptr) {
+        const auto& scene = *video_scene_named(item.scene);
+        const clip_image_size size =
+            google_size(static_cast<int>(scene.width), static_cast<int>(scene.height), 16, 3, kFrameTokens);
+        for (std::uint32_t t = 0; t < scene.frames; ++t) {
+            std::uint32_t rows = 0;
+            frames.push_back(frame_rows(b.vision, frame_of(scene, t, size, algo), rows));
+            e.rows = rows;
+        }
+        e.frames = scene.frames;
+    }
+    for (const llama_token t : tokens_of(vocab, item.after)) e.after.push_back(t);
+    if (llama_vocab_get_add_eos(vocab)) e.after.push_back(llama_vocab_eos(vocab));
+
+    llama_memory_clear(llama_get_memory(b.context), true);
+    llama_batch_ext* batch = llama_batch_ext_init(b.context);
+    llama_pos pos = 0;
+    const auto place = [&](int32_t index) {
+        if (index < 0) std::exit(1);
+        llama_batch_ext_set_pos(batch, index, &pos);
+        llama_batch_ext_set_output_embd(batch, index, true);
+        ++pos;
+    };
+    for (const llama_token t : e.before) place(llama_batch_ext_add_token(batch, 0, t));
+    for (const std::vector<float>& rows : frames) {
+        place(llama_batch_ext_add_token(batch, 0, e.frame_begin));
+        for (std::uint32_t r = 0; r < e.rows; ++r) {
+            place(llama_batch_ext_add_embd(batch, 0, llama_embd{rows.data() + static_cast<std::size_t>(r) * 512, 1, 512}));
+        }
+        place(llama_batch_ext_add_token(batch, 0, e.frame_end));
+    }
+    for (const llama_token t : e.after) place(llama_batch_ext_add_token(batch, 0, t));
+    if (llama_process(b.context, LLAMA_PROCESS_TYPE_DECODE, batch) != 0) std::exit(1);
+    const int n = llama_model_n_embd_out(b.model);
+    const float* pooled = llama_get_embeddings_seq(b.context, 0);
+    if (pooled == nullptr) std::exit(1);
+    e.vector.assign(pooled, pooled + n);
+    llama_batch_ext_free(batch);
+    double sum = 0;
+    for (const float v : e.vector) sum += static_cast<double>(v) * v;
+    const float scale = sum > 0 ? static_cast<float>(1.0 / std::sqrt(sum)) : 0.0f;
+    for (float& v : e.vector) v *= scale;
+    return e;
+}
+
+int video(const char* model, const char* patched, const char* commit, const char* model_sha, const char* mmproj_sha) {
+    llama_backend_init();
+    clip_ctx* hparams_of = load(patched);
+    const resize_algo algo = clip_get_hparams(hparams_of)->image_resize_algo;
+    const Backend cpu = open_backend(model, patched, true);
+    const Backend metal = open_backend(model, patched, false);
+
+    std::printf("// Generated by tools/make_reference_vision.sh. Do not edit.\n");
+    std::printf("// llama.cpp %s, CPU and Metal, the model of SHA-256 %s and the mmproj of SHA-256\n", commit, model_sha);
+    std::printf("// %s with clip.use_gelu set. Each clip's frames, one a second, stretched by\n", mmproj_sha);
+    std::printf("// llama.cpp's resampler to the grid Google's rule gives at %d tokens, each frame's\n", kFrameTokens);
+    std::printf("// rows between <|image> and <image|>, as EmbeddingGemma 2's processor writes a video.\n");
+    std::printf("// Each item: its name, its scene or none, its text before and after the clip, the\n");
+    std::printf("// tokens before the clip (the ends among them), its frames, each frame's rows, the\n");
+    std::printf("// tokens around each frame, the tokens after, and its unit-length embedding on Metal\n");
+    std::printf("// and on the CPU.\n");
+    std::printf("inline const VideoReference kVideoReferences[] = {\n");
+    for (const VideoItem& item : kVideoItems) {
+        const VideoEmbedding m = embed_video_item(metal, item, algo), c = embed_video_item(cpu, item, algo);
+        if (m.before != c.before || m.after != c.after || m.rows != c.rows || m.frames != c.frames) {
+            std::fprintf(stderr, "%s: the backends built different sequences\n", item.name);
+            return 1;
+        }
+        std::printf("    {\"%s\", \"%s\", R\"REF(%s)REF\", R\"REF(%s)REF\", ", item.name,
+                    item.scene != nullptr ? item.scene : "", item.before, item.after);
+        print_tokens(m.before);
+        std::printf(", %u, %u, %d, %d, ", m.frames, m.rows, m.frame_begin, m.frame_end);
+        print_tokens(m.after);
+        std::printf(", ");
+        print_floats(m.vector);
+        std::printf(", ");
+        print_floats(c.vector);
+        std::printf("},\n");
+        std::fprintf(stderr, "%s: %u frames of %u rows\n", item.name, m.frames, m.rows);
+    }
+    std::printf("};\n");
+    for (const Backend* b : {&cpu, &metal}) {
+        mtmd_free(b->vision);
+        llama_free(b->context);
+        llama_model_free(b->model);
+    }
+    clip_free(hparams_of);
+    llama_backend_free();
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc == 5 && std::string(argv[1]) == "prepare") return prepare(argv[2], argv[3], argv[4]);
     if (argc == 8 && std::string(argv[1]) == "embed") return embed(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]);
+    if (argc == 7 && std::string(argv[1]) == "video") return video(argv[2], argv[3], argv[4], argv[5], argv[6]);
     std::fprintf(stderr, "usage: reference_vision prepare <mmproj.gguf> <llama.cpp commit> <mmproj sha256>\n"
                          "       reference_vision embed <model.gguf> <patched mmproj> <published mmproj> <commit>"
-                         " <model sha256> <mmproj sha256>\n");
+                         " <model sha256> <mmproj sha256>\n"
+                         "       reference_vision video <model.gguf> <patched mmproj> <commit> <model sha256>"
+                         " <mmproj sha256>\n");
     return 2;
 }

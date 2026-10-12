@@ -42,3 +42,10 @@ python3 tools/gguf_add_bool.py ".cache/test-data/models/$MMPROJ.gguf" "$PATCHED"
 .cache/reference_vision/reference_vision embed ".cache/test-data/models/$MODEL.gguf" "$PATCHED" \
     ".cache/test-data/models/$MMPROJ.gguf" "$LLAMA_COMMIT" "$MODEL_SHA256" "$SHA256" \
     > tests/fixtures/reference/vision_embeddings.inc
+
+# The video embeddings: tests/fixtures/reference/video_embeddings.inc, for
+# tests/gpu/video_embed_test.cpp (runtime/video.h), from the same patched
+# mmproj: each clip's frames sized by Google's rule, stretched by llama.cpp's
+# resampler, encoded one a frame.
+.cache/reference_vision/reference_vision video ".cache/test-data/models/$MODEL.gguf" "$PATCHED" \
+    "$LLAMA_COMMIT" "$MODEL_SHA256" "$SHA256" > tests/fixtures/reference/video_embeddings.inc
