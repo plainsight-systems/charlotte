@@ -135,13 +135,13 @@ ImageFit image_fit(std::uint32_t width, std::uint32_t height, const ImageGrid& g
 }
 
 ImageError ImageResampler::begin(std::uint32_t source_width, std::uint32_t source_height, const ImageGrid& grid,
-                                 std::uint32_t patch, std::uint32_t most) {
+                                 const ImageFit& fit, std::uint32_t patch, std::uint32_t most) {
     source_width_ = 0;
     if (source_width == 0 || source_height == 0) return ImageError::Empty;
     if (source_width > kMaxSide || source_height > kMaxSide) return ImageError::TooLarge;
     if (grid.tokens > most) return ImageError::OverBudget;
     grid_ = grid;
-    fit_ = image_fit(source_width, source_height, grid);
+    fit_ = fit;
     patch_ = patch;
     source_width_ = source_width;
     source_height_ = source_height;

@@ -83,6 +83,7 @@ add_library(charlotte_core STATIC
     src/core/residency/file_ranges.cpp
     src/core/gpu/dispatch_math.cpp
     src/core/media/image.cpp
+    src/core/media/video.cpp
     src/core/media/audio.cpp
 )
 

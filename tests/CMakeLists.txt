@@ -64,6 +64,7 @@ add_executable(charlotte_tests
     residency_piece_writer_test.cpp
     residency_routes_test.cpp
     media_image_test.cpp
+    media_video_test.cpp
     media_audio_test.cpp
     residency_file_ranges_test.cpp
     vision_test.cpp

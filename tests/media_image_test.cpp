@@ -49,8 +49,9 @@ std::vector<std::uint8_t> rgba_rows(const Scene& scene, std::uint32_t first, std
 // canvas and patches.
 media::ImageResampler resample(const Scene& scene, std::uint32_t band) {
     media::ImageResampler r;
-    REQUIRE(r.begin(scene.width, scene.height, grid_of(scene.width, scene.height), kPatch, kBudget.most) ==
-            media::ImageError::Ok);
+    const media::ImageGrid grid = grid_of(scene.width, scene.height);
+    REQUIRE(r.begin(scene.width, scene.height, grid, media::image_fit(scene.width, scene.height, grid), kPatch,
+                    kBudget.most) == media::ImageError::Ok);
     for (std::uint32_t row = 0; row < scene.height; row += band) {
         const std::uint32_t rows = std::min(band, scene.height - row);
         const auto bytes = rgba_rows(scene, row, rows);
@@ -97,7 +98,7 @@ TEST_CASE("an image prepared is llama.cpp's, byte for byte") {
             // llama.cpp refuses it; so does the resampler, past the budget.
             CHECK(grid.tokens > kBudget.most);
             media::ImageResampler r;
-            CHECK(r.begin(scene.width, scene.height, grid, kPatch, kBudget.most) == media::ImageError::OverBudget);
+            CHECK(r.begin(scene.width, scene.height, grid, media::image_fit(scene.width, scene.height, grid), kPatch, kBudget.most) == media::ImageError::OverBudget);
             continue;
         }
         REQUIRE(grid.width == p.width);
@@ -160,19 +161,21 @@ TEST_CASE("an aspect past the budget's most to 1 is refused, at it is not") {
     const media::ImageGrid at = grid_of(13440, 48);
     CHECK(at.tokens == 280);
     media::ImageResampler r;
-    CHECK(r.begin(13440, 48, at, kPatch, kBudget.most) == media::ImageError::Ok);
+    CHECK(r.begin(13440, 48, at, media::image_fit(13440, 48, at), kPatch, kBudget.most) == media::ImageError::Ok);
     const media::ImageGrid past = grid_of(14000, 48);
     CHECK(past.tokens == 285);
-    CHECK(r.begin(14000, 48, past, kPatch, kBudget.most) == media::ImageError::OverBudget);
+    CHECK(r.begin(14000, 48, past, media::image_fit(14000, 48, past), kPatch, kBudget.most) == media::ImageError::OverBudget);
 }
 
 TEST_CASE("each refusal is named") {
     media::ImageResampler r;
     const media::ImageGrid grid = grid_of(10, 10);
-    CHECK(r.begin(0, 10, grid, kPatch, kBudget.most) == media::ImageError::Empty);
-    CHECK(r.begin(media::kMaxSide + 1, 10, grid, kPatch, kBudget.most) == media::ImageError::TooLarge);
+    // A source refused before its fit is read.
+    CHECK(r.begin(0, 10, grid, media::ImageFit{}, kPatch, kBudget.most) == media::ImageError::Empty);
+    CHECK(r.begin(media::kMaxSide + 1, 10, grid, media::ImageFit{}, kPatch, kBudget.most) ==
+          media::ImageError::TooLarge);
 
-    REQUIRE(r.begin(10, 10, grid, kPatch, kBudget.most) == media::ImageError::Ok);
+    REQUIRE(r.begin(10, 10, grid, media::image_fit(10, 10, grid), kPatch, kBudget.most) == media::ImageError::Ok);
     std::vector<float> patches(static_cast<std::size_t>(grid.columns) * grid.rows * 3 * kPatch * kPatch);
     CHECK(r.patches(patches) == media::ImageError::Incomplete);
     const std::vector<std::uint8_t> row(10 * 4, 200);

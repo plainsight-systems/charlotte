@@ -87,6 +87,8 @@ namespace bllm::media {
 //   C++ Core Guidelines
 //     F.20   For "out" output values, prefer return values to output
 //            parameters — the grid and the counts are returned.
+//     ES.46  Avoid lossy arithmetic conversions — each floor from f64 is of
+//            a side at most about 72,700 px, stated where it is taken.
 //     I.4    Make interfaces precisely and strongly typed — a grid, not four
 //            integers.
 //   C++ performance guidelines
@@ -101,7 +103,9 @@ inline constexpr std::uint32_t kClipFrames = 4;
 [[nodiscard]] std::uint32_t frame_count(double duration) noexcept;
 
 // A frame's grid by Google's rule (2 above). Preconditions: both sides at
-// least 1 and at most kMaxSide; tokens at least 1.
+// least 1 and at most kMaxSide; tokens at least 2, so the budget's area is
+// at least twice a 48-pixel square's and its sides cannot both floor to 0,
+// rounding included — Google's one refusal, never met.
 [[nodiscard]] ImageGrid frame_grid(std::uint32_t width, std::uint32_t height, std::uint32_t patch,
                                    std::uint32_t pooling, std::uint32_t tokens) noexcept;
 

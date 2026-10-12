@@ -201,7 +201,7 @@ public:
     // `most`, before anything is allocated. Precondition: `fit` lies within
     // `grid`.
     [[nodiscard]] ImageError begin(std::uint32_t source_width, std::uint32_t source_height, const ImageGrid& grid,
-                                   std::uint32_t patch, std::uint32_t most);
+                                   const ImageFit& fit, std::uint32_t patch, std::uint32_t most);
 
     // Takes the next band: whole RGBA rows from `first_row`, which is the row
     // after the last band's. Filters it horizontally and keeps nothing of

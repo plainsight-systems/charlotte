@@ -23,7 +23,8 @@ media::ImageError Vision::begin(std::uint32_t width, std::uint32_t height) {
     if (width == 0 || height == 0) return media::ImageError::Empty;
     if (width > media::kMaxSide || height > media::kMaxSide) return media::ImageError::TooLarge;
     slot_.grid = media::image_grid(width, height, patch_, pooling_, budget_);
-    if (const auto e = slot_.resampler.begin(width, height, slot_.grid, patch_, budget_.most);
+    if (const auto e = slot_.resampler.begin(width, height, slot_.grid, media::image_fit(width, height, slot_.grid),
+                                             patch_, budget_.most);
         e != media::ImageError::Ok) {
         return e;
     }
