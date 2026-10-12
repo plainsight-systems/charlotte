@@ -62,6 +62,25 @@ This file tracks active and accepted work.
   `web/recordings.js`). The spectrogram follows Google's log floor where
   llama.cpp's differs; the oracle is llama.cpp with that one line set.
 
+  In: the module computes the spectrogram as that llama.cpp does, within
+  its tiered tolerance (`tests/media_audio_test.cpp`), and each computed
+  sound, NASA recording, captioned clip and query embeds within llama.cpp's
+  own CPU-to-Metal spread of its Metal output
+  (`tests/gpu/audio_embed_test.cpp`); llama.cpp's own floor falls outside
+  on the tone and the siren, and the relative rows read unshifted fall
+  outside on every recording. The page reads a 16 kHz 16-bit WAV itself,
+  sample for sample as llama.cpp does, and loads the companion's audio
+  range the first time a recording is indexed. In the app's Chromium,
+  recordings, photos and paragraphs share one index; each of the four
+  recordings' queries ranks its own recording first, 14 of 16 scores
+  llama.cpp's to three places and the other two at a rounding boundary,
+  within llama.cpp's own spread; a 5 minute recording becomes 15 clips in
+  about 2 s, its matching clip ranked with its span. In iOS Safari, under
+  the fake runtime, the recordings list and a clip's player fit the phone
+  with the on-screen keyboard up.
+
+  Next: video, its own design.
+
 ## Accepted
 
 - **Generation in the browser** — accepted 2026-10-07, designed in its file
