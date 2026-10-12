@@ -667,6 +667,16 @@ void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, 
             c.bytes > from.size - c.from_offset || c.to_offset > to.size || c.bytes > to.size - c.to_offset) {
             fits = false;
             o.message.assign("a copy outside its link's ranges, or not whole words");
+            break;
+        }
+        // Before the pass, into this program's upload; after it, out of it (I.5).
+        const bool before = c.at == CopyAt::BeforePass;
+        const Binding& own = before ? to : from;
+        const WGPUBuffer buffer = before ? c.link->target() : c.link->source();
+        if (static_cast<std::size_t>(own.buffer) >= s.upload->plan().buffers.size() || s.upload->buffer(own.buffer) != buffer) {
+            fits = false;
+            o.message.assign(before ? "a copy before the pass into another program's upload"
+                                    : "a copy after the pass out of another program's upload");
         }
     }
     if (fits) {
@@ -678,11 +688,15 @@ void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, 
     }
     if (fits) {
         const gpu::CommandEncoder encoder(wgpuDeviceCreateCommandEncoder(device, nullptr));
-        for (const RunCopy& c : copies) {
-            if (c.bytes == 0) continue;
-            wgpuCommandEncoderCopyBufferToBuffer(encoder.get(), c.link->source(), c.link->from().offset + c.from_offset,
-                                                 c.link->target(), c.link->to().offset + c.to_offset, c.bytes);
-        }
+        const auto encode_copies = [&](CopyAt at) {
+            for (const RunCopy& c : copies) {
+                if (c.bytes == 0 || c.at != at) continue;
+                wgpuCommandEncoderCopyBufferToBuffer(encoder.get(), c.link->source(),
+                                                     c.link->from().offset + c.from_offset, c.link->target(),
+                                                     c.link->to().offset + c.to_offset, c.bytes);
+            }
+        };
+        encode_copies(CopyAt::BeforePass);
         {
 #if BLLM_DIAGNOSTICS_ENABLED
             WGPUComputePassDescriptor pass_desc = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
@@ -727,6 +741,7 @@ void begin_step(Program::State& s, const std::shared_ptr<Program::State>& self, 
             }
             wgpuComputePassEncoderEnd(pass.get());
         }
+        encode_copies(CopyAt::AfterPass);
 #if BLLM_DIAGNOSTICS_ENABLED
         if (fits && timer != nullptr) {
             wgpuCommandEncoderResolveQuerySet(encoder.get(), timer->queries.get(), 0, o.queries, timer->resolve.get(), 0);

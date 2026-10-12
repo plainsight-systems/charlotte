@@ -69,8 +69,10 @@ struct StepOutcome {
     std::vector<std::byte> readback;   // the step's, if it read any back
 };
 
-// Runs `step` and returns how it ended; it must be reported once.
-inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, const kernels::Step& step) {
+// Runs `step`, writing `inputs` and encoding `copies` as the program's run
+// does, and returns how it ended; it must be reported once.
+inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, const kernels::Step& step,
+                            std::span<const kernels::RunInput> inputs, std::span<const kernels::RunCopy> copies) {
     struct Ran {
         kernels::ProgramError error = kernels::ProgramError::Step;
         std::string message;
@@ -78,7 +80,7 @@ inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, co
         int calls = 0;
         bool done = false;
     } ran;
-    program.run(step,
+    program.run(step, inputs, copies,
                 [](kernels::ProgramError e, std::string_view message, std::span<const std::byte> readback,
                    void* userdata) {
                     auto& r = *static_cast<Ran*>(userdata);
@@ -92,6 +94,11 @@ inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, co
     pump_until(instance, ran.done, "the step");
     REQUIRE(ran.calls == 1);
     return {ran.error, std::move(ran.message), std::move(ran.readback)};
+}
+
+// Runs `step` and returns how it ended; it must be reported once.
+inline StepOutcome try_step(WGPUInstance instance, kernels::Program& program, const kernels::Step& step) {
+    return try_step(instance, program, step, {}, {});
 }
 
 // Runs one step of `tokens` tokens from `position`, identifiers `ids` where

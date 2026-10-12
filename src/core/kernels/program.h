@@ -185,6 +185,11 @@ struct RunInput {
 // link's source this program's upload. A media encoder's step copies its
 // rows out after its pass, into the text step's rows, so the next segment's
 // step may overwrite them (runtime/media_stage.h).
+enum class CopyAt {
+    BeforePass,
+    AfterPass,
+};
+
 // A copy a run encodes, through a link made at load. Offsets are within the
 // link's ranges; every value a multiple of 4.
 struct RunCopy {
@@ -192,6 +197,7 @@ struct RunCopy {
     std::uint64_t from_offset;
     std::uint64_t to_offset;
     std::uint64_t bytes;
+    CopyAt at = CopyAt::BeforePass;
 };
 
 // A route between two uploads' working buffers on one device, made at load,

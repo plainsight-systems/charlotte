@@ -494,4 +494,49 @@ TEST_CASE("a run writes its inputs and copies across a link before its pass; out
     CHECK(run_with(std::span(&over, 1), {}).error == kernels::ProgramError::Step);
     const kernels::RunCopy past{&link, 4, 0, 16};
     CHECK(run_with({}, std::span(&past, 1)).error == kernels::ProgramError::Step);
+
+    // A copy on the wrong side of its link: before the pass the link's
+    // target must be this program's upload, after it the link's source.
+    const kernels::RunCopy out_of_b{&link, 0, 0, 16, kernels::CopyAt::AfterPass};
+    const StepOutcome refused = run_with({}, std::span(&out_of_b, 1));
+    CHECK(refused.error == kernels::ProgramError::Step);
+    CHECK(refused.message == "a copy after the pass out of another program's upload");
+}
+
+TEST_CASE("a run copies across a link after its pass: its own pass's output, into another program's buffer") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    Stamping a, b;
+    upload_for_stamps(instance.get(), *device, a);
+    upload_for_stamps(instance.get(), *device, b);
+    const auto source = stamp_program(instance.get(), a);   // stamps into a's `sampled`
+    const residency::BufferRange hidden = scratch(b.model, "hidden");
+    const kernels::Binding read_back{hidden.buffer, hidden.offset, 16};
+    const auto target = build_program(
+        instance.get(), *b.upload,
+        {kernels::Launch{kStamp, nullptr, std::vector<std::byte>(4), {{b.sampled.buffer, b.sampled.offset, 16}}, 1, 1}},
+        read_back);
+    const kernels::ProgramLink link(*a.upload, {a.sampled.buffer, a.sampled.offset, 16}, *b.upload,
+                                    {hidden.buffer, hidden.offset, hidden.length});
+
+    // Each step's stamp, written by its pass, copied out after it: b's
+    // hidden holds the second step's, not the first's, where the copy runs
+    // after the pass that writes it.
+    for (const std::uint32_t position : {6u, 8u}) {
+        CAPTURE(position);
+        const kernels::RunCopy out{&link, 0, 0, 16, kernels::CopyAt::AfterPass};
+        const StepOutcome ran = try_step(instance.get(), *source, step_at(position, false), {}, std::span(&out, 1));
+        REQUIRE_MESSAGE(ran.error == kernels::ProgramError::Ok, ran.message);
+        const StepOutcome read = try_step(instance.get(), *target, step_at(0, true));
+        REQUIRE_MESSAGE(read.error == kernels::ProgramError::Ok, read.message);
+        std::vector<std::uint32_t> words(read.readback.size() / 4);
+        std::memcpy(words.data(), read.readback.data(), read.readback.size());
+        CHECK(words == std::vector<std::uint32_t>{position, 1, 7, 9});
+    }
+
+    // Before the pass, the link's target must be this program's upload.
+    const kernels::RunCopy into_a{&link, 0, 0, 16, kernels::CopyAt::BeforePass};
+    const StepOutcome refused = try_step(instance.get(), *source, step_at(0, false), {}, std::span(&into_a, 1));
+    CHECK(refused.error == kernels::ProgramError::Step);
+    CHECK(refused.message == "a copy before the pass into another program's upload");
 }
