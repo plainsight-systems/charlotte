@@ -156,3 +156,30 @@ dominate, so halving the tokens saves under a third.
   overwrites them: the runtime's medium becomes a list of segments.
 - The oracle is llama.cpp's encoder per frame and its text model over
   Google's sequence, on frames prepared as Charlotte prepares them.
+
+## What implementing it found
+
+- llama.cpp keeps its stretch resize to itself (`img_tool` in
+  `mtmd-image.cpp`), and its preprocessors only letterbox, so the
+  reference tool copies `img_tool` verbatim from the pinned source when it
+  is configured. llama.cpp's own size rule at 120 tokens gives 672 × 384
+  for a 16:9 frame, where Google's gives 720 × 384.
+- On the computed clips, Charlotte lands within llama.cpp's CPU-to-Metal
+  spread at about a tenth of it; reversed frames fall three to four times
+  outside, letterboxed frames ten to thirty times, so the order of frames
+  and their fit both reach the embedding.
+- On NASA's clips in Chromium, scores fall within 0.005 of llama.cpp's on
+  FFmpeg's frames, where llama.cpp's two backends differ by up to 0.0025:
+  the browser's and FFmpeg's decodes differ by 0.3 to 0.5 a channel on
+  average and by up to 60 at sharp edges, where they upsample colour
+  differently.
+- iOS Safari decodes no frame of a video element it has not played, and
+  `createImageBitmap` on it then refuses; a muted, inline play and pause
+  makes it decode. It also, now and then, never fires `seeked` after a
+  seek; the element's `seeking` flag still clears, so the page waits on
+  either.
+- The cost per clip is still to be measured with the browser pane
+  visible; timed hidden, the pane is throttled, and the image path that
+  measured 0.13 s a frame-sized image took 0.41 s, on this build and the
+  one before alike.
+

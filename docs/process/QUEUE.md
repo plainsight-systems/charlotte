@@ -92,6 +92,25 @@ This file tracks active and accepted work.
   llama.cpp's video helper; the oracle is llama.cpp's encoder per frame
   over Google's token sequence.
 
+  In: each computed clip and query embeds within llama.cpp's own
+  CPU-to-Metal spread of its Metal output, at about a tenth of it
+  (`tests/gpu/video_embed_test.cpp`); frames given in reverse fall three
+  to four times outside it, frames letterboxed as an image is ten to thirty
+  times; each query ranks its own clip first. On the way, an encode now
+  delivers only once every step it submitted has reported, which image and
+  audio needed too. In the app's Chromium, four NASA clips
+  (`tests/fixtures/video/`) index beside paragraphs, photos and recordings;
+  each clip's query ranks its own video's clips first, each score within
+  0.005 of llama.cpp's on FFmpeg's frames, the browser's decoded frames
+  within half a unit a channel of FFmpeg's on average. In iOS Safari, under
+  the fake runtime, videos chosen from the photo library index and play
+  from their span, and the query stays above the on-screen keyboard.
+
+  Open: the cost of a clip, measured in a visible pane. Timed with the
+  pane hidden, which throttles it, eight clips took 10 s and eight
+  frame-sized photos 3.3 s on this build and 3.5 s on the build before
+  video; not a measurement of either.
+
 ## Accepted
 
 - **Generation in the browser** — accepted 2026-10-07, designed in its file
