@@ -6,20 +6,27 @@
 // The page's half of a clip's preparation: the browser decodes and
 // resamples, the module computes the spectrogram.
 //
-//   - decode(blob): the Web Audio API's decodeAudioData on an
-//     OfflineAudioContext at 16,000 Hz, which resamples to the context's
-//     rate as it decodes. On the page, not in the worker: decodeAudioData
-//     belongs to an audio context, which a worker doesn't have; the browser
-//     decodes off the main thread all the same. The card asks for mono at
-//     16 kHz, so a file already at 16 kHz is not resampled and its samples
-//     arrive as they are — a 16-bit WAV's each its integer over 32,768, as
-//     llama.cpp's decoder gives them. Other rates are resampled by the
-//     browser's resampler, which isn't llama.cpp's and differs between
-//     browsers: the samples near, not equal. Refused, by name, where the
-//     browser can't decode the file, and where it runs past 10 minutes —
-//     9.6 million samples, 38 MB as f32 — rather than holding more.
-//   - mono(buffer): the channels' mean, sample by sample, f32, in channel
-//     order: llama.cpp's decoder mixes to mono by the same mean.
+//   - decode(blob): a WAV of 16-bit PCM at 16 kHz, the rate the card asks
+//     for, is read here, each sample its integer over 32,768, as llama.cpp's
+//     decoder gives them (pcmWav): the browser's decoder is not used for it,
+//     since Chromium's scales a positive sample by 1 / 32,767 and a negative
+//     one by 1 / 32,768. Anything else goes to the Web Audio API's
+//     decodeAudioData on an OfflineAudioContext at 16,000 Hz, which
+//     resamples to the context's rate as it decodes, by the browser's
+//     resampler, which isn't llama.cpp's and differs between browsers: the
+//     samples near, not equal. On the page, not in the worker:
+//     decodeAudioData belongs to an audio context, which a worker doesn't
+//     have; the browser decodes off the main thread all the same. Refused,
+//     by name, where the browser can't decode the file, and where it runs
+//     past 10 minutes — 9.6 million samples, 38 MB as f32 — rather than
+//     holding more.
+//   - pcmWav(bytes): a RIFF WAVE file's channels, when its format is PCM
+//     (format tag 1), 16 bits a sample and 16,000 Hz, and its chunks whole;
+//     null otherwise, for the browser to decode or refuse.
+//   - mono(buffer): the channels' mean, sample by sample, summed in channel
+//     order and divided by their count in double precision, rounded once to
+//     f32: llama.cpp's decoder mixes to mono by the same mean. One channel's
+//     samples are kept as they are.
 //   - clipsOf(samples, mostSamples): the recording cut into k = ⌈n /
 //     mostSamples⌉ clips of equal length, clip i samples ⌊i n / k⌋ up to
 //     ⌊(i + 1) n / k⌋, so no clip is a sliver: a 25 s recording is two of
@@ -40,9 +47,93 @@
 // recording's decoded samples are held while its clips are indexed, at most
 // 38 MB, and released after.
 //
-// Verification: tests/web/audio_input.test.js — clipsOf at n of 160, 161,
+// Verification: tests/web/audio_input.test.js — pcmWav over mono and
+// stereo 16-bit files, the extremes −32,768 and 32,767 among the samples,
+// a chunk before `fmt `, and null for 8 bits, 44.1 kHz, a format tag of 3
+// and a file cut short; clipsOf at n of 160, 161,
 // 325,280, 325,281 (two clips of 162,640 and 162,641), and 4,800,000 (15
 // clips of 320,000), covering every sample once, in order, each at most
 // mostSamples; mono over 1 and 2 channels. In the app's Chromium, the four
 // fixture WAVs (tests/fixtures/audio/) decode to the samples the reference
 // embedded, sample for sample.
+
+// The rate the card asks for: 16 kHz.
+export const kRate = 16000;
+// The longest recording held: 10 minutes.
+export const kMostRecordingSamples = 10 * 60 * kRate;
+
+// A recording's samples at 16 kHz, its own channels, in an AudioBuffer's
+// shape: { numberOfChannels, length, getChannelData(c) }.
+export async function decode(blob) {
+  const bytes = await blob.arrayBuffer();
+  let buffer = pcmWav(bytes);
+  if (buffer === null) {
+    const context = new OfflineAudioContext(1, 1, kRate);
+    try {
+      buffer = await context.decodeAudioData(bytes);
+    } catch {
+      throw new Error('the browser cannot decode this file as audio');
+    }
+  }
+  if (buffer.length > kMostRecordingSamples) throw new Error('the recording is longer than 10 minutes');
+  return buffer;
+}
+
+// A 16-bit PCM WAV at 16 kHz read directly, or null.
+export function pcmWav(bytes) {
+  const view = new DataView(bytes);
+  const tag = (at) => String.fromCharCode(...new Uint8Array(bytes, at, 4));
+  if (view.byteLength < 12 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return null;
+  let format = null;
+  for (let at = 12; at + 8 <= view.byteLength;) {
+    const id = tag(at);
+    const size = view.getUint32(at + 4, true);
+    const body = at + 8;
+    if (body + size > view.byteLength) return null;
+    if (id === 'fmt ' && size >= 16) {
+      format = { tag: view.getUint16(body, true), channels: view.getUint16(body + 2, true),
+        rate: view.getUint32(body + 4, true), bits: view.getUint16(body + 14, true) };
+    } else if (id === 'data') {
+      if (format === null || format.tag !== 1 || format.bits !== 16 || format.rate !== kRate ||
+          format.channels === 0) {
+        return null;
+      }
+      const channels = format.channels;
+      const length = Math.floor(size / (2 * channels));
+      const data = Array.from({ length: channels }, () => new Float32Array(length));
+      for (let i = 0; i < length; i++) {
+        for (let c = 0; c < channels; c++) data[c][i] = view.getInt16(body + 2 * (i * channels + c), true) / 32768;
+      }
+      return { numberOfChannels: channels, length, sampleRate: kRate, getChannelData: (c) => data[c] };
+    }
+    at = body + size + (size % 2);   // chunks are padded to an even length
+  }
+  return null;
+}
+
+// The channels' mean, sample by sample: { numberOfChannels, length,
+// getChannelData(c) }, an AudioBuffer's shape.
+export function mono(buffer) {
+  const channels = buffer.numberOfChannels;
+  if (channels === 1) return Float32Array.from(buffer.getChannelData(0));
+  const data = Array.from({ length: channels }, (_, c) => buffer.getChannelData(c));
+  const out = new Float32Array(buffer.length);
+  for (let i = 0; i < buffer.length; i++) {
+    let sum = 0;
+    for (let c = 0; c < channels; c++) sum += data[c][i];
+    out[i] = sum / channels;
+  }
+  return out;
+}
+
+// The recording cut into equal clips of at most `mostSamples`: each a view
+// of `samples`, with its start and end in seconds.
+export function clipsOf(samples, mostSamples) {
+  const n = samples.length;
+  const k = Math.max(1, Math.ceil(n / mostSamples));
+  return Array.from({ length: k }, (_, i) => {
+    const begin = Math.floor((i * n) / k);
+    const end = Math.floor(((i + 1) * n) / k);
+    return { samples: samples.subarray(begin, end), start: begin / kRate, end: end / kRate };
+  });
+}

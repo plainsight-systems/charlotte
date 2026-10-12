@@ -22,12 +22,13 @@
 // loadPolicyOf(model) gives the model's load policy as the model controller
 // has it, whose memory budget the companion is judged and planned within:
 //   - ensure(model) with the loaded model's catalog entry, whose `vision`
-//     names the companion (catalog.js). Resolves once the companion is
+//     or `audio` names the companion (catalog.js). Resolves with the load's
+//     answer — { imageTokens } or { mostSamples } — once the companion is
 //     loaded; at once if it already is; with the same promise while it
 //     loads; rejects with what stopped it. Each step changes `state`, which
 //     onChange renders where the search panel shows it: { phase: 'checking'
 //     | 'downloading' | 'loading' | 'loaded' | 'failed', received, total,
-//     verdict, message }.
+//     verdict, message, encoder }, `encoder` what it calls its encoder.
 //   - Checking: its header from the first range — from the cache if it is
 //     there, else the network (fetch.js's range fetch) — sent as
 //     PREFLIGHT_COMPANION, the verdict naming each stage it cannot reach, as
@@ -85,21 +86,23 @@ import { formatBytes } from './units.js';
 // What a state says where the search panel shows it. Pure.
 export function describeCompanion(state) {
   const part = (received, total) => (total ? `${formatBytes(received)} of ${formatBytes(total)}` : '');
+  const encoder = state?.encoder;
   switch (state?.phase) {
-    case 'checking': return 'Checking the image encoder';
-    case 'downloading': return `Downloading the image encoder: ${part(state.received, state.total)}`;
-    case 'loading': return `Loading the image encoder${state.total ? `: ${part(state.received, state.total)}` : ''}`;
-    case 'loaded': return 'Image encoder loaded';
-    case 'failed': return 'The image encoder did not load';
+    case 'checking': return `Checking the ${encoder}`;
+    case 'downloading': return `Downloading the ${encoder}: ${part(state.received, state.total)}`;
+    case 'loading': return `Loading the ${encoder}${state.total ? `: ${part(state.received, state.total)}` : ''}`;
+    case 'loaded': return `${encoder[0].toUpperCase()}${encoder.slice(1)} loaded`;
+    case 'failed': return `The ${encoder} did not load`;
     default: return '';
   }
 }
 
-// A companion this build or device cannot run, with the verdict that says why.
+// A companion this build or device cannot run, with the verdict that says why;
+// `media` what it would have embedded, "images" or "recordings".
 export class CompanionError extends Error {
-  constructor(verdict) {
+  constructor(verdict, media = 'images') {
     const { next, blocking } = nextStage(verdict);
-    super(`images cannot be embedded here: ${blocking.map((b) => b.detail).join('; ') || `stopped before ${next}`}`);
+    super(`${media} cannot be embedded here: ${blocking.map((b) => b.detail).join('; ') || `stopped before ${next}`}`);
     this.name = 'CompanionError';
     this.verdict = verdict;
   }
@@ -108,8 +111,8 @@ export class CompanionError extends Error {
 // Each kind's catalog field, what its cache entry is listed as, and what the
 // state calls its encoder.
 const KINDS = {
-  image: { field: 'vision', listed: 'images', encoder: 'image encoder' },
-  audio: { field: 'audio', listed: 'audio', encoder: 'audio encoder' },
+  image: { field: 'vision', listed: 'images', encoder: 'image encoder', media: 'images' },
+  audio: { field: 'audio', listed: 'audio', encoder: 'audio encoder', media: 'recordings' },
 };
 
 export function createCompanion({
@@ -121,10 +124,11 @@ export function createCompanion({
   let state = null;
   let step = null;
   let loaded = null;    // the model whose companion is loaded, by id
+  let answer = null;    // its load's answer
   let pending = null;   // { id, promise } while one loads
 
   const show = (next) => {
-    state = next;
+    state = next === null ? null : { ...next, encoder: named.encoder };
     onChange?.(state);
   };
 
@@ -144,7 +148,7 @@ export function createCompanion({
       },
     });
     signal.throwIfAborted();
-    if (!offersDownload(verdict)) throw new CompanionError(verdict);
+    if (!offersDownload(verdict)) throw new CompanionError(verdict, named.media);
 
     if (file === null) {
       const total = entry.ranges.reduce((sum, [begin, end]) => sum + (end - begin), 0);
@@ -161,18 +165,21 @@ export function createCompanion({
       { onProgress: ({ done, total }) => { if (!signal.aborted) show({ phase: 'loading', verdict, received: done, total }); } });
     const cancel = () => client.request(Request.CANCEL, { target: id }).catch(() => {});
     signal.addEventListener('abort', cancel, { once: true });
+    let answered;
     try {
-      await reply;
+      answered = await reply;
     } finally {
       signal.removeEventListener('abort', cancel);
     }
     signal.throwIfAborted();
     loaded = model.id;
+    answer = answered;
     show({ phase: 'loaded', verdict });
+    return answered;
   }
 
   function ensure(model) {
-    if (loaded === model.id) return Promise.resolve();
+    if (loaded === model.id) return Promise.resolve(answer);
     if (pending?.id === model.id) return pending.promise;
     step?.abort();
     step = new AbortController();
@@ -194,6 +201,7 @@ export function createCompanion({
       step?.abort();
       step = null;
       loaded = null;
+      answer = null;
       pending = null;
       show(null);
     },

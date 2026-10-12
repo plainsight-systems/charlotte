@@ -4,10 +4,10 @@
 // The main panel is the chat (chat.js) or, for a model whose load answered
 // with an embedding's length, the search panel (search.js); each owns its
 // own element, and one shows at a time. Choosing a model closes both and
-// shows the chat's empty state. A model that embeds images has its
-// companion (companion.js) loaded by the search panel when it first needs
-// it, its state shown there and its file listed in the cache with the
-// models.
+// shows the chat's empty state. A model that embeds images or audio has a
+// companion (companion.js) for each, loaded by the search panel when it
+// first needs it, its state shown there and its file listed in the cache
+// with the models.
 
 import { renderCache } from './cache_view.js';
 import { loadCatalog } from './catalog.js';
@@ -103,13 +103,15 @@ if (!('gpu' in navigator)) {
   });
 
   const loadPolicyOf = (model) => loadPolicyFor(model.policy?.load, platform);
-  const companion = createCompanion({ kind: 'image', client, cache, loadPolicyOf,
+  const companionOf = (kind) => createCompanion({ kind, client, cache, loadPolicyOf,
     onChange: (state) => search.showCompanion(state),
     onCacheChanged: () => refreshCache() });
   const search = createSearch(page.search, {
     embed: (text, media) => client.request(Request.EMBED, { text, media }),
     prepareImage: (image) => client.request(Request.PREPARE_IMAGE, { image }),
-    companion,
+    prepareAudio: (samples) => client.request(Request.PREPARE_AUDIO, { samples }, { transfer: [samples.buffer] }),
+    companion: companionOf('image'),
+    audioCompanion: companionOf('audio'),
     onSearch: (step, detail) => recorder.search(step, detail),
   });
   // The main panel shown: the chat, or the search panel.

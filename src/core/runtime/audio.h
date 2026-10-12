@@ -156,10 +156,10 @@ namespace bllm::runtime {
 //     clip's gives the bits a fresh embedder gives; an image's encode after a
 //     clip's, the image's bits; each refusal named.
 //   - In the app's Chromium, the page: the four WAVs, 16 kHz mono 16-bit,
-//     decoded by the browser to the same samples, their queries ranking
-//     their own recording first among them, the search fixture's paragraphs
-//     and the vision fixture's photos, each score llama.cpp's to three
-//     places (web/search.js).
+//     read by the page to the same samples (web/audio_input.js), their
+//     queries ranking their own recording first among them, the search
+//     fixture's paragraphs and the vision fixture's photos, each score
+//     llama.cpp's to three places (web/search.js).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines

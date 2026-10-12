@@ -6,12 +6,14 @@
 // passages are ranked by their vectors' dot product with the query's, the
 // best five shown with their scores.
 //
-// createSearch(root, { embed, prepareImage, companion, onSearch }) returns
-// { open(model, loaded), close(), showCompanion(state) }. `embed(text,
-// media)` sends one EMBED, `media` null or 'image', and returns its reply,
-// { vector, tokens };
-// `prepareImage(file)` sends one PREPARE_IMAGE; `companion` is
-// companion.js's, whose onChange the page points at showCompanion; `loaded`
+// createSearch(root, { embed, prepareImage, prepareAudio, companion,
+// audioCompanion, onSearch }) returns { open(model, loaded), close(),
+// showCompanion(state) }. `embed(text, media)` sends one EMBED, `media`
+// null, 'image' or 'audio', and returns its reply, { vector, tokens };
+// `prepareImage(file)` sends one PREPARE_IMAGE and `prepareAudio(samples)`
+// one PREPARE_AUDIO; `companion` and `audioCompanion` are companion.js's,
+// for images and for audio, whose onChange the page points at
+// showCompanion; `loaded`
 // is the load's answer,
 // { contextOffered, embeddingLength }, which the panel's heading states:
 // "768 numbers a text, up to 512 tokens". `onSearch(step, detail)`, if
@@ -84,8 +86,8 @@
 //     a clip's failure ends the indexing, whole or not at all. A clip's
 //     result is the recording's name, its span — "0:20–0:40" — a player for
 //     that span, and its score. Under ?fake-runtime=embedder a clip's vector
-//     is its energy over time, binned (dev/fake_runtime.js), never shown as
-//     a model's.
+//     is its loudness over time, binned (dev/fake_runtime.js), never shown
+//     as a model's.
 //   - Closing the panel, as choosing another model does, abandons an
 //     indexing in progress: no further passage is sent, and an answer still
 //     on its way is ignored. The companion is released with it. The next load cancels an encode still running
@@ -144,6 +146,8 @@
 // MB, its spectrogram a few milliseconds, overlapped with the last clip's
 // encode; the audio step about 0.1 s; the text step about 45 ms. About
 // 0.15 s a 20 s clip: a 5 minute recording, 15 clips, in about 2.3 s.
+// Measured in the app's Chromium on an Apple M3 Max: that recording's 15
+// clips indexed in about 2.0 s.
 //
 // A photo, for EmbeddingGemma 2 on the target, by runtime/vision.h's
 // estimates: decoding by the browser, its pixels a band a crossing — 4 MiB
@@ -173,10 +177,12 @@
 // ?fake-runtime=embedder (dev/fake_runtime.js), the panel with the
 // on-screen keyboard up.
 
+import { clipsOf, decode as decodeAudio, mono } from './audio_input.js';
 import { describeCompanion } from './companion.js';
 import { h } from './dom.js';
 import { passagesOf, piecesOf } from './passages.js';
 import { createPhotos } from './photos.js';
+import { clock, createRecordings } from './recordings.js';
 import { createIndex } from './search_index.js';
 import { taskPrompt } from './task_prompt.js';
 
@@ -184,8 +190,15 @@ const kResults = 5;
 // What a photo is embedded as: the image alone, with no task prompt, as the
 // model card gives it.
 const kPhotoText = '<|image|>';
+// And a clip: the clip alone.
+const kClipText = '<|audio|>';
 
-export function createSearch(root, { embed, prepareImage, companion, onSearch }) {
+// Words joined as a list: "a", "a and b", "a, b and c", or with "or".
+function listed(words, conjunction = 'and') {
+  return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} ${conjunction} ${words.at(-1)}`;
+}
+
+export function createSearch(root, { embed, prepareImage, prepareAudio, companion, audioCompanion, onSearch }) {
   let active = null;
 
   const close = () => {
@@ -193,6 +206,7 @@ export function createSearch(root, { embed, prepareImage, companion, onSearch })
       active.closed = true;
       active.release();
       companion?.release();
+      audioCompanion?.release();
     }
     active = null;
     root.replaceChildren();
@@ -201,16 +215,18 @@ export function createSearch(root, { embed, prepareImage, companion, onSearch })
   const open = (model, loaded) => {
     close();
     active = { closed: false, release: () => {}, showCompanion: () => {} };
-    root.replaceChildren(searchPanel(model, loaded, active, { embed, prepareImage, companion, onSearch }));
+    root.replaceChildren(searchPanel(model, loaded, active,
+      { embed, prepareImage, prepareAudio, companion, audioCompanion, onSearch }));
   };
 
   return { open, close, showCompanion: (state) => active?.showCompanion(state) };
 }
 
 function searchPanel(model, { contextOffered, embeddingLength }, session,
-  { embed: request, prepareImage, companion, onSearch }) {
+  { embed: request, prepareImage, prepareAudio, companion, audioCompanion, onSearch }) {
   const prompts = model.prompts ?? null;
   const sees = model.vision !== undefined && companion !== undefined;
+  const hears = model.audio !== undefined && audioCompanion !== undefined;
   // Each EMBED waits for the one before to answer, even one whose run was
   // stopped: the embedder refuses a second while one runs.
   let previous = Promise.resolve();
@@ -227,6 +243,13 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
     previous = reply.catch(() => {});
     return { reply };
   };
+  // And a clip's.
+  const embedClip = async () => {
+    await previous;
+    const reply = request(kClipText, 'audio');
+    previous = reply.catch(() => {});
+    return { reply };
+  };
   // The index once built; the indexing running, if one is; a query running.
   let ready = null;
   let indexing = null;
@@ -235,10 +258,11 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const documentInput = h('textarea', { rows: 5, 'aria-label': 'Document',
     placeholder: 'Paste a document. Each paragraph, between blank lines, becomes a passage.' });
   const documentFacts = h('span', { className: 'message-facts' });
-  const indexLabel = sees ? 'Embed' : 'Embed passages';
+  const indexLabel = sees || hears ? 'Embed' : 'Embed passages';
   const indexButton = h('button', { type: 'submit', className: 'action primary', text: indexLabel });
   const queryInput = h('input', { type: 'search', 'aria-label': 'Query',
-    placeholder: sees ? 'Search the passages and photos' : 'Search the passages' });
+    placeholder: `Search the ${listed(['passages', sees ? 'photos' : null, hears ? 'recordings' : null]
+      .filter(Boolean))}` });
   const queryButton = h('button', { type: 'submit', className: 'action primary', text: 'Search' });
   const error = h('p', { className: 'chat-error', 'aria-live': 'assertive' });
   const results = h('ol', { className: 'search-results', 'aria-live': 'polite' });
@@ -248,7 +272,13 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const photos = sees ? createPhotos({ onChange: () => {
     if (indexing !== null || ready !== null) discard('Photos changed: embed again.');
   } }) : null;
-  session.release = () => photos?.release();
+  const recordings = hears ? createRecordings({ onChange: () => {
+    if (indexing !== null || ready !== null) discard('Recordings changed: embed again.');
+  } }) : null;
+  session.release = () => {
+    photos?.release();
+    recordings?.release();
+  };
 
   const settle = () => {
     indexButton.textContent = indexing === null ? indexLabel : 'Stop';
@@ -267,16 +297,23 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const index = async () => {
     const passages = passagesOf(documentInput.value);
     const pictures = photos?.photos() ?? [];
+    const sounds = recordings?.recordings() ?? [];
     error.textContent = '';
-    if (passages.length === 0 && pictures.length === 0) {
-      error.textContent = sees ? 'Add a document or photos to embed.' : 'The document has no paragraphs to embed.';
+    if (passages.length === 0 && pictures.length === 0 && sounds.length === 0) {
+      error.textContent = sees || hears
+        ? `Add ${listed(['a document', sees ? 'photos' : null, hears ? 'recordings' : null].filter(Boolean), 'or')} ` +
+          'to embed.'
+        : 'The document has no paragraphs to embed.';
       return;
     }
     const run = {};
     indexing = run;
     ready = null;
     clearResults();
-    documentFacts.textContent = `0 of ${passages.length + pictures.length} embedded`;
+    // A recording's clips are counted once the audio encoder says how long a
+    // clip may be; until then, one each.
+    let clipCount = sounds.length;
+    documentFacts.textContent = `0 of ${passages.length + pictures.length + clipCount} embedded`;
     settle();
     const built = createIndex(embeddingLength);
     const queue = [...passages];
@@ -300,7 +337,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
         if (!current(run)) return;
         built.add(passage, reply.vector);
         tokens += reply.tokens;
-        const progress = `${built.size()} of ${built.size() + queue.length + pictures.length}`;
+        const progress = `${built.size()} of ${built.size() + queue.length + pictures.length + clipCount}`;
         documentFacts.textContent = `${progress} embedded`;
         onSearch?.('progress', progress);
       }
@@ -320,7 +357,44 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
           if (!current(run)) return;
           built.add(pictures[i], vector);
           tokens += made;
-          const progress = `${built.size()} of ${kept + pictures.length}`;
+          const progress = `${built.size()} of ${kept + pictures.length + clipCount}`;
+          documentFacts.textContent = `${progress} embedded`;
+          onSearch?.('progress', progress);
+        }
+      }
+      if (sounds.length > 0) {
+        const { mostSamples } = await audioCompanion.ensure(model);
+        if (!current(run)) return;
+        clipCount = sounds.reduce((n, r) => n + Math.max(1, Math.ceil(r.samples / mostSamples)), 0);
+        // The recordings' clips in order, each recording decoded when its
+        // first clip is reached and dropped after its last.
+        const clips = (async function* () {
+          for (const recording of sounds) {
+            for (const clip of clipsOf(mono(await decodeAudio(recording.file)), mostSamples)) {
+              yield { recording, ...clip };
+            }
+          }
+        })();
+        // A clip's samples copied out of its recording, so the worker can
+        // take their buffer, and prepared.
+        const prepare = (clip) => (clip === null ? null : prepareAudio(clip.samples.slice()).then(() => clip));
+        const next = async () => {
+          const { value, done } = await clips.next();
+          return done ? null : value;
+        };
+        // Each clip's samples go in while the one before is encoded.
+        let prepared = prepare(await next());
+        while (prepared !== null) {
+          const clip = await prepared;
+          if (!current(run)) return;
+          const { reply } = await embedClip();
+          prepared = prepare(await next());
+          prepared?.catch(() => {});   // its failure is met when it is awaited
+          const { vector, tokens: made } = await reply;
+          if (!current(run)) return;
+          built.add({ recording: clip.recording, start: clip.start, end: clip.end }, vector);
+          tokens += made;
+          const progress = `${built.size()} of ${kept + pictures.length + clipCount}`;
           documentFacts.textContent = `${progress} embedded`;
           onSearch?.('progress', progress);
         }
@@ -328,8 +402,10 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
       ready = built;
       const seconds = (performance.now() - started) / 1000;
       const count = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
-      const counted = [kept > 0 || pictures.length === 0 ? count(kept, 'passage') : null,
-        pictures.length > 0 ? count(pictures.length, 'photo') : null].filter(Boolean).join(' and ');
+      const onlyText = pictures.length === 0 && sounds.length === 0;
+      const counted = listed([kept > 0 || onlyText ? count(kept, 'passage') : null,
+        pictures.length > 0 ? count(pictures.length, 'photo') : null,
+        sounds.length > 0 ? count(clipCount, 'clip') : null].filter(Boolean));
       documentFacts.textContent = `${counted} embedded · ${tokens} tokens · ${seconds.toFixed(2)} s`;
       onSearch?.('done');
     } catch (failure) {
@@ -368,10 +444,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
       if (session.closed || ready !== ranking) return;
       const milliseconds = performance.now() - started;
       results.replaceChildren(...ranking.rank(vector, kResults).map(({ passage, score }) =>
-        h('li', {}, h('span', { className: 'score', text: score.toFixed(3) }),
-          typeof passage === 'string'
-            ? h('p', { text: passage })
-            : h('img', { className: 'result-photo', src: passage.url, alt: passage.file.name }))));
+        h('li', {}, h('span', { className: 'score', text: score.toFixed(3) }), resultOf(passage))));
       queryFacts.textContent = `${tokens} tokens · ${milliseconds.toFixed(1)} ms · ${ranking.size()} ranked`;
       onSearch?.('done');
     } catch (failure) {
@@ -412,7 +485,21 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const panel = h('div', { className: 'conversation search-panel' },
     h('p', { className: 'chat-heading', text: model.measured ? model.name : `${model.name} · unmeasured` }),
     h('p', { className: 'message-facts', text: about }),
-    documentForm, photos?.element, companionFacts, queryForm, error, results, queryFacts);
+    documentForm, photos?.element, recordings?.element, companionFacts, queryForm, error, results, queryFacts);
   photos?.dropOnto(panel);
+  recordings?.dropOnto(panel);
   return panel;
+}
+
+// A result's entry: a passage's text; a photo's thumbnail; or a clip's
+// recording, its span and a player for that span.
+function resultOf(entry) {
+  if (typeof entry === 'string') return h('p', { text: entry });
+  if (entry.file !== undefined) return h('img', { className: 'result-photo', src: entry.url, alt: entry.file.name });
+  const { recording, start, end } = entry;
+  const span = `${clock(start)}–${clock(end)}`;
+  return h('div', { className: 'result-clip' },
+    h('p', { text: `${recording.file.name} · ${span}` }),
+    h('audio', { controls: true, preload: 'none', src: `${recording.url}#t=${start},${end}`,
+      'aria-label': `${recording.file.name}, ${span}` }));
 }

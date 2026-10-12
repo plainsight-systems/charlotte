@@ -74,8 +74,9 @@ test('a first ensure checks, downloads the ranges and loads them, in that order'
   const net = network();
   const phases = [];
   const companion = createCompanion({ kind: 'image', client, cache, ...net, onChange: (s) => phases.push(s?.phase) });
-  await companion.ensure(MODEL);
+  assert.deepEqual(await companion.ensure(MODEL), { imageTokens: 280 });
   assert.deepEqual([...new Set(phases)], ['checking', 'downloading', 'loading', 'loaded']);
+  assert.equal(companion.state.encoder, 'image encoder');
   // The header read from the first range alone, sized as the published file.
   assert.deepEqual(net.fetched, [['range', 0, 600], ['open', 0, 600], ['open', 3_000, 5_000]]);
   const [, preflight] = client.asked.find(([kind]) => kind === Request.PREFLIGHT_COMPANION);
@@ -87,9 +88,9 @@ test('a first ensure checks, downloads the ranges and loads them, in that order'
   assert.equal(preflight.media, 'image');
   assert.deepEqual(load.entry.ranges, RANGES);
   assert.deepEqual(Buffer.from(await (await cache.file(`ranges-${VISION.rangesSha256}`)).arrayBuffer()), RANGED);
-  // Loaded: a second ensure asks nothing.
+  // Loaded: a second ensure asks nothing, and answers as the load did.
   const before = client.asked.length;
-  await companion.ensure(MODEL);
+  assert.deepEqual(await companion.ensure(MODEL), { imageTokens: 280 });
   assert.equal(client.asked.length, before);
 });
 
@@ -149,12 +150,14 @@ test('release mid-load cancels the load, and its late answer changes nothing', a
 
 test('each state reads as the search panel shows it', () => {
   assert.equal(describeCompanion(null), '');
-  assert.equal(describeCompanion({ phase: 'checking' }), 'Checking the image encoder');
-  assert.equal(describeCompanion({ phase: 'downloading', received: 81e6, total: 226e6 }),
+  const image = { encoder: 'image encoder' };
+  assert.equal(describeCompanion({ ...image, phase: 'checking' }), 'Checking the image encoder');
+  assert.equal(describeCompanion({ ...image, phase: 'downloading', received: 81e6, total: 226e6 }),
     'Downloading the image encoder: 81 MB of 226 MB');
-  assert.equal(describeCompanion({ phase: 'loading', received: 0, total: null }), 'Loading the image encoder');
-  assert.equal(describeCompanion({ phase: 'loaded' }), 'Image encoder loaded');
-  assert.equal(describeCompanion({ phase: 'failed', message: 'x' }), 'The image encoder did not load');
+  assert.equal(describeCompanion({ ...image, phase: 'loading', received: 0, total: null }), 'Loading the image encoder');
+  assert.equal(describeCompanion({ ...image, phase: 'loaded' }), 'Image encoder loaded');
+  assert.equal(describeCompanion({ ...image, phase: 'failed', message: 'x' }), 'The image encoder did not load');
+  assert.equal(describeCompanion({ encoder: 'audio encoder', phase: 'loaded' }), 'Audio encoder loaded');
 });
 
 test("an audio companion reads the entry's `audio` and is listed as the model's audio", async () => {
@@ -170,5 +173,11 @@ test("an audio companion reads the entry's `audio` and is listed as the model's 
   assert.deepEqual(listed, ['E audio']);
   const [, load] = client.asked.find(([kind]) => kind === Request.LOAD_COMPANION);
   assert.equal(load.media, 'audio');
+  assert.equal(companion.state.encoder, 'audio encoder');
   assert.throws(() => createCompanion({ kind: 'video', client, cache }), /no companion of kind/);
+  // Refused, it names what it would have embedded.
+  const verdict = { status: 'read', reached: 'describe', fit: null, blockers: [{ stage: 'fit', detail: 'no room' }] };
+  const refused = createCompanion({ kind: 'audio', client: fakeClient({ verdict }), cache: memoryCache(), ...network() });
+  await assert.rejects(refused.ensure({ ...MODEL, vision: undefined, audio: VISION }),
+    /^CompanionError: recordings cannot be embedded here: no room$/);
 });
