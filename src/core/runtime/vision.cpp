@@ -4,7 +4,7 @@
 
 namespace bllm::runtime {
 
-Vision::Vision(std::unique_ptr<kernels::Program> program, std::unique_ptr<kernels::ProgramLink> link,
+Vision::Vision(std::shared_ptr<kernels::Program> program, std::unique_ptr<kernels::ProgramLink> link,
                kernels::Binding pixels, media::ImageBudget budget, std::uint32_t patch, std::uint32_t pooling)
     : program_(std::move(program)),
       link_(std::move(link)),
@@ -39,24 +39,27 @@ media::ImageError Vision::rows(std::uint32_t first_row, std::span<const std::uin
     }
     const auto patches = std::size_t{slot_.grid.columns} * slot_.grid.rows * 3 * patch_ * patch_;
     if (slot_.resampler.patches(std::span(slot_.patches).first(patches)) == media::ImageError::Ok) {
+        segment_[0] = slot_.grid.tokens;
         slot_.state = SlotState::Ready;
     }
     return media::ImageError::Ok;
 }
 
-std::uint32_t Vision::ready_rows() const noexcept {
-    return slot_.state == SlotState::Ready ? slot_.grid.tokens : 0;
+std::span<const std::uint32_t> Vision::ready_segments() const noexcept {
+    if (slot_.state != SlotState::Ready) return {};
+    return segment_;
 }
 
-void Vision::run(kernels::StepCallback done, void* userdata) {
+void Vision::run(std::uint32_t, const SegmentCopy& out, kernels::StepCallback done, void* userdata) {
     kernels::Step step{};
     step.position = 0;
     step.tokens = slot_.grid.columns * slot_.grid.rows;
     step.columns = slot_.grid.columns;
     const std::size_t floats = std::size_t{step.tokens} * 3 * patch_ * patch_;
     const kernels::RunInput input{pixels_, std::as_bytes(std::span(slot_.patches).first(floats))};
+    const kernels::RunCopy copy{link_.get(), 0, out.to_offset, out.bytes, kernels::CopyAt::AfterPass};
     // The write copies the patches before run() returns: the slot is free.
-    program_->run(step, std::span(&input, 1), {}, done, userdata);
+    program_->run(step, std::span(&input, 1), std::span(&copy, 1), done, userdata);
     slot_.state = SlotState::Empty;
 }
 

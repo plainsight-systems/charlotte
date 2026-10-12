@@ -42,6 +42,14 @@ struct Embedder::State {
     kernels::ProgramError failure = kernels::ProgramError::Ok;
     std::string failure_message;
     bool read_back = false;   // the text step's vector copied into `vector`
+    // The running encode's medium: its stage, its segments' rows and first
+    // rows in the text step, kept from start() since the stage offers them
+    // no longer once segment 0 runs; and how many are submitted (EMB.2).
+    MediaStage* running = nullptr;
+    std::array<std::uint32_t, kMostSegments> segment_rows{};
+    std::array<std::uint32_t, kMostSegments> segment_first{};
+    std::uint32_t segments = 0;
+    std::uint32_t submitted = 0;
 
     // The running encode.
     EmbedCallback done = nullptr;
@@ -106,10 +114,33 @@ void on_step(kernels::ProgramError error, std::string_view message, std::span<co
     reported(s);
 }
 
-// The media step's report: nothing to deliver, a failure kept.
+// The text step, behind the last segment on the queue.
+void submit_text(Embedder::State& s) {
+    ++s.outstanding;
+    s.program->run(s.step, on_step, &s);
+}
+
+void on_media(kernels::ProgramError error, std::string_view message, std::span<const std::byte>, void* userdata);
+
+// The next segment's step, its rows copied after its pass to their place in
+// the text step's `hidden`; once the last is submitted, the text step, with
+// no wait (GPU.7). Nothing more once a step has failed.
+void submit_segment(Embedder::State& s) {
+    const std::uint32_t i = s.submitted++;
+    const std::uint64_t row_bytes = std::uint64_t{s.width} * sizeof(float);
+    ++s.outstanding;
+    s.running->run(i, SegmentCopy{s.segment_first[i] * row_bytes, s.segment_rows[i] * row_bytes}, on_media, &s);
+    if (s.submitted == s.segments && s.failure == kernels::ProgramError::Ok) submit_text(s);
+}
+
+// A segment's report: nothing to deliver, a failure kept; and the next
+// segment submitted in its place, two in flight at most, the program's
+// limit (runtime/media_stage.h). Its own count is held until after, so a
+// step refused at once cannot deliver the encode early.
 void on_media(kernels::ProgramError error, std::string_view message, std::span<const std::byte>, void* userdata) {
     Embedder::State& s = *static_cast<Embedder::State*>(userdata);
     keep_failure(s, error, message);
+    if (s.failure == kernels::ProgramError::Ok && s.program != nullptr && s.submitted < s.segments) submit_segment(s);
     reported(s);
 }
 
@@ -163,15 +194,19 @@ EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind
         result.error = EmbedError::DeviceLost;
         return result;
     }
-    // The medium's rows and the two tokens around them, in the placeholder's
-    // place, so the text may make M + 1 fewer.
+    // The medium's segments, each its rows and the two tokens around them,
+    // in the placeholder's place, so the text may make that less one fewer.
     MediaStage* const stage = media ? s.stages[index_of(*media)].get() : nullptr;
-    const std::uint32_t rows = stage != nullptr ? stage->ready_rows() : 0;
-    if (media && rows == 0) {
+    const std::span<const std::uint32_t> segments =
+        stage != nullptr ? stage->ready_segments() : std::span<const std::uint32_t>{};
+    // A stage offering more segments than an encode holds offers none it can take.
+    if (media && (segments.empty() || segments.size() > kMostSegments)) {
         result.error = EmbedError::MediaNotReady;
         return result;
     }
-    const std::uint32_t ends = (s.ends.bos ? 1 : 0) + (s.ends.eos ? 1 : 0) + (media ? rows + 1 : 0);
+    std::uint32_t media_rows = 0;
+    for (const std::uint32_t rows : segments) media_rows += rows + 2;
+    const std::uint32_t ends = (s.ends.bos ? 1 : 0) + (s.ends.eos ? 1 : 0) + (media ? media_rows - 1 : 0);
     const std::uint32_t limit = s.context > ends ? s.context - ends : 0;
     s.tokens.clear();
     if (s.ends.bos) s.tokens.push_back(*s.ends.bos);
@@ -207,15 +242,22 @@ EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind
             return result;
         }
     }
-    // Replaced by the kind's opening token, its rows and its closing token;
-    // the rows carry the placeholder, which gather skips, the copy filling
-    // them (gather.h).
+    // Replaced by, for each segment, the kind's opening token, its rows and
+    // its closing token, back to back; the rows carry the placeholder, which
+    // gather skips, the segment's copy filling them (gather.h).
     const tokenizer::TokenId placeholder_id = media ? s.media_tokens[index_of(*media)].placeholder : tokenizer::TokenId{0};
     if (media) {
         const MediaTokens& tokens = s.media_tokens[index_of(*media)];
-        s.tokens[placeholder] = tokens.begin;
-        s.tokens.insert(s.tokens.begin() + static_cast<std::ptrdiff_t>(placeholder) + 1, rows + 1, placeholder_id);
-        s.tokens[placeholder + 1 + rows] = tokens.end;
+        // The placeholder's place becomes the media rows' span, filled in order.
+        s.tokens.insert(s.tokens.begin() + static_cast<std::ptrdiff_t>(placeholder), media_rows - 1, placeholder_id);
+        std::size_t at = placeholder;
+        for (std::size_t i = 0; i < segments.size(); ++i) {
+            s.tokens[at] = tokens.begin;
+            s.segment_rows[i] = segments[i];
+            s.segment_first[i] = static_cast<std::uint32_t>(at + 1);
+            at += std::size_t{segments[i]} + 1;
+            s.tokens[at++] = tokens.end;
+        }
     }
     // The least count admission takes is a lower bound: counted again, ends
     // included, before the step is written, which holds kPrefillBlock
@@ -243,23 +285,26 @@ EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind
     s.failure = kernels::ProgramError::Ok;
     s.failure_message.clear();
     s.read_back = false;
+    s.outstanding = 0;
     if (!media) {
-        s.outstanding = 1;
-        s.program->run(s.step, on_step, &s);
+        submit_text(s);
         result.tokens = s.encoded;
         return result;
     }
-    // The media step, then the text step with the medium's rows copied into
-    // its hidden rows before its pass: two submits, in queue order, with no
-    // wait between them (GPU.6), and two reports, in no order, awaited both.
-    s.outstanding = 2;
+    // Each segment's step, its rows copied out after its pass, two in flight
+    // at most, then the text step behind the last: submits in queue order
+    // with no wait between them (GPU.6), and reports, in no order between
+    // the two programs, all awaited. One count held while submitting, so a
+    // step refused at once cannot deliver the encode before start() returns.
     s.step.media = 1;
     s.step.media_token = static_cast<std::uint32_t>(placeholder_id);
-    stage->run(on_media, &s);
-    const std::uint64_t row_bytes = std::uint64_t{s.width} * sizeof(float);
-    const kernels::RunCopy copy{&stage->link(), 0, (placeholder + 1) * row_bytes, rows * row_bytes};
-    s.program->run(s.step, {}, std::span(&copy, 1), on_step, &s);
+    s.running = stage;
+    s.segments = static_cast<std::uint32_t>(segments.size());
+    s.submitted = 0;
+    ++s.outstanding;
+    while (s.submitted < std::min(s.segments, 2u) && s.failure == kernels::ProgramError::Ok) submit_segment(s);
     result.tokens = s.encoded;
+    reported(s);
     return result;
 }
 

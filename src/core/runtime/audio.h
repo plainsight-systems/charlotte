@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -206,9 +207,13 @@ public:
     // The most samples a clip may hold.
     [[nodiscard]] std::uint32_t most_samples() const noexcept;
 
-    [[nodiscard]] std::uint32_t ready_rows() const noexcept override;
-    void run(kernels::StepCallback done, void* userdata) override;
-    [[nodiscard]] const kernels::ProgramLink& link() const noexcept override { return *link_; }
+    // One segment, the clip's rows, once it is prepared; else empty.
+    [[nodiscard]] std::span<const std::uint32_t> ready_segments() const noexcept override;
+
+    // Submits the audio step over the slot's spectrogram, its rows copied
+    // out after the pass by `out`, and empties the slot. Precondition:
+    // segment 0, the slot ready.
+    void run(std::uint32_t segment, const SegmentCopy& out, kernels::StepCallback done, void* userdata) override;
 
     ~Audio() override;
     Audio(const Audio&) = delete;
@@ -220,6 +225,7 @@ private:
     kernels::Binding mel_;
     media::Spectrogram spectrogram_;
     AudioSlot slot_;
+    std::array<std::uint32_t, 1> segment_{};   // the slot's clip's rows
     std::uint32_t most_rows_;
 };
 

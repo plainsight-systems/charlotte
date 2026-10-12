@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 
 #include "core/kernels/program.h"
 #include "core/tokenizer/tokenizer.h"
@@ -91,19 +92,32 @@ struct MediaTokens {
     tokenizer::TokenId end;           // "<image|>", "<audio|>", "<image|>"
 };
 
+// The most segments one medium makes: a video's clip, kClipFrames frames
+// (media/video.h). The embedder keeps their rows in an array of this size.
+inline constexpr std::uint32_t kMostSegments = 4;
+
+// Where a segment's rows go: the text program's `hidden`, from the byte
+// offset of the segment's first row, its rows' bytes.
+struct SegmentCopy {
+    std::uint64_t to_offset;
+    std::uint64_t bytes;
+};
+
 class MediaStage {
 public:
     virtual ~MediaStage() = default;
 
-    // The rows the prepared medium makes, or 0 when none is prepared.
-    [[nodiscard]] virtual std::uint32_t ready_rows() const noexcept = 0;
+    // The rows each segment of the prepared medium makes, in order, at most
+    // kMostSegments of them; empty when none is prepared. Valid until the
+    // next call on the stage.
+    [[nodiscard]] virtual std::span<const std::uint32_t> ready_segments() const noexcept = 0;
 
-    // Submits the encoder's step over the prepared medium and empties the
-    // stage. Precondition: ready_rows() > 0.
-    virtual void run(kernels::StepCallback done, void* userdata) = 0;
-
-    // Copies the step's `soft_tokens` into the text program's `hidden`.
-    [[nodiscard]] virtual const kernels::ProgramLink& link() const noexcept = 0;
+    // Submits the encoder's step over segment `segment`, its rows copied
+    // after its pass by `out` (kernels/program.h's CopyAt::AfterPass).
+    // Preconditions: ready_segments() was not empty when segment 0 was run,
+    // and segments are run once each, in order; run(0) takes the medium,
+    // which ready_segments() no longer offers.
+    virtual void run(std::uint32_t segment, const SegmentCopy& out, kernels::StepCallback done, void* userdata) = 0;
 
 protected:
     MediaStage() = default;

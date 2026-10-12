@@ -18,10 +18,14 @@
 //   - An encode delivers only once every step has reported: the image's
 //     step held until after the text step has reported, then released Ok,
 //     gives the bits it gives unheld; released failed, no vector.
+//   - A medium of several segments: each segment's step submitted two at a
+//     time at most, in order, its rows placed between its own two tokens;
+//     a failed segment stops the ones after it and fails the encode.
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -29,6 +33,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "core/arch/gemma4v/gemma4v.h"
@@ -143,7 +148,8 @@ Embedded embed(WGPUInstance instance, runtime::Embedder& embedder, const VisionR
     const bool image = !r.scene.empty();
     if (image) {
         prepare(vision_of(embedder), scene_named(r.scene));
-        REQUIRE(vision_of(embedder).ready_rows() == r.rows);
+        REQUIRE(vision_of(embedder).ready_segments().size() == 1);
+        REQUIRE(vision_of(embedder).ready_segments()[0] == r.rows);
     }
     const std::string text = std::string(r.before) + (image ? "<|image|>" : "") + std::string(r.after);
     Embedded e;
@@ -183,16 +189,17 @@ public:
 
     runtime::Vision& vision() noexcept { return *vision_; }
 
-    [[nodiscard]] std::uint32_t ready_rows() const noexcept override { return vision_->ready_rows(); }
+    [[nodiscard]] std::span<const std::uint32_t> ready_segments() const noexcept override {
+        return vision_->ready_segments();
+    }
 
-    void run(kernels::StepCallback done, void* userdata) override {
+    void run(std::uint32_t segment, const runtime::SegmentCopy& out, kernels::StepCallback done,
+             void* userdata) override {
         done_ = done;
         userdata_ = userdata;
         reported_ = false;
-        vision_->run(on_vision, this);
+        vision_->run(segment, out, on_vision, this);
     }
-
-    [[nodiscard]] const kernels::ProgramLink& link() const noexcept override { return vision_->link(); }
 
     // Whether the image's step has reported, held.
     [[nodiscard]] const bool& reported() const noexcept { return reported_; }
@@ -220,6 +227,76 @@ private:
     kernels::ProgramError error_ = kernels::ProgramError::Ok;
     std::string message_;
     bool reported_ = false;
+};
+
+constexpr std::uint32_t kNoFailure = runtime::kMostSegments;
+
+// Test-only: one prepared image's patches offered as `count` segments, the
+// vision step run once a segment on the image stage's program, each copying
+// its rows out to its own place; segment `fail` reported Step in place of
+// its own report. It counts the steps outstanding and the most at once.
+class Repeated final : public runtime::MediaStage {
+public:
+    Repeated(std::shared_ptr<kernels::Program> program, std::unique_ptr<kernels::ProgramLink> link,
+             kernels::Binding pixels, const runtime::ImageSlot& slot, std::uint32_t patch, std::uint32_t count,
+             std::uint32_t fail)
+        : program_(std::move(program)), link_(std::move(link)), pixels_(pixels), grid_(slot.grid), fail_(fail) {
+        patches_.assign(slot.patches.begin(),
+                        slot.patches.begin() + static_cast<std::ptrdiff_t>(std::size_t{grid_.columns} * grid_.rows * 3 *
+                                                                           patch * patch));
+        segments_.assign(count, grid_.tokens);
+    }
+
+    [[nodiscard]] std::span<const std::uint32_t> ready_segments() const noexcept override {
+        return ran_.empty() ? std::span<const std::uint32_t>(segments_) : std::span<const std::uint32_t>{};
+    }
+
+    void run(std::uint32_t segment, const runtime::SegmentCopy& out, kernels::StepCallback done,
+             void* userdata) override {
+        ran_.push_back(segment);
+        most_ = std::max(most_, ++outstanding_);
+        calls_[segment] = {this, segment, done, userdata};
+        kernels::Step step{};
+        step.tokens = grid_.columns * grid_.rows;
+        step.columns = grid_.columns;
+        const kernels::RunInput input{pixels_, std::as_bytes(std::span(patches_))};
+        const kernels::RunCopy copy{link_.get(), 0, out.to_offset, out.bytes, kernels::CopyAt::AfterPass};
+        program_->run(step, std::span(&input, 1), std::span(&copy, 1), on_step, &calls_[segment]);
+    }
+
+    [[nodiscard]] const std::vector<std::uint32_t>& ran() const noexcept { return ran_; }
+    [[nodiscard]] std::uint32_t most() const noexcept { return most_; }
+
+private:
+    struct Call {
+        Repeated* self;
+        std::uint32_t segment;
+        kernels::StepCallback done;
+        void* userdata;
+    };
+
+    static void on_step(kernels::ProgramError error, std::string_view message, std::span<const std::byte> bytes,
+                        void* userdata) {
+        const Call& call = *static_cast<Call*>(userdata);
+        --call.self->outstanding_;
+        if (call.segment == call.self->fail_) {
+            call.done(kernels::ProgramError::Step, "segment failed", {}, call.userdata);
+        } else {
+            call.done(error, message, bytes, call.userdata);
+        }
+    }
+
+    std::shared_ptr<kernels::Program> program_;
+    std::unique_ptr<kernels::ProgramLink> link_;
+    kernels::Binding pixels_;
+    media::ImageGrid grid_;
+    std::uint32_t fail_;
+    std::vector<float> patches_;
+    std::vector<std::uint32_t> segments_;
+    std::vector<std::uint32_t> ran_;
+    std::array<Call, runtime::kMostSegments> calls_{};
+    std::uint32_t outstanding_ = 0;
+    std::uint32_t most_ = 0;
 };
 
 }  // namespace
@@ -376,4 +453,63 @@ TEST_CASE("an encode delivers once every step has reported: the image's report h
             CHECK(e.vector.empty());
         }
     }
+}
+
+TEST_CASE("a medium of several segments: two in flight, each between its own tokens; a failure stops the rest") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const auto text = upload_text(instance.get(), *device);
+    const auto vision =
+        upload_vision(instance.get(), *device, model::FeedForwardActivation::GeluTanh, kBudget.most * 9);
+    const std::shared_ptr<kernels::Program> program = build_program(instance.get(), *vision->upload, vision->launches);
+    // The image prepared once, by the image stage, its patches taken.
+    runtime::Vision prepared(program, link_of(*text, *vision->upload, vision->soft_tokens), binding_of(vision->pixels),
+                             kBudget, vision->description.vision->patch_size, vision->description.vision->pooling);
+    prepare(prepared, scene_named("red_circle"));
+    const std::uint32_t rows = prepared.ready_segments()[0];
+
+    auto t = tokenizer_of(*text);
+    runtime::Ends ends;
+    REQUIRE(runtime::resolve_ends(text->index, t->vocabulary(), ends).error == runtime::EndsError::Ok);
+    const runtime::MediaTokens tokens = image_tokens_of(*t);
+    runtime::Embedder embedder(std::move(t), build_program(instance.get(), *text->upload, text->launches, text->embedding),
+                               ends, text->upload->plan().context_offered, 768);
+    const auto attach = [&](std::uint32_t count, std::uint32_t fail) -> Repeated& {
+        auto stage = std::make_unique<Repeated>(program, link_of(*text, *vision->upload, vision->soft_tokens),
+                                                binding_of(vision->pixels), prepared.slot(),
+                                                vision->description.vision->patch_size, count, fail);
+        Repeated& held = *stage;
+        embedder.attach(arch::MediaKind::Image, std::move(stage), tokens, text->description.embedding_width);
+        return held;
+    };
+    constexpr auto kImage = std::optional{arch::MediaKind::Image};
+    const auto run = [&](std::uint32_t count, std::uint32_t fail) {
+        Repeated& stage = attach(count, fail);
+        Embedded e;
+        const runtime::EmbedResult started = embedder.start("<|image|>", kImage, on_embedded, &e);
+        REQUIRE(started.error == EmbedError::Ok);
+        pump_until(instance.get(), e.done, "the encode");
+        return std::tuple{started.tokens, std::move(e), stage.ran(), stage.most()};
+    };
+
+    // One segment, then three: two more runs of rows, each with its tokens.
+    const auto [one_tokens, one, one_ran, one_most] = run(1, kNoFailure);
+    REQUIRE_MESSAGE(one.result->error == EmbedError::Ok, one.message);
+    const auto [three_tokens, three, three_ran, three_most] = run(3, kNoFailure);
+    REQUIRE_MESSAGE(three.result->error == EmbedError::Ok, three.message);
+    CHECK(three_tokens == one_tokens + 2 * (rows + 2));
+    CHECK(three_ran == std::vector<std::uint32_t>{0, 1, 2});
+    CHECK(three_most == 2);
+    // Each segment's rows land between its own tokens: three of one image
+    // embed apart from one, and the same bits twice.
+    CHECK(three.vector != one.vector);
+    CHECK(std::get<1>(run(3, kNoFailure)).vector == three.vector);
+
+    // Segment 0 failing: segment 1, already in flight, runs; segment 2 and
+    // the text step are never submitted; the encode fails, no vector.
+    const auto [_, failed, failed_ran, failed_most] = run(3, 0);
+    CHECK(failed.result->error == EmbedError::Step);
+    CHECK(failed.message == "segment failed");
+    CHECK(failed.vector.empty());
+    CHECK(failed_ran == std::vector<std::uint32_t>{0, 1});
 }

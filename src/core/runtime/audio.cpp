@@ -29,23 +29,28 @@ media::AudioError Audio::prepare(std::span<const float> samples) {
     }
     spectrogram_.compute(samples, slot_.clip,
                          std::span(slot_.mel).first(std::size_t{slot_.clip.frames} * media::kMelBins));
+    segment_[0] = slot_.clip.rows;
     slot_.ready = true;
     return media::AudioError::Ok;
 }
 
 std::uint32_t Audio::most_samples() const noexcept { return media::clip_samples(most_rows_); }
 
-std::uint32_t Audio::ready_rows() const noexcept { return slot_.ready ? slot_.clip.rows : 0; }
+std::span<const std::uint32_t> Audio::ready_segments() const noexcept {
+    if (!slot_.ready) return {};
+    return segment_;
+}
 
-void Audio::run(kernels::StepCallback done, void* userdata) {
+void Audio::run(std::uint32_t, const SegmentCopy& out, kernels::StepCallback done, void* userdata) {
     kernels::Step step{};
     step.position = 0;
     step.tokens = slot_.clip.rows;
     step.columns = slot_.clip.frames;
     const std::size_t floats = std::size_t{slot_.clip.frames} * media::kMelBins;
     const kernels::RunInput input{mel_, std::as_bytes(std::span(slot_.mel).first(floats))};
+    const kernels::RunCopy copy{link_.get(), 0, out.to_offset, out.bytes, kernels::CopyAt::AfterPass};
     // The write copies the spectrogram before run() returns: the slot is free.
-    program_->run(step, std::span(&input, 1), {}, done, userdata);
+    program_->run(step, std::span(&input, 1), std::span(&copy, 1), done, userdata);
     slot_.ready = false;
 }
 

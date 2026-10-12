@@ -197,7 +197,11 @@ namespace bllm::runtime {
 // identifiers are the placeholder, the step's `media_token`, with `media` 1
 // (kernels/interface.h). Its callback waits for every submitted step's
 // report and delivers the vector only if all were Ok
-// (runtime/media_stage.h).
+// (runtime/media_stage.h). Verified on the GPU (tests/gpu/
+// vision_embed_test.cpp): an image's report held past the text step's
+// delivers the bits it does unheld, or, failed, no vector; a medium of
+// three segments runs them in order, two at most in flight, each between
+// its own tokens, and a failed segment stops the ones after it.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -223,6 +227,8 @@ namespace bllm::runtime {
 //            the tokenizer's working lists are counted above.
 //     GPU.6  Batch tiny GPU work — the whole text one step, one pass, one
 //            submit.
+//     EMB.2  Prefer fixed-capacity containers — a medium's segments, their
+//            rows and first rows, kMostSegments each, in the state.
 
 enum class EmbedError {
     Ok,

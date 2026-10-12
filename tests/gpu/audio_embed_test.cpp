@@ -25,6 +25,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -138,21 +139,24 @@ public:
     void give(const media::AudioClip& clip, std::vector<float> mel) {
         clip_ = clip;
         spectrogram_ = std::move(mel);
+        segment_[0] = clip.rows;
         ready_ = true;
     }
 
-    [[nodiscard]] std::uint32_t ready_rows() const noexcept override { return ready_ ? clip_.rows : 0; }
+    [[nodiscard]] std::span<const std::uint32_t> ready_segments() const noexcept override {
+        if (!ready_) return {};
+        return segment_;
+    }
 
-    void run(kernels::StepCallback done, void* userdata) override {
+    void run(std::uint32_t, const runtime::SegmentCopy& out, kernels::StepCallback done, void* userdata) override {
         kernels::Step step{};
         step.tokens = clip_.rows;
         step.columns = clip_.frames;
         const kernels::RunInput input{mel_, std::as_bytes(std::span(spectrogram_))};
-        program_->run(step, std::span(&input, 1), {}, done, userdata);
+        const kernels::RunCopy copy{link_.get(), 0, out.to_offset, out.bytes, kernels::CopyAt::AfterPass};
+        program_->run(step, std::span(&input, 1), std::span(&copy, 1), done, userdata);
         ready_ = false;
     }
-
-    [[nodiscard]] const kernels::ProgramLink& link() const noexcept override { return *link_; }
 
 private:
     std::unique_ptr<kernels::Program> program_;
@@ -160,6 +164,7 @@ private:
     kernels::Binding mel_;
     media::AudioClip clip_{};
     std::vector<float> spectrogram_;
+    std::array<std::uint32_t, 1> segment_{};
     bool ready_ = false;
 };
 
@@ -248,7 +253,8 @@ Embedded finish_encode(WGPUInstance instance, Embedded& e) {
 Embedded embed(WGPUInstance instance, runtime::Embedder& embedder, const AudioReference& r) {
     if (!r.clip.empty()) {
         REQUIRE(audio_of(embedder).prepare(samples_of(r.clip)) == media::AudioError::Ok);
-        REQUIRE(audio_of(embedder).ready_rows() == r.rows);
+        REQUIRE(audio_of(embedder).ready_segments().size() == 1);
+        REQUIRE(audio_of(embedder).ready_segments()[0] == r.rows);
     }
     Embedded e;
     start(embedder, r, e);
@@ -432,7 +438,7 @@ TEST_CASE("each query ranks its own recording first; a clip's bits repeat, prepa
     runtime::Audio& stage = audio_of(*embedder);
     CHECK(stage.prepare(std::vector<float>(160, 0.0f)) == media::AudioError::TooShort);
     CHECK(stage.prepare(std::vector<float>(stage.most_samples() + 1, 0.0f)) == media::AudioError::TooLong);
-    CHECK(stage.ready_rows() == 0);
+    CHECK(stage.ready_segments().empty());
     Embedded unused;
     constexpr auto kAudio = std::optional{arch::MediaKind::Audio};
     CHECK(embedder->start("<|audio|>", kAudio, on_embedded, &unused).error == EmbedError::MediaNotReady);

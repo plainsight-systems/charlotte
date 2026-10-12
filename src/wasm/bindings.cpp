@@ -1820,7 +1820,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_image_rows(std::uint32_t request, std::uint32_t f
         bllm_reply(request, failure_json("the band is out of order or not whole rows").c_str());
         return;
     }
-    bllm_reply(request, vision->ready_rows() > 0 ? "{\"ok\":true,\"ready\":true}" : "{\"ok\":true,\"ready\":false}");
+    bllm_reply(request, !vision->ready_segments().empty() ? "{\"ok\":true,\"ready\":true}" : "{\"ok\":true,\"ready\":false}");
 }
 
 // A clip's `count` samples at `samples`, prepared in the audio stage's slot:

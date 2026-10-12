@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -236,7 +237,7 @@ public:
     // copies its `soft_tokens` into the text program's `hidden`; `pixels`
     // is its plan's `pixels`; `budget` the policy's; `patch` and `pooling`
     // the encoder's (model_description.h).
-    Vision(std::unique_ptr<kernels::Program> program, std::unique_ptr<kernels::ProgramLink> link,
+    Vision(std::shared_ptr<kernels::Program> program, std::unique_ptr<kernels::ProgramLink> link,
            kernels::Binding pixels, media::ImageBudget budget, std::uint32_t patch, std::uint32_t pooling);
 
     // Starts an image of `width` × `height` in the slot, discarding whatever
@@ -250,25 +251,26 @@ public:
 
     [[nodiscard]] const ImageSlot& slot() const noexcept { return slot_; }
 
-    // The soft tokens the slot's image becomes, or 0 when it is not ready.
-    [[nodiscard]] std::uint32_t ready_rows() const noexcept override;
+    // One segment, the soft tokens the slot's image becomes, once it is
+    // ready; else empty.
+    [[nodiscard]] std::span<const std::uint32_t> ready_segments() const noexcept override;
 
     // Submits the vision step over the slot's patches — its grid's columns,
-    // its patches written into `pixels` — and empties the slot.
-    // Precondition: ready_rows() > 0.
-    void run(kernels::StepCallback done, void* userdata) override;
-
-    [[nodiscard]] const kernels::ProgramLink& link() const noexcept override { return *link_; }
+    // its patches written into `pixels` — its soft tokens copied out after
+    // the pass by `out`, and empties the slot. Precondition: segment 0, the
+    // slot ready.
+    void run(std::uint32_t segment, const SegmentCopy& out, kernels::StepCallback done, void* userdata) override;
 
     ~Vision() override;
     Vision(const Vision&) = delete;
     Vision& operator=(const Vision&) = delete;
 
 private:
-    std::unique_ptr<kernels::Program> program_;
+    std::shared_ptr<kernels::Program> program_;
     std::unique_ptr<kernels::ProgramLink> link_;
     kernels::Binding pixels_;
     ImageSlot slot_;
+    std::array<std::uint32_t, 1> segment_{};   // the slot's grid's tokens
     media::ImageBudget budget_;
     std::uint32_t patch_;
     std::uint32_t pooling_;
