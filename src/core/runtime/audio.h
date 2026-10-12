@@ -57,9 +57,11 @@ namespace bllm::runtime {
 // the encoder's setup graph (graph/audio.h), a step of 13 rows, its
 // `positions` written with the 13 sinusoidal rows — row p the position 12 −
 // p, its first W / 2 floats sin(position × e^(−i × ln(10,000) / (W / 2 −
-// 1))) for i below W / 2 and its last W / 2 the cosines, f32, as llama.cpp's
-// gemma4a input computes them — and run once, its relative tables then
-// read by every step. The stage is attached once the setup's step has
+// 1))) for i below W / 2 and its last W / 2 the cosines, each product and
+// quotient in f32 as llama.cpp's gemma4a input computes it, each logarithm,
+// exponential, sine and cosine in f64 rounded once to f32, so every math
+// library gives the same rows (media/audio.h's reason) — and run once, its
+// relative tables then read by every step. The stage is attached once the setup's step has
 // completed; a failure there is the load's, named.
 //
 // The companion's load, as the image's (runtime/vision.h), for its own kind:
