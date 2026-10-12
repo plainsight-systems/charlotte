@@ -21,7 +21,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -29,24 +28,16 @@
 #include <string_view>
 #include <vector>
 
-#include "core/arch/architecture.h"
 #include "core/arch/gemma4v/gemma4v.h"
-#include "core/capability/capability.h"
-#include "core/gguf/reader.h"
-#include "core/graph/vision.h"
 #include "core/kernels/program.h"
-#include "core/preflight/preflight.h"
-#include "core/residency/plan.h"
-#include "core/residency/upload.h"
 #include "core/runtime/embedder.h"
 #include "core/runtime/ends.h"
 #include "core/runtime/vision.h"
 #include "fixtures/vision/scenes.h"
 #include "support/acquire.h"
+#include "support/companions.h"
 #include "support/program.h"
 #include "support/pump.h"
-#include "support/test_data.h"
-#include "support/upload.h"
 
 using namespace bllm;
 using namespace bllm::testing;
@@ -72,123 +63,10 @@ struct VisionReference {
 
 #include "fixtures/reference/vision_embeddings.inc"
 
-constexpr std::size_t kChunk16 = 16u << 20;
-constexpr residency::DeviceLimits kLimits{256ull << 20, 128ull << 20, 256};
-constexpr std::uint64_t kMmprojSize = 554'821'024;
-constexpr residency::FileRange kVisionRanges[] = {{0, 58'656}, {328'492'448, kMmprojSize}};
 constexpr media::ImageBudget kBudget{70, 280};
 
-struct Text {
-    std::string bytes;
-    gguf::TensorIndex index;
-    model::ModelDescription description{};
-    std::unique_ptr<residency::Upload> upload;
-    std::vector<kernels::Launch> launches;
-    kernels::Binding embedding{};
-    residency::BufferRange hidden{};
-};
-
-std::unique_ptr<Text> upload_text(WGPUInstance instance, const gpu::Device& device) {
-    auto m = std::make_unique<Text>();
-    m->bytes = load_test_data("models/embeddinggemma-2-q8_0.gguf");
-    gguf::MemoryByteSource source{std::as_bytes(std::span{m->bytes}), m->bytes.size()};
-    REQUIRE(gguf::read_index(source, m->index).error == gguf::ReadError::Ok);
-    residency::ResidencyPlan plan;
-    const std::string stop = preflight::plan_load(m->index, kLimits, policy::LoadPolicy{}, m->description, plan);
-    REQUIRE_MESSAGE(stop.empty(), stop);
-    Ready ready;
-    residency::Upload::begin(device, m->index, plan, m->bytes.size(), capability::find_format, {}, kChunk16, on_ready,
-                             &ready);
-    pump_until(instance, ready.done, "the buffers");
-    REQUIRE_MESSAGE(ready.error == residency::UploadError::Ok, ready.subject);
-    m->upload = std::move(ready.upload);
-    const auto all = std::as_bytes(std::span{m->bytes});
-    for (std::size_t at = 0; at < all.size(); at += kChunk16) {
-        Reported accepted;
-        m->upload->write(at, all.subspan(at, std::min(kChunk16, all.size() - at)), on_reported, &accepted);
-        pump_until(instance, accepted.done, "a chunk's acceptance");
-        REQUIRE(accepted.error == residency::UploadError::Ok);
-    }
-    REQUIRE(finish(instance, *m->upload) == residency::UploadError::Ok);
-    const residency::ResidencyPlan& planned = m->upload->plan();
-    REQUIRE(arch::encoder_graph(*capability::find_architecture("gemma-embedding2"))(m->description, planned,
-                                                                                   m->launches)
-                .ok());
-    for (const residency::PlannedScratch& s : planned.scratch) {
-        if (s.purpose == "embedding") m->embedding = {s.range.buffer, s.range.offset, 768 * sizeof(float)};
-        if (s.purpose == "hidden") m->hidden = s.range;
-    }
-    return m;
-}
-
-struct VisionModel {
-    gguf::TensorIndex index;
-    model::ModelDescription description{};
-    std::unique_ptr<residency::Upload> upload;
-    std::vector<kernels::Launch> launches;
-    residency::BufferRange pixels{}, soft_tokens{};
-};
-
-// The mmproj, read and written by its two ranges alone.
-std::unique_ptr<VisionModel> upload_vision(WGPUInstance instance, const gpu::Device& device,
-                                           model::FeedForwardActivation activation) {
-    auto v = std::make_unique<VisionModel>();
-    const std::string path = std::string(BLLM_TEST_DATA_DIR) + "/models/mmproj-embeddinggemma-2-q8_0.gguf";
-    std::ifstream in(path, std::ios::binary);
-    REQUIRE_MESSAGE(in.is_open(), "missing test data: " << path << " (run make test-data)");
-    std::string header(kVisionRanges[0].end, '\0');
-    in.read(header.data(), static_cast<std::streamsize>(header.size()));
-    gguf::MemoryByteSource source{std::as_bytes(std::span{header}), kMmprojSize};
-    REQUIRE(gguf::read_index(source, v->index).error == gguf::ReadError::Ok);
-    REQUIRE(arch::kGemma4Vision.describe(v->index, v->description).ok());
-    v->description.activation = activation;
-    residency::ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(v->index, v->description, kLimits, policy::LoadPolicy{},
-                                      graph::vision_working_set(v->description, kBudget.most * 9), plan, kVisionRanges)
-                .ok());
-    Ready ready;
-    residency::Upload::begin(device, v->index, plan, kMmprojSize, capability::find_format, {}, kChunk16, on_ready,
-                             &ready, kVisionRanges);
-    pump_until(instance, ready.done, "the buffers");
-    REQUIRE_MESSAGE(ready.error == residency::UploadError::Ok, ready.subject);
-    v->upload = std::move(ready.upload);
-    std::vector<char> chunk(kChunk16);
-    for (const residency::FileRange& r : kVisionRanges) {
-        for (std::uint64_t at = r.begin; at < r.end; at += kChunk16) {
-            const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(kChunk16, r.end - at));
-            in.seekg(static_cast<std::streamoff>(at));
-            in.read(chunk.data(), static_cast<std::streamsize>(n));
-            REQUIRE(in.gcount() == static_cast<std::streamsize>(n));
-            Reported accepted;
-            v->upload->write(at, std::as_bytes(std::span(chunk).first(n)), on_reported, &accepted);
-            pump_until(instance, accepted.done, "a chunk's acceptance");
-            REQUIRE(accepted.error == residency::UploadError::Ok);
-        }
-    }
-    REQUIRE(finish(instance, *v->upload) == residency::UploadError::Ok);
-    REQUIRE(arch::kGemma4Vision.graph(v->description, v->upload->plan(), v->launches).ok());
-    for (const residency::PlannedScratch& s : v->upload->plan().scratch) {
-        if (s.purpose == "pixels") v->pixels = s.range;
-        if (s.purpose == "soft_tokens") v->soft_tokens = s.range;
-    }
-    return v;
-}
-
-std::unique_ptr<tokenizer::Tokenizer> tokenizer_of(const Text& m) {
-    gguf::MemoryByteSource source{std::as_bytes(std::span{m.bytes}), m.bytes.size()};
-    std::unique_ptr<tokenizer::Tokenizer> t;
-    REQUIRE(preflight::load_tokenizer(source, m.index, t).empty());
-    return t;
-}
-
 runtime::MediaTokens image_tokens_of(const tokenizer::Tokenizer& t) {
-    const auto placeholder = t.vocabulary().find("<|image|>");
-    const auto begin = t.vocabulary().find("<|image>");
-    const auto end = t.vocabulary().find("<image|>");
-    REQUIRE(placeholder);
-    REQUIRE(begin);
-    REQUIRE(end);
-    return {*placeholder, *begin, *end};
+    return media_tokens_of(t, arch::kGemma4Vision.tokens);
 }
 
 // The embedder's image stage.
@@ -207,12 +85,9 @@ std::unique_ptr<runtime::Embedder> embedder_of(WGPUInstance instance, const Text
     auto embedder = std::make_unique<runtime::Embedder>(std::move(t), build_program(instance, *m.upload, m.launches,
                                                                                     m.embedding),
                                                         ends, m.upload->plan().context_offered, 768);
-    auto link = std::make_unique<kernels::ProgramLink>(
-        *v.upload, kernels::Binding{v.soft_tokens.buffer, v.soft_tokens.offset, v.soft_tokens.length}, *m.upload,
-        kernels::Binding{m.hidden.buffer, m.hidden.offset, m.hidden.length});
-    embedder->attach(arch::MediaKind::Image, std::make_unique<runtime::Vision>(build_program(instance, *v.upload, v.launches), std::move(link),
-                                                       kernels::Binding{v.pixels.buffer, v.pixels.offset,
-                                                                        v.pixels.length},
+    embedder->attach(arch::MediaKind::Image,
+                     std::make_unique<runtime::Vision>(build_program(instance, *v.upload, v.launches),
+                                                       link_of(m, *v.upload, v.soft_tokens), binding_of(v.pixels),
                                                        kBudget, v.description.vision->patch_size,
                                                        v.description.vision->pooling),
                      tokens, m.description.embedding_width);
@@ -302,7 +177,8 @@ TEST_CASE("each image and query is embedded within llama.cpp's own spread, its t
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     const auto text = upload_text(instance.get(), *device);
-    const auto vision = upload_vision(instance.get(), *device, model::FeedForwardActivation::GeluTanh);
+    const auto vision =
+        upload_vision(instance.get(), *device, model::FeedForwardActivation::GeluTanh, kBudget.most * 9);
     const auto embedder = embedder_of(instance.get(), *text, *vision);
 
     // The tokens, before the GPU: the text with its placeholder, encoded and
@@ -351,7 +227,8 @@ TEST_CASE("the check discriminates: a feed-forward run with SiLU falls outside o
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     const auto text = upload_text(instance.get(), *device);
-    const auto vision = upload_vision(instance.get(), *device, model::FeedForwardActivation::SiLU);
+    const auto vision =
+        upload_vision(instance.get(), *device, model::FeedForwardActivation::SiLU, kBudget.most * 9);
     const auto embedder = embedder_of(instance.get(), *text, *vision);
     for (const VisionReference& r : kVisionReferences) {
         if (r.scene.empty()) continue;
@@ -364,7 +241,8 @@ TEST_CASE("each query ranks its own image first; an image embedded twice gives t
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     const auto text = upload_text(instance.get(), *device);
-    const auto vision = upload_vision(instance.get(), *device, model::FeedForwardActivation::GeluTanh);
+    const auto vision =
+        upload_vision(instance.get(), *device, model::FeedForwardActivation::GeluTanh, kBudget.most * 9);
     const auto embedder = embedder_of(instance.get(), *text, *vision);
 
     std::vector<std::pair<std::string_view, std::vector<float>>> images;

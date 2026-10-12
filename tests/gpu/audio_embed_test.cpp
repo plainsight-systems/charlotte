@@ -25,7 +25,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -33,26 +32,18 @@
 #include <string_view>
 #include <vector>
 
-#include "core/arch/architecture.h"
 #include "core/arch/gemma4a/gemma4a.h"
-#include "core/capability/capability.h"
-#include "core/gguf/reader.h"
-#include "core/graph/audio.h"
 #include "core/kernels/program.h"
 #include "core/media/audio.h"
-#include "core/preflight/preflight.h"
-#include "core/residency/plan.h"
-#include "core/residency/upload.h"
 #include "core/runtime/audio.h"
 #include "core/runtime/embedder.h"
 #include "core/runtime/ends.h"
 #include "fixtures/audio/sounds.h"
 #include "fixtures/audio/wav.h"
 #include "support/acquire.h"
+#include "support/companions.h"
 #include "support/program.h"
 #include "support/pump.h"
-#include "support/test_data.h"
-#include "support/upload.h"
 
 using namespace bllm;
 using namespace bllm::testing;
@@ -76,111 +67,8 @@ struct AudioReference {
 
 #include "fixtures/reference/audio_embeddings.inc"
 
-constexpr std::size_t kChunk16 = 16u << 20;
-constexpr residency::DeviceLimits kLimits{256ull << 20, 128ull << 20, 256};
-constexpr std::uint64_t kMmprojSize = 554'821'024;
-constexpr std::uint64_t kHeader = 58'656;
-constexpr residency::FileRange kAudioRanges[] = {{0, 328'492'448}};
 constexpr std::uint32_t kMostRows = 508;
 constexpr std::uint32_t kPositions = 13;
-
-struct Text {
-    std::string bytes;
-    gguf::TensorIndex index;
-    model::ModelDescription description{};
-    std::unique_ptr<residency::Upload> upload;
-    std::vector<kernels::Launch> launches;
-    kernels::Binding embedding{};
-    residency::BufferRange hidden{};
-};
-
-std::unique_ptr<Text> upload_text(WGPUInstance instance, const gpu::Device& device) {
-    auto m = std::make_unique<Text>();
-    m->bytes = load_test_data("models/embeddinggemma-2-q8_0.gguf");
-    gguf::MemoryByteSource source{std::as_bytes(std::span{m->bytes}), m->bytes.size()};
-    REQUIRE(gguf::read_index(source, m->index).error == gguf::ReadError::Ok);
-    residency::ResidencyPlan plan;
-    const std::string stop = preflight::plan_load(m->index, kLimits, policy::LoadPolicy{}, m->description, plan);
-    REQUIRE_MESSAGE(stop.empty(), stop);
-    Ready ready;
-    residency::Upload::begin(device, m->index, plan, m->bytes.size(), capability::find_format, {}, kChunk16, on_ready,
-                             &ready);
-    pump_until(instance, ready.done, "the buffers");
-    REQUIRE_MESSAGE(ready.error == residency::UploadError::Ok, ready.subject);
-    m->upload = std::move(ready.upload);
-    const auto all = std::as_bytes(std::span{m->bytes});
-    for (std::size_t at = 0; at < all.size(); at += kChunk16) {
-        Reported accepted;
-        m->upload->write(at, all.subspan(at, std::min(kChunk16, all.size() - at)), on_reported, &accepted);
-        pump_until(instance, accepted.done, "a chunk's acceptance");
-        REQUIRE(accepted.error == residency::UploadError::Ok);
-    }
-    REQUIRE(finish(instance, *m->upload) == residency::UploadError::Ok);
-    const residency::ResidencyPlan& planned = m->upload->plan();
-    REQUIRE(arch::encoder_graph(*capability::find_architecture("gemma-embedding2"))(m->description, planned,
-                                                                                   m->launches)
-                .ok());
-    for (const residency::PlannedScratch& s : planned.scratch) {
-        if (s.purpose == "embedding") m->embedding = {s.range.buffer, s.range.offset, 768 * sizeof(float)};
-        if (s.purpose == "hidden") m->hidden = s.range;
-    }
-    return m;
-}
-
-kernels::Binding binding_of(const residency::BufferRange& r) { return {r.buffer, r.offset, r.length}; }
-
-struct AudioModel {
-    gguf::TensorIndex index;
-    model::ModelDescription description{};
-    std::unique_ptr<residency::Upload> upload;
-    std::vector<kernels::Launch> launches, setup;
-    residency::BufferRange mel{}, positions{}, soft_tokens{};
-};
-
-// The mmproj, read and written by its audio range alone.
-std::unique_ptr<AudioModel> upload_audio(WGPUInstance instance, const gpu::Device& device) {
-    auto a = std::make_unique<AudioModel>();
-    const std::string path = std::string(BLLM_TEST_DATA_DIR) + "/models/mmproj-embeddinggemma-2-q8_0.gguf";
-    std::ifstream in(path, std::ios::binary);
-    REQUIRE_MESSAGE(in.is_open(), "missing test data: " << path << " (run make test-data)");
-    std::string header(kHeader, '\0');
-    in.read(header.data(), static_cast<std::streamsize>(header.size()));
-    gguf::MemoryByteSource source{std::as_bytes(std::span{header}), kMmprojSize};
-    REQUIRE(gguf::read_index(source, a->index).error == gguf::ReadError::Ok);
-    REQUIRE(arch::kGemma4Audio.describe(a->index, a->description).ok());
-    residency::ResidencyPlan plan;
-    REQUIRE(residency::plan_residency(a->index, a->description, kLimits, policy::LoadPolicy{},
-                                      graph::audio_working_set(a->description, kMostRows), plan, kAudioRanges)
-                .ok());
-    Ready ready;
-    residency::Upload::begin(device, a->index, plan, kMmprojSize, capability::find_format, {}, kChunk16, on_ready,
-                             &ready, kAudioRanges);
-    pump_until(instance, ready.done, "the buffers");
-    REQUIRE_MESSAGE(ready.error == residency::UploadError::Ok, ready.subject);
-    a->upload = std::move(ready.upload);
-    std::vector<char> chunk(kChunk16);
-    for (const residency::FileRange& r : kAudioRanges) {
-        for (std::uint64_t at = r.begin; at < r.end; at += kChunk16) {
-            const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(kChunk16, r.end - at));
-            in.seekg(static_cast<std::streamoff>(at));
-            in.read(chunk.data(), static_cast<std::streamsize>(n));
-            REQUIRE(in.gcount() == static_cast<std::streamsize>(n));
-            Reported accepted;
-            a->upload->write(at, std::as_bytes(std::span(chunk).first(n)), on_reported, &accepted);
-            pump_until(instance, accepted.done, "a chunk's acceptance");
-            REQUIRE(accepted.error == residency::UploadError::Ok);
-        }
-    }
-    REQUIRE(finish(instance, *a->upload) == residency::UploadError::Ok);
-    REQUIRE(arch::kGemma4Audio.graph(a->description, a->upload->plan(), a->launches).ok());
-    REQUIRE(arch::kGemma4Audio.setup(a->description, a->upload->plan(), a->setup).ok());
-    for (const residency::PlannedScratch& s : a->upload->plan().scratch) {
-        if (s.purpose == "mel") a->mel = s.range;
-        if (s.purpose == "positions") a->positions = s.range;
-        if (s.purpose == "soft_tokens") a->soft_tokens = s.range;
-    }
-    return a;
-}
 
 // How the setup writes each layer's relative rows: as the encoder reads
 // them, row p the position 12 − p; or unshifted, row p the position p, so
@@ -271,34 +159,17 @@ private:
     bool ready_ = false;
 };
 
-std::unique_ptr<tokenizer::Tokenizer> tokenizer_of(const Text& m) {
-    gguf::MemoryByteSource source{std::as_bytes(std::span{m.bytes}), m.bytes.size()};
-    std::unique_ptr<tokenizer::Tokenizer> t;
-    REQUIRE(preflight::load_tokenizer(source, m.index, t).empty());
-    return t;
-}
-
 runtime::MediaTokens audio_tokens_of(const tokenizer::Tokenizer& t) {
-    const auto placeholder = t.vocabulary().find("<|audio|>");
-    const auto begin = t.vocabulary().find("<|audio>");
-    const auto end = t.vocabulary().find("<audio|>");
-    REQUIRE(placeholder);
-    REQUIRE(begin);
-    REQUIRE(end);
-    return {*placeholder, *begin, *end};
+    return media_tokens_of(t, arch::kGemma4Audio.tokens);
 }
 
 std::unique_ptr<runtime::Embedder> text_embedder(WGPUInstance instance, const Text& m) {
     auto t = tokenizer_of(m);
     runtime::Ends ends;
     REQUIRE(runtime::resolve_ends(m.index, t->vocabulary(), ends).error == runtime::EndsError::Ok);
-    return std::make_unique<runtime::Embedder>(std::move(t), build_program(instance, *m.upload, m.launches, m.embedding),
-                                               ends, m.upload->plan().context_offered, 768);
-}
-
-std::unique_ptr<kernels::ProgramLink> link_of(const Text& m, const AudioModel& a) {
-    return std::make_unique<kernels::ProgramLink>(*a.upload, binding_of(a.soft_tokens), *m.upload,
-                                                  binding_of(m.hidden));
+    return std::make_unique<runtime::Embedder>(std::move(t),
+                                               build_program(instance, *m.upload, m.launches, m.embedding), ends,
+                                               m.upload->plan().context_offered, 768);
 }
 
 // The text embedder with the audio encoder attached, its setup run first.
@@ -308,8 +179,9 @@ std::unique_ptr<runtime::Embedder> embedder_of(WGPUInstance instance, const Text
     auto embedder = text_embedder(instance, m);
     const runtime::MediaTokens tokens = audio_tokens_of(*tokenizer_of(m));
     embedder->attach(arch::MediaKind::Audio,
-                     std::make_unique<runtime::Audio>(build_program(instance, *a.upload, a.launches), link_of(m, a),
-                                                      binding_of(a.mel), kMostRows),
+                     std::make_unique<runtime::Audio>(build_program(instance, *a.upload, a.launches),
+                                                      link_of(m, *a.upload, a.soft_tokens), binding_of(a.mel),
+                                                      kMostRows),
                      tokens, m.description.embedding_width);
     return embedder;
 }
@@ -328,7 +200,8 @@ std::vector<float> samples_of(std::string_view clip) {
         return out;
     }
     std::string error;
-    std::vector<float> out = fx::read_wav(std::string(BLLM_AUDIO_FIXTURE_DIR) + "/" + std::string(clip) + ".wav", error);
+    const std::string path = std::string(BLLM_AUDIO_FIXTURE_DIR) + "/" + std::string(clip) + ".wav";
+    std::vector<float> out = fx::read_wav(path, error);
     REQUIRE_MESSAGE(!out.empty(), error);
     return out;
 }
@@ -415,7 +288,7 @@ TEST_CASE("each clip and query is embedded within llama.cpp's own spread, its to
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     const auto text = upload_text(instance.get(), *device);
-    const auto audio = upload_audio(instance.get(), *device);
+    const auto audio = upload_audio(instance.get(), *device, kMostRows);
     const auto embedder = embedder_of(instance.get(), *text, *audio);
 
     // The tokens, before the GPU: the text with its placeholder, encoded and
@@ -461,17 +334,18 @@ TEST_CASE("each clip and query is embedded within llama.cpp's own spread, its to
     }
 }
 
-TEST_CASE("the check discriminates: llama.cpp's floor on the tone and the siren, unshifted relative rows on recordings") {
+TEST_CASE("the check discriminates: llama.cpp's floor on the tone and siren, unshifted relative rows on recordings") {
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     const auto text = upload_text(instance.get(), *device);
-    const auto audio = upload_audio(instance.get(), *device);
+    const auto audio = upload_audio(instance.get(), *device, kMostRows);
 
     SUBCASE("the spectrogram in llama.cpp's floor form, log(max(x, floor))") {
         run_setup(instance.get(), *audio, Relative::Shifted);
         auto embedder = text_embedder(instance.get(), *text);
-        auto stage = std::make_unique<GivenSpectrogram>(build_program(instance.get(), *audio->upload, audio->launches),
-                                                        link_of(*text, *audio), binding_of(audio->mel));
+        auto stage = std::make_unique<GivenSpectrogram>(
+            build_program(instance.get(), *audio->upload, audio->launches),
+            link_of(*text, *audio->upload, audio->soft_tokens), binding_of(audio->mel));
         GivenSpectrogram& given = *stage;
         embedder->attach(arch::MediaKind::Audio, std::move(stage), audio_tokens_of(*tokenizer_of(*text)),
                          text->description.embedding_width);
@@ -510,7 +384,7 @@ TEST_CASE("each query ranks its own recording first; a clip's bits repeat, prepa
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     const auto text = upload_text(instance.get(), *device);
-    const auto audio = upload_audio(instance.get(), *device);
+    const auto audio = upload_audio(instance.get(), *device, kMostRows);
     const auto embedder = embedder_of(instance.get(), *text, *audio);
 
     std::vector<std::pair<std::string_view, std::vector<float>>> recordings;
