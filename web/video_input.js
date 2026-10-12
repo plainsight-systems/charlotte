@@ -115,22 +115,41 @@ export async function open(file) {
   }
 }
 
-// The frame shown at `seconds`: the element seeked there, its frame's data
-// awaited where the seek left none yet, then its picture as a bitmap, with
-// no colour management.
+// The longest a seek may take before it is refused, in milliseconds.
+const SEEK_LIMIT_MS = 10000;
+// How often the element is asked whether its seek is done.
+const SEEK_POLL_MS = 50;
+
+// The frame shown at `seconds`: the element seeked there and its frame's
+// data present, then its picture as a bitmap, with no colour management.
+// The seek is done when `seeked` fires or the element says it is no longer
+// seeking and has the frame, whichever comes first: Safari now and then
+// never fires `seeked` (seen in iOS 26's simulator), and the element sets
+// `seeking` as currentTime is set. A seek not done in 10 s is refused, by
+// name, rather than waited on for ever.
 export async function frameAt(video, seconds) {
   await new Promise((resolve, reject) => {
-    video.addEventListener('seeked', resolve, { once: true });
-    video.addEventListener('error', () => reject(new VideoInputError('the browser could not seek the video')),
-      { once: true });
+    let poll;
+    let limit;
+    const finish = (settle) => {
+      clearInterval(poll);
+      clearTimeout(limit);
+      video.removeEventListener('seeked', seeked);
+      video.removeEventListener('error', failed);
+      settle();
+    };
+    const ready = () => !video.seeking && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+    const seeked = () => finish(resolve);
+    const failed = () => finish(() => reject(new VideoInputError('the browser could not seek the video')));
+    video.addEventListener('seeked', seeked);
+    video.addEventListener('error', failed);
     video.currentTime = seconds;
+    poll = setInterval(() => { if (ready()) finish(resolve); }, SEEK_POLL_MS);
+    limit = setTimeout(() => finish(() =>
+      reject(new VideoInputError(`the browser did not seek the video to ${seconds} s`))), SEEK_LIMIT_MS);
   });
   if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-    await new Promise((resolve, reject) => {
-      video.addEventListener('loadeddata', resolve, { once: true });
-      video.addEventListener('error', () => reject(new VideoInputError('the browser could not decode the video')),
-        { once: true });
-    });
+    throw new VideoInputError(`the browser has no picture for ${seconds} s of the video`);
   }
   return createImageBitmap(video, { colorSpaceConversion: 'none' });
 }
