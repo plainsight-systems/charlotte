@@ -9,16 +9,22 @@
 #     its first 20 s (tests/fixtures/audio/SOURCES.md).
 #   - tests/fixtures/reference/audio_prepare.inc: llama.cpp's gemma4a
 #     spectrograms and clip sizes, for tests/media_audio_test.cpp.
+#   - tests/fixtures/reference/audio_embeddings.inc: EmbeddingGemma 2's
+#     embeddings of the sounds, the recordings and their queries, on the CPU
+#     and on Metal, each clip's beside its cosine with unchanged llama.cpp,
+#     for tests/gpu/audio_embed_test.cpp.
 #
 # llama.cpp is fetched into .cache/llama.cpp-audio at the same commit as
 # tools/make_reference_embeddings.sh's, and tools/reference_audio/
 # mel_floor.patch applied: the one line that makes its log take Google's
-# floor (media/audio.h).
+# floor (media/audio.h). The same commit unchanged, in
+# .cache/llama.cpp-audio-plain, makes the embeddings the cosines compare to.
 set -eu
 cd "$(dirname "$0")/.."
 
 LLAMA_COMMIT=a9d27ac693ff0a1d3cba449c912c2b891904a4c7
 MODEL=embeddinggemma-2-q8_0
+MODEL_SHA256=2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135
 MMPROJ=mmproj-embeddinggemma-2-q8_0
 MMPROJ_SHA256=c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f
 NASA=https://www.nasa.gov/wp-content/uploads/2015/01
@@ -32,6 +38,13 @@ fi
 git -C "$SRC" fetch -q --depth 1 origin "$LLAMA_COMMIT"
 git -C "$SRC" checkout -q -f FETCH_HEAD
 git -C "$SRC" apply "$PWD/tools/reference_audio/mel_floor.patch"
+PLAIN=.cache/llama.cpp-audio-plain
+if [ ! -d "$PLAIN/.git" ]; then
+    git init -q "$PLAIN"
+    git -C "$PLAIN" remote add origin https://github.com/ggml-org/llama.cpp
+fi
+git -C "$PLAIN" fetch -q --depth 1 origin "$LLAMA_COMMIT"
+git -C "$PLAIN" checkout -q -f FETCH_HEAD
 
 cmake -S tools/reference_audio -B .cache/reference_audio -DLLAMA_SOURCE="$PWD/$SRC" -DCMAKE_BUILD_TYPE=Release
 cmake --build .cache/reference_audio --target reference_audio
@@ -55,3 +68,12 @@ LIST
 mkdir -p tests/fixtures/reference
 "$TOOL" prepare "$MODELS/$MMPROJ.gguf" tests/fixtures/audio "$LLAMA_COMMIT" "$MMPROJ_SHA256" \
     > tests/fixtures/reference/audio_prepare.inc
+
+# The embeddings: unchanged llama.cpp's first, raw, then the patched build's,
+# which reads them for the cosines.
+cmake -S tools/reference_audio -B .cache/reference_audio_plain -DLLAMA_SOURCE="$PWD/$PLAIN" -DCMAKE_BUILD_TYPE=Release
+cmake --build .cache/reference_audio_plain --target reference_audio
+.cache/reference_audio_plain/reference_audio plain "$MODELS/$MODEL.gguf" "$MODELS/$MMPROJ.gguf" tests/fixtures/audio \
+    .cache/reference_audio/plain.bin
+"$TOOL" embed "$MODELS/$MODEL.gguf" "$MODELS/$MMPROJ.gguf" tests/fixtures/audio .cache/reference_audio/plain.bin \
+    "$LLAMA_COMMIT" "$MODEL_SHA256" "$MMPROJ_SHA256" > tests/fixtures/reference/audio_embeddings.inc
