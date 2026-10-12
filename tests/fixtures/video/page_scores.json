@@ -1,0 +1,9 @@
+{
+  "clips": ["launch-0", "launch-4", "spacewalk-0", "spacewalk-4", "landing-0", "landing-4", "earth-0", "earth-4"],
+  "queries": [
+    {"query": "task: search result | query: a rocket lifting off its launch pad at night", "metal": [0.777748, 0.773946, 0.597517, 0.670546, 0.658231, 0.649897, 0.635974, 0.617506], "cpu": [0.776836, 0.773904, 0.597562, 0.669663, 0.658482, 0.649893, 0.636573, 0.615045]},
+    {"query": "task: search result | query: astronauts working outside the space station", "metal": [0.615890, 0.627243, 0.725035, 0.732025, 0.631898, 0.625047, 0.654366, 0.644534], "cpu": [0.616174, 0.628544, 0.726771, 0.731364, 0.633186, 0.626493, 0.654429, 0.642605]},
+    {"query": "task: search result | query: a rover lowered onto the surface of Mars", "metal": [0.605029, 0.600129, 0.639181, 0.663972, 0.788274, 0.783239, 0.655265, 0.659886], "cpu": [0.604293, 0.599622, 0.639765, 0.664876, 0.787430, 0.782839, 0.654682, 0.658836]},
+    {"query": "task: search result | query: the curve of the Earth and clouds seen from orbit", "metal": [0.566634, 0.564648, 0.607337, 0.624127, 0.608019, 0.615092, 0.731494, 0.747259], "cpu": [0.566422, 0.564524, 0.608387, 0.624603, 0.607957, 0.615749, 0.731338, 0.745878]}
+  ]
+}

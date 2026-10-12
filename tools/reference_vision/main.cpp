@@ -8,6 +8,7 @@
 //                            <llama.cpp commit> <model sha256> <mmproj sha256>
 //     reference_vision video <model.gguf> <mmproj, clip.use_gelu set>
 //                            <llama.cpp commit> <model sha256> <mmproj sha256>
+//     reference_vision frames <model.gguf> <mmproj, clip.use_gelu set> <manifest>
 //
 // The mmproj is loaded as llama.cpp loads it, with the card's default
 // budget, 280 tokens at most, and llama.cpp's own least, 70. Each image of
@@ -40,6 +41,10 @@
 // text before, for each frame `<|image>`, its rows and `<image|>`, then the
 // text after, run as one batch, as embed runs an image's. On the CPU and on
 // Metal, from the mmproj with clip.use_gelu set.
+//
+// frames: the same for clips whose frames are files — the NASA videos of
+// tests/fixtures/video/, decoded by FFmpeg (tools/make_reference_vision.sh) —
+// and the score of each query against each clip, for the page's check.
 
 #include <cmath>
 #include <cstdint>
@@ -441,9 +446,18 @@ const bllm::fixtures::video::Scene* video_scene_named(const char* name) {
     return nullptr;
 }
 
-// Frame `t` of `scene`, stretched by llama.cpp's resampler to `size`.
-clip_image_u8 frame_of(const bllm::fixtures::video::Scene& scene, std::uint32_t t, clip_image_size size,
-                       resize_algo algo) {
+// A frame of `source`'s size, stretched by llama.cpp's resampler to the
+// grid Google's rule gives it.
+clip_image_u8 stretched(const clip_image_u8& source, resize_algo algo) {
+    const clip_image_size from = source.get_size();
+    const clip_image_size size = google_size(from.width, from.height, 16, 3, kFrameTokens);
+    clip_image_u8 frame;
+    llama_image::img_tool::resize(source, frame, size, algo, PAD_NONE);
+    return frame;
+}
+
+// Frame `t` of `scene`, stretched to its grid.
+clip_image_u8 frame_of(const bllm::fixtures::video::Scene& scene, std::uint32_t t, resize_algo algo) {
     clip_image_u8 source;
     source.set_size({static_cast<int>(scene.width), static_cast<int>(scene.height)}, false);
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(scene.width) * scene.height * 3);
@@ -456,9 +470,7 @@ clip_image_u8 frame_of(const bllm::fixtures::video::Scene& scene, std::uint32_t 
         }
     }
     source.cpy_buf(bytes);
-    clip_image_u8 frame;
-    llama_image::img_tool::resize(source, frame, size, algo, PAD_NONE);
-    return frame;
+    return stretched(source, algo);
 }
 
 // A frame's rows from the vision encoder: the frame, already at its grid,
@@ -508,26 +520,25 @@ llama_token one_token(const llama_vocab* vocab, const char* text) {
     return t[0];
 }
 
-VideoEmbedding embed_video_item(const Backend& b, const VideoItem& item, resize_algo algo) {
+// The text before, each frame's rows between `<|image>` and `<image|>`, the
+// text after, the file's ends around them, embedded as one batch.
+VideoEmbedding embed_frames(const Backend& b, const char* before, const std::vector<clip_image_u8>& stretched_frames,
+                            const char* after) {
     const llama_vocab* vocab = llama_model_get_vocab(b.model);
     VideoEmbedding e;
     e.frame_begin = one_token(vocab, "<|image>");
     e.frame_end = one_token(vocab, "<image|>");
     if (llama_vocab_get_add_bos(vocab)) e.before.push_back(llama_vocab_bos(vocab));
-    for (const llama_token t : tokens_of(vocab, item.before)) e.before.push_back(t);
+    for (const llama_token t : tokens_of(vocab, before)) e.before.push_back(t);
     std::vector<std::vector<float>> frames;
-    if (item.scene != nullptr) {
-        const auto& scene = *video_scene_named(item.scene);
-        const clip_image_size size =
-            google_size(static_cast<int>(scene.width), static_cast<int>(scene.height), 16, 3, kFrameTokens);
-        for (std::uint32_t t = 0; t < scene.frames; ++t) {
-            std::uint32_t rows = 0;
-            frames.push_back(frame_rows(b.vision, frame_of(scene, t, size, algo), rows));
-            e.rows = rows;
-        }
-        e.frames = scene.frames;
+    for (const clip_image_u8& frame : stretched_frames) {
+        std::uint32_t rows = 0;
+        frames.push_back(frame_rows(b.vision, frame, rows));
+        if (e.rows != 0 && rows != e.rows) std::exit(1);
+        e.rows = rows;
     }
-    for (const llama_token t : tokens_of(vocab, item.after)) e.after.push_back(t);
+    e.frames = static_cast<std::uint32_t>(frames.size());
+    for (const llama_token t : tokens_of(vocab, after)) e.after.push_back(t);
     if (llama_vocab_get_add_eos(vocab)) e.after.push_back(llama_vocab_eos(vocab));
 
     llama_memory_clear(llama_get_memory(b.context), true);
@@ -559,6 +570,108 @@ VideoEmbedding embed_video_item(const Backend& b, const VideoItem& item, resize_
     const float scale = sum > 0 ? static_cast<float>(1.0 / std::sqrt(sum)) : 0.0f;
     for (float& v : e.vector) v *= scale;
     return e;
+}
+
+VideoEmbedding embed_video_item(const Backend& b, const VideoItem& item, resize_algo algo) {
+    std::vector<clip_image_u8> frames;
+    if (item.scene != nullptr) {
+        const auto& scene = *video_scene_named(item.scene);
+        for (std::uint32_t t = 0; t < scene.frames; ++t) frames.push_back(frame_of(scene, t, algo));
+    }
+    return embed_frames(b, item.before, frames, item.after);
+}
+
+// A binary PPM, P6 at 255, as FFmpeg writes one.
+clip_image_u8 read_ppm(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (f == nullptr) {
+        std::fprintf(stderr, "reference_vision: cannot open %s\n", path.c_str());
+        std::exit(1);
+    }
+    int width = 0, height = 0, most = 0;
+    if (std::fscanf(f, "P6 %d %d %d", &width, &height, &most) != 3 || most != 255 || std::fgetc(f) == EOF) {
+        std::fprintf(stderr, "reference_vision: %s is not a binary PPM at 255\n", path.c_str());
+        std::exit(1);
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(width) * height * 3);
+    if (std::fread(bytes.data(), 1, bytes.size(), f) != bytes.size()) std::exit(1);
+    std::fclose(f);
+    clip_image_u8 image;
+    image.set_size({width, height}, false);
+    image.cpy_buf(bytes);
+    return image;
+}
+
+// frames: a manifest of lines `clip <name> <frame.ppm> ...` and `query
+// <text>`, each query's text as written, its task prompt included, and each
+// clip alone, as the page embeds `<|video|>`. Writes, as JSON, each query's
+// score against each clip on Metal and on the CPU.
+int frames_mode(const char* model, const char* patched, const char* manifest) {
+    llama_backend_init();
+    clip_ctx* hparams_of = load(patched);
+    const resize_algo algo = clip_get_hparams(hparams_of)->image_resize_algo;
+    const Backend cpu = open_backend(model, patched, true);
+    const Backend metal = open_backend(model, patched, false);
+    std::FILE* f = std::fopen(manifest, "r");
+    if (f == nullptr) std::exit(1);
+    std::vector<std::pair<std::string, std::vector<clip_image_u8>>> clips;
+    std::vector<std::string> queries;
+    char line[8192];
+    while (std::fgets(line, sizeof line, f) != nullptr) {
+        std::string text(line);
+        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+        if (text.rfind("query ", 0) == 0) {
+            queries.push_back(text.substr(6));
+        } else if (text.rfind("clip ", 0) == 0) {
+            std::vector<std::string> words;
+            std::size_t at = 5;
+            while (at < text.size()) {
+                const std::size_t space = text.find(' ', at);
+                words.push_back(text.substr(at, space == std::string::npos ? std::string::npos : space - at));
+                at = space == std::string::npos ? text.size() : space + 1;
+            }
+            std::vector<clip_image_u8> frames;
+            for (std::size_t i = 1; i < words.size(); ++i) frames.push_back(stretched(read_ppm(words[i]), algo));
+            clips.emplace_back(words[0], std::move(frames));
+        }
+    }
+    std::fclose(f);
+    const auto scores = [&](const Backend& b) {
+        std::vector<std::vector<float>> clip_vectors, query_vectors;
+        for (const auto& [name, frames] : clips) clip_vectors.push_back(embed_frames(b, "", frames, "").vector);
+        for (const std::string& q : queries) query_vectors.push_back(embed_frames(b, q.c_str(), {}, "").vector);
+        std::vector<std::vector<double>> out;
+        for (const auto& q : query_vectors) {
+            std::vector<double> row;
+            for (const auto& c : clip_vectors) {
+                double dot = 0;
+                for (std::size_t i = 0; i < q.size(); ++i) dot += static_cast<double>(q[i]) * c[i];
+                row.push_back(dot);
+            }
+            out.push_back(row);
+        }
+        return out;
+    };
+    const auto on_metal = scores(metal), on_cpu = scores(cpu);
+    std::printf("{\n  \"clips\": [");
+    for (std::size_t c = 0; c < clips.size(); ++c) std::printf("%s\"%s\"", c ? ", " : "", clips[c].first.c_str());
+    std::printf("],\n  \"queries\": [\n");
+    for (std::size_t q = 0; q < queries.size(); ++q) {
+        std::printf("    {\"query\": \"%s\", \"metal\": [", queries[q].c_str());
+        for (std::size_t c = 0; c < clips.size(); ++c) std::printf("%s%.6f", c ? ", " : "", on_metal[q][c]);
+        std::printf("], \"cpu\": [");
+        for (std::size_t c = 0; c < clips.size(); ++c) std::printf("%s%.6f", c ? ", " : "", on_cpu[q][c]);
+        std::printf("]}%s\n", q + 1 < queries.size() ? "," : "");
+    }
+    std::printf("  ]\n}\n");
+    for (const Backend* b : {&cpu, &metal}) {
+        mtmd_free(b->vision);
+        llama_free(b->context);
+        llama_model_free(b->model);
+    }
+    clip_free(hparams_of);
+    llama_backend_free();
+    return 0;
 }
 
 int video(const char* model, const char* patched, const char* commit, const char* model_sha, const char* mmproj_sha) {
@@ -613,10 +726,12 @@ int main(int argc, char** argv) {
     if (argc == 5 && std::string(argv[1]) == "prepare") return prepare(argv[2], argv[3], argv[4]);
     if (argc == 8 && std::string(argv[1]) == "embed") return embed(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]);
     if (argc == 7 && std::string(argv[1]) == "video") return video(argv[2], argv[3], argv[4], argv[5], argv[6]);
+    if (argc == 5 && std::string(argv[1]) == "frames") return frames_mode(argv[2], argv[3], argv[4]);
     std::fprintf(stderr, "usage: reference_vision prepare <mmproj.gguf> <llama.cpp commit> <mmproj sha256>\n"
                          "       reference_vision embed <model.gguf> <patched mmproj> <published mmproj> <commit>"
                          " <model sha256> <mmproj sha256>\n"
                          "       reference_vision video <model.gguf> <patched mmproj> <commit> <model sha256>"
-                         " <mmproj sha256>\n");
+                         " <mmproj sha256>\n"
+                         "       reference_vision frames <model.gguf> <patched mmproj> <manifest>\n");
     return 2;
 }

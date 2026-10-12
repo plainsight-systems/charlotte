@@ -49,3 +49,39 @@ python3 tools/gguf_add_bool.py ".cache/test-data/models/$MMPROJ.gguf" "$PATCHED"
 # resampler, encoded one a frame.
 .cache/reference_vision/reference_vision video ".cache/test-data/models/$MODEL.gguf" "$PATCHED" \
     "$LLAMA_COMMIT" "$MODEL_SHA256" "$SHA256" > tests/fixtures/reference/video_embeddings.inc
+
+# The page's video check (web/search.js): llama.cpp's scores for the NASA
+# clips of tests/fixtures/video/, their frames decoded by FFmpeg as Google's
+# processor picks them — frame ⌊i × 30⌋ of each 30 fps clip, one a second —
+# 4 to a clip, a 16:9 frame's 120 tokens leaving room for 4 (runtime/
+# video.h), each query with its task prompt: tests/fixtures/video/
+# page_scores.json.
+FRAMES=.cache/reference_vision/nasa-frames
+rm -rf "$FRAMES"
+mkdir -p "$FRAMES"
+MANIFEST="$FRAMES/manifest.txt"
+: > "$MANIFEST"
+for name in launch spacewalk landing earth; do
+    mkdir -p "$FRAMES/$name"
+    ffmpeg -v error -i "tests/fixtures/video/$name.mp4" -vf "select='not(mod(n\,30))'" -fps_mode passthrough \
+        "$FRAMES/$name/%02d.ppm"
+    set -- "$FRAMES/$name"/*.ppm
+    first=0
+    while [ $# -gt 0 ]; do
+        line="clip $name-$first"
+        n=0
+        while [ $# -gt 0 ] && [ $n -lt 4 ]; do
+            line="$line $1"
+            shift
+            n=$((n + 1))
+        done
+        echo "$line" >> "$MANIFEST"
+        first=$((first + n))
+    done
+done
+for query in "a rocket lifting off its launch pad at night" "astronauts working outside the space station" \
+    "a rover lowered onto the surface of Mars" "the curve of the Earth and clouds seen from orbit"; do
+    echo "query task: search result | query: $query" >> "$MANIFEST"
+done
+.cache/reference_vision/reference_vision frames ".cache/test-data/models/$MODEL.gguf" "$PATCHED" "$MANIFEST" \
+    > tests/fixtures/video/page_scores.json
