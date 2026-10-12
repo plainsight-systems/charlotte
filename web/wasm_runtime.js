@@ -28,8 +28,9 @@
 // bllmOnVector with the call's id, a view of the module's memory copied at
 // once, and resolves with the tokens the text made; a failure rejects,
 // carrying the module's code — "text-too-long" with both counts. Load's
-// answer carries the embedding's length for such a model. With `image`, the
-// module places the image its slot holds where the text writes <|image|>.
+// answer carries the embedding's length for such a model. With `media`
+// 'image', the module places the image its slot holds where the text writes
+// <|image|>; with 'audio', the clip its slot holds where it writes <|audio|>.
 //
 // A companion (companion.js) is judged and loaded as a model is, over the
 // ranges of its file the cache holds back to back: its ranges cross as
@@ -37,7 +38,9 @@
 // (load.js's chunksOf). prepareImage decodes a photo here, in the worker
 // (image_input.js), starts it in the module's slot, then hands it over a
 // band of rows a call, each band copied into the module's memory and freed
-// once the call returns.
+// once the call returns. prepareAudio copies a clip's samples into the
+// module's memory, one call, freed once the call returns: the module
+// computes its spectrogram into its slot (runtime/audio.h).
 
 import createModule from './charlotte.mjs';
 import { decode, bands } from './image_input.js';
@@ -254,9 +257,24 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
       return { tokens: grid.tokens, width: grid.width, height: grid.height };
     },
 
+    // Prepares a clip in the module's audio slot: its frames and rows.
+    prepareAudio: async (samples) => {
+      const bytes = samples.length * 4;
+      const pointer = module._malloc(Math.max(4, bytes));
+      if (pointer === 0) throw new Error(`could not allocate ${bytes} bytes in the module`);
+      try {
+        new Float32Array(module.HEAPU8.buffer, pointer, samples.length).set(samples);
+        const { frames, rows } = settled(await callModule((call) =>
+          module._bllm_audio_prepare(call, pointer, samples.length)));
+        return { frames, rows };
+      } finally {
+        module._free(pointer);
+      }
+    },
+
     // The text's unit-length embedding, and the tokens it made; with
-    // `image`, the prepared image in the text's <|image|>.
-    embed: async (text, image = false) => {
+    // `media`, the prepared image or clip in the text's placeholder.
+    embed: async (text, media = null) => {
       const bytes = new TextEncoder().encode(text);
       const pointer = module._malloc(Math.max(1, bytes.length));
       if (pointer === 0) throw new Error(`could not allocate ${bytes.length} bytes in the module`);
@@ -266,7 +284,7 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
         module.HEAPU8.set(bytes, pointer);
         answered = callModule((c) => {
           call = c;
-          module._bllm_embed(c, pointer, bytes.length, image ? 1 : 0);
+          module._bllm_embed(c, pointer, bytes.length, media === null ? 0 : kindIndex(media) + 1);
         });
       } finally {
         // The module encoded the text during the call.

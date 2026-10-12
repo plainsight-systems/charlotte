@@ -8,7 +8,8 @@
 //
 // createSearch(root, { embed, prepareImage, companion, onSearch }) returns
 // { open(model, loaded), close(), showCompanion(state) }. `embed(text,
-// image)` sends one EMBED and returns its reply, { vector, tokens };
+// media)` sends one EMBED, `media` null or 'image', and returns its reply,
+// { vector, tokens };
 // `prepareImage(file)` sends one PREPARE_IMAGE; `companion` is
 // companion.js's, whose onChange the page points at showCompanion; `loaded`
 // is the load's answer,
@@ -214,7 +215,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   // stopped: the embedder refuses a second while one runs.
   let previous = Promise.resolve();
   const embed = (text) => {
-    const reply = previous.then(() => request(text, false));
+    const reply = previous.then(() => request(text, null));
     previous = reply.catch(() => {});
     return reply;
   };
@@ -222,7 +223,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   // caller knows it has reached the worker before it prepares the next.
   const embedPhoto = async () => {
     await previous;
-    const reply = request(kPhotoText, true);
+    const reply = request(kPhotoText, 'image');
     previous = reply.catch(() => {});
     return { reply };
   };

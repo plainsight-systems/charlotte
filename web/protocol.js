@@ -23,9 +23,10 @@ export const Request = Object.freeze({
   // prompt does not fit the context, and "prompt-too-large", shown by name,
   // when it is past the bytes one encode takes.
   GENERATE: 'generate',
-  // Embed a text, for a model that encodes — { text, image }, the task's
-  // prompt written around it; with `image` true, the image PREPARE_IMAGE
-  // prepared goes where the text writes <|image|>. DONE carries { vector,
+  // Embed a text, for a model that encodes — { text, media }, the task's
+  // prompt written around it; with `media` 'image', the image PREPARE_IMAGE
+  // prepared goes where the text writes <|image|>, and with 'audio', the clip
+  // PREPARE_AUDIO prepared where it writes <|audio|>. DONE carries { vector,
   // tokens }: the unit-length Float32Array and the tokens the text made, ends
   // included; FAILED's error carries code "text-too-long", with both counts,
   // when the text does not fit the context.
@@ -39,12 +40,18 @@ export const Request = Object.freeze({
   // Load a cached companion beside the loaded model, by its file's name —
   // { media, name, entry, memoryBudget, maxChunk }; progress comes back as
   // PROGRESS replies. DONE carries, for an image companion, { imageTokens },
-  // the most an image becomes.
+  // the most an image becomes; for an audio companion, { mostSamples }, the
+  // most a clip holds.
   LOAD_COMPANION: 'load-companion',
   // Decode a photo in the worker and prepare it in the module's one image
   // slot — { image }, a Blob. DONE carries { tokens, width, height }: the
   // tokens it becomes and the size it is resampled to.
   PREPARE_IMAGE: 'prepare-image',
+  // Prepare a clip in the module's one audio slot — { samples }, a
+  // Float32Array of at most mostSamples at 16 kHz mono, its buffer
+  // transferred. DONE carries { frames, rows }: its spectrogram's frames and
+  // the rows it becomes.
+  PREPARE_AUDIO: 'prepare-audio',
   // Stop a load, a companion's load or a generation early; `target` is its
   // request id.
   CANCEL: 'cancel',

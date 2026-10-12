@@ -107,7 +107,7 @@ if (!('gpu' in navigator)) {
     onChange: (state) => search.showCompanion(state),
     onCacheChanged: () => refreshCache() });
   const search = createSearch(page.search, {
-    embed: (text, image) => client.request(Request.EMBED, { text, image }),
+    embed: (text, media) => client.request(Request.EMBED, { text, media }),
     prepareImage: (image) => client.request(Request.PREPARE_IMAGE, { image }),
     companion,
     onSearch: (step, detail) => recorder.search(step, detail),

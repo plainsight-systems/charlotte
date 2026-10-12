@@ -26,6 +26,13 @@
 // same for the same photo, so photos can be indexed and ranked beside
 // paragraphs. Never shown as a model's: the page's banner stays up.
 //
+// It claims an audio companion the same way: its load answers the most
+// samples a clip holds at a context of 512, 325,280, and a clip's vector is
+// its loudness over time — the clip's samples cut into 768 equal spans,
+// each span's mean absolute sample, normalized — no model's, but the same
+// for the same clip. A clip under 161 samples, or over the most, is refused
+// as the module refuses it.
+//
 // Never deployed: tools/assemble_site.sh leaves web/dev/ out of the site, and
 // tools/check_site.sh fails the build if it is there.
 
@@ -41,6 +48,8 @@ const kContext = 512;
 const kBytesPerToken = 4;
 // What it claims for a photo: the budget's most tokens.
 const kImageTokens = 280;
+// What it claims for a clip: the module's most samples at a context of 512.
+const kMostSamples = 325280;
 
 export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake }) {
   const embeds = fake === 'embedder';
@@ -50,8 +59,10 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake })
     runBench,
   });
   const cancelled = new Set();
-  // The photo prepared, as its histogram, until an embed takes it.
+  // The photo prepared, as its histogram, and the clip, as its loudness, each
+  // until an embed takes it.
   let prepared = null;
+  let clip = null;
 
   return {
     preflight: async (bytes, totalSize, policy) => {
@@ -82,7 +93,22 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake })
       if (!embeds) throw new Error('the model generates; it has no companion');
       return { status: 'read', reached: 'run', fit: null, blockers: [] };
     },
-    loadCompanion: async () => ({ imageTokens: kImageTokens }),
+    loadCompanion: async ({ kind }) => (kind === 'audio' ? { mostSamples: kMostSamples } :
+      { imageTokens: kImageTokens }),
+    prepareAudio: async (samples) => {
+      clip = null;
+      if (samples.length < 161) throw new Error('the clip is shorter than 161 samples, about 10 ms');
+      if (samples.length > kMostSamples) throw new Error(`the clip is longer than ${kMostSamples} samples`);
+      const frames = Math.floor((samples.length - 161) / 160) + 1;
+      const rows = Math.ceil(Math.ceil(frames / 2) / 2);
+      const loudness = new Float32Array(kDimensions);
+      for (let i = 0; i < samples.length; i++) {
+        loudness[Math.floor((i * kDimensions) / samples.length)] += Math.abs(samples[i]);
+      }
+      const norm = Math.hypot(...loudness) || 1;
+      clip = { vector: loudness.map((v) => v / norm), rows };
+      return { frames, rows };
+    },
     prepareImage: async (blob) => {
       const { bitmap, width, height } = await decode(blob);
       const histogram = new Float32Array(kDimensions);
@@ -97,13 +123,19 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake })
     },
 
     // Standing in for a model that generates, it embeds nothing, and says so.
-    embed: async (text, image = false) => {
+    embed: async (text, media = null) => {
       if (!embeds) throw new Error('the model generates; it does not embed');
-      if (image) {
+      if (media === 'image') {
         if (prepared === null) throw new Error('no image is prepared');
         const vector = prepared;
         prepared = null;
         return { vector, tokens: kImageTokens + 4 };
+      }
+      if (media === 'audio') {
+        if (clip === null) throw new Error('no clip is prepared');
+        const { vector, rows } = clip;
+        clip = null;
+        return { vector, tokens: rows + 4 };
       }
       const bytes = new TextEncoder().encode(text).length;
       const tokens = Math.ceil(bytes / kBytesPerToken);

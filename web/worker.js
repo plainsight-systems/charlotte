@@ -7,7 +7,7 @@
 // itself (load.js); generate from a rendered prompt and the turn's policy;
 // embed a text, for a model that encodes, its vector one reply; judge and
 // load such a model's companion, and prepare an image for it, decoded here
-// (image_input.js); and cancel, which stops a load or a generation by naming
+// (image_input.js), or a clip, decoded on the page (audio_input.js); and cancel, which stops a load or a generation by naming
 // its request. Text
 // comes back one message per piece the reply completes, and a load's progress
 // one message a chunk (WASM.2). A failure's code, where the runtime gives one,
@@ -56,7 +56,7 @@ const handlers = {
   },
   [Request.GENERATE]: (runtime, { id, prompt, sampling, seed, maxTokens }, { token }) =>
     runtime.generate({ id, prompt, sampling, seed, maxTokens, onText: token }),
-  [Request.EMBED]: (runtime, { text, image }) => runtime.embed(text, image === true),
+  [Request.EMBED]: (runtime, { text, media }) => runtime.embed(text, media ?? null),
   [Request.PREFLIGHT_COMPANION]: (runtime, { media, bytes, totalSize, entry, memoryBudget }) =>
     runtime.companionPreflight(media, bytes, totalSize, entry, memoryBudget),
   [Request.LOAD_COMPANION]: async (runtime, { id, media, name, entry, memoryBudget, maxChunk }, { progress }) => {
@@ -70,6 +70,7 @@ const handlers = {
     }
   },
   [Request.PREPARE_IMAGE]: (runtime, { image }) => runtime.prepareImage(image),
+  [Request.PREPARE_AUDIO]: (runtime, { samples }) => runtime.prepareAudio(samples),
   [Request.CANCEL]: (runtime, { target }) => {
     const load = loads.get(target);
     if (load === undefined) return runtime.cancel(target);

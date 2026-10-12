@@ -184,11 +184,10 @@
 //     page frees once the call returns. Answers whether the image is ready
 //     to embed, or the band's refusal.
 //
-// The audio companion, designed (runtime/audio.h): the companion crossings
-// take a kind after the request, 0 image or 1 audio, each kind's companion
-// held and released apart; one loading at a time. An audio companion's
-// finish runs its setup step once and answers with the most samples a clip
-// may hold. Then:
+// The companion crossings take a kind after the request, 0 image or 1
+// audio (runtime/audio.h), each kind's companion held and released apart;
+// one loading at a time. An audio companion's finish runs its setup step
+// once and answers with the most samples a clip may hold. Then:
 //   bllm_audio_prepare(request, samples, count)
 //     A clip's samples, f32 at 16 kHz mono, which the page frees once the
 //     call returns: its spectrogram computed into the audio stage's slot.
@@ -235,6 +234,7 @@
 #include "core/kernels/program.h"
 #include "core/residency/upload.h"
 #include "core/run_guard.h"
+#include "core/runtime/audio.h"
 #include "core/runtime/embedder.h"
 #include "core/runtime/ends.h"
 #include "core/runtime/generator.h"
@@ -531,6 +531,12 @@ struct CompanionLoad {
     bllm::model::ModelDescription description;
     const bllm::arch::MediaEncoder* encoder = nullptr;
     bllm::media::ImageBudget budget{};
+    // An audio companion's: the most rows a clip makes, its plan's; its
+    // step's launches, built once its setup has run; and the setup's
+    // program, held until the step's is built.
+    std::uint32_t most_rows = 0;
+    std::vector<bllm::kernels::Launch> step_launches;
+    std::unique_ptr<bllm::kernels::Program> setup;
 };
 
 constexpr std::size_t kMediaKinds = 2;
@@ -1081,6 +1087,13 @@ bllm::runtime::Vision* vision_of(Session& s) {
     return dynamic_cast<bllm::runtime::Vision*>(s.embedder->stage(bllm::arch::MediaKind::Image));
 }
 
+// The audio stage attached, or null.
+bllm::runtime::Audio* audio_of(Session& s) {
+    if (s.embedder == nullptr) return nullptr;
+    // C.146: the stage is held by its interface; the audio kind's is an Audio.
+    return dynamic_cast<bllm::runtime::Audio*>(s.embedder->stage(bllm::arch::MediaKind::Audio));
+}
+
 std::string verdict_json(const bllm::preflight::Verdict& verdict) {
     std::string json = "{\"status\":\"read\",\"reached\":" + json_string(bllm::preflight::to_string(verdict.reached()));
     json += ",\"fit\":" + fit_json(verdict.fit);
@@ -1126,6 +1139,22 @@ void on_companion_accepted(bllm::residency::UploadError error, void* userdata) {
     bllm_reply(request, "{\"ok\":true}");
 }
 
+// A working buffer of a plan, by purpose, as a binding; empty when the plan
+// has none.
+bllm::kernels::Binding scratch(const bllm::residency::ResidencyPlan& plan, std::string_view purpose) {
+    for (const auto& p : plan.scratch) {
+        if (p.purpose == purpose) return bllm::kernels::Binding{p.range.buffer, p.range.offset, p.range.length};
+    }
+    return bllm::kernels::Binding{};
+}
+
+// Whether `load` is still the session's, its buffers kept and the embedder
+// it attaches to still there: a later load or release replaces it.
+bool current(const Session& s, const CompanionLoad* load) {
+    return load != nullptr && load == s.companion.get() && !load->settled &&
+           s.companion_loaded[index_of(load->kind)] != nullptr && s.embedder != nullptr;
+}
+
 // A companion's program is built: the link to the text program and its
 // kind's stage, attached to the embedder.
 void on_media_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kernels::ProgramError error,
@@ -1133,29 +1162,18 @@ void on_media_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kerne
     const std::uint32_t request = to_generation(userdata);
     Session& s = session();
     CompanionLoad* load = s.companion.get();
-    if (load == nullptr || load->settled || s.companion_loaded[index_of(load->kind)] == nullptr ||
-        s.embedder == nullptr) {
+    if (!current(s, load)) {
         bllm_reply(request, failure_json("the companion's load was replaced by another").c_str());
         return;
     }
     load->settled = true;
+    load->setup.reset();
     auto& loaded = s.companion_loaded[index_of(load->kind)];
     if (error != bllm::kernels::ProgramError::Ok) {
         loaded.reset();
         bllm_reply(request, failure_json("the encoder's kernels did not build", message).c_str());
         return;
     }
-    if (!load->description.vision) {
-        loaded.reset();
-        bllm_reply(request, failure_json("this build has no stage for the companion's kind").c_str());
-        return;
-    }
-    const auto scratch = [](const bllm::residency::ResidencyPlan& plan, std::string_view purpose) {
-        for (const auto& p : plan.scratch) {
-            if (p.purpose == purpose) return bllm::kernels::Binding{p.range.buffer, p.range.offset, p.range.length};
-        }
-        return bllm::kernels::Binding{};
-    };
     const auto& encoder_plan = loaded->plan();
     auto link = std::make_unique<bllm::kernels::ProgramLink>(*loaded, scratch(encoder_plan, "soft_tokens"),
                                                              *s.loaded, scratch(s.loaded->plan(), "hidden"));
@@ -1164,6 +1182,14 @@ void on_media_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kerne
     const auto& texts = load->encoder->tokens;
     const bllm::runtime::MediaTokens tokens{*vocabulary.find(texts[0]), *vocabulary.find(texts[1]),
                                             *vocabulary.find(texts[2])};
+    if (load->kind == bllm::arch::MediaKind::Audio) {
+        auto audio = std::make_unique<bllm::runtime::Audio>(std::move(program), std::move(link),
+                                                            scratch(encoder_plan, "mel"), load->most_rows);
+        const std::uint32_t most = audio->most_samples();
+        s.embedder->attach(load->kind, std::move(audio), tokens, s.loaded_description.embedding_width);
+        bllm_reply(request, ("{\"ok\":true,\"mostSamples\":" + std::to_string(most) + "}").c_str());
+        return;
+    }
     const bllm::model::VisionDescription& v = *load->description.vision;
     s.embedder->attach(load->kind,
                        std::make_unique<bllm::runtime::Vision>(std::move(program), std::move(link),
@@ -1171,6 +1197,48 @@ void on_media_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kerne
                                                                v.patch_size, v.pooling),
                        tokens, s.loaded_description.embedding_width);
     bllm_reply(request, ("{\"ok\":true,\"imageTokens\":" + std::to_string(load->budget.most) + "}").c_str());
+}
+
+// The setup's step has run: the step's program built next.
+void on_setup_ran(bllm::kernels::ProgramError error, std::string_view message, std::span<const std::byte>,
+                  void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    Session& s = session();
+    CompanionLoad* load = s.companion.get();
+    if (!current(s, load)) {
+        bllm_reply(request, failure_json("the companion's load was replaced by another").c_str());
+        return;
+    }
+    if (error != bllm::kernels::ProgramError::Ok) {
+        load->settled = true;
+        s.companion_loaded[index_of(load->kind)].reset();
+        bllm_reply(request, failure_json("the encoder's setup did not run", message).c_str());
+        return;
+    }
+    bllm::kernels::Program::build(*s.companion_loaded[index_of(load->kind)], std::move(load->step_launches),
+                                  std::nullopt, on_media_built, userdata);
+}
+
+// The setup's program is built: its one step run, its positions written.
+void on_setup_built(std::unique_ptr<bllm::kernels::Program> program, bllm::kernels::ProgramError error,
+                    std::string_view message, void* userdata) {
+    const std::uint32_t request = to_generation(userdata);
+    Session& s = session();
+    CompanionLoad* load = s.companion.get();
+    if (!current(s, load)) {
+        bllm_reply(request, failure_json("the companion's load was replaced by another").c_str());
+        return;
+    }
+    if (error != bllm::kernels::ProgramError::Ok) {
+        load->settled = true;
+        s.companion_loaded[index_of(load->kind)].reset();
+        bllm_reply(request, failure_json("the encoder's setup kernels did not build", message).c_str());
+        return;
+    }
+    load->setup = std::move(program);
+    const auto& plan = s.companion_loaded[index_of(load->kind)]->plan();
+    bllm::runtime::run_audio_setup(*load->setup, scratch(plan, "positions"), load->description.audio->width,
+                                   on_setup_ran, userdata);
 }
 
 void on_companion_finished(bllm::residency::UploadError error, void* userdata) {
@@ -1192,7 +1260,22 @@ void on_companion_finished(bllm::residency::UploadError error, void* userdata) {
         bllm_reply(request, failure_json("the encoder's graph does not build", built.subject).c_str());
         return;
     }
-    bllm::kernels::Program::build(*loaded, std::move(launches), std::nullopt, on_media_built, to_userdata(request));
+    if (load->encoder->setup == nullptr) {
+        bllm::kernels::Program::build(*loaded, std::move(launches), std::nullopt, on_media_built, to_userdata(request));
+        return;
+    }
+    // An encoder with a setup: its setup's program built and run once, then
+    // its step's (runtime/audio.h).
+    std::vector<bllm::kernels::Launch> setup;
+    const bllm::graph::GraphResult made = load->encoder->setup(load->description, loaded->plan(), setup);
+    if (!made.ok()) {
+        load->settled = true;
+        loaded.reset();
+        bllm_reply(request, failure_json("the encoder's setup graph does not build", made.subject).c_str());
+        return;
+    }
+    load->step_launches = std::move(launches);
+    bllm::kernels::Program::build(*loaded, std::move(setup), std::nullopt, on_setup_built, to_userdata(request));
 }
 
 // A memory budget as the page writes it: an exact integer, or NaN for the
@@ -1649,6 +1732,7 @@ EMSCRIPTEN_KEEPALIVE void bllm_companion_load_begin(std::uint32_t request, std::
     load.description = description;
     load.encoder = bllm::capability::find_media_encoder(*kind, projector);
     load.budget = budget;
+    load.most_rows = host->most_media_rows;
     bllm::residency::Upload::begin(*s.device, index, plan, size, bllm::capability::find_format, {}, max_chunk,
                                    on_companion_ready, to_userdata(request), parsed);
 }
@@ -1717,6 +1801,35 @@ EMSCRIPTEN_KEEPALIVE void bllm_image_rows(std::uint32_t request, std::uint32_t f
         return;
     }
     bllm_reply(request, vision->ready_rows() > 0 ? "{\"ok\":true,\"ready\":true}" : "{\"ok\":true,\"ready\":false}");
+}
+
+// A clip's `count` samples at `samples`, prepared in the audio stage's slot:
+// its frames and rows, or the refusal.
+EMSCRIPTEN_KEEPALIVE void bllm_audio_prepare(std::uint32_t request, const float* samples, std::uint32_t count) {
+    bllm::runtime::Audio* audio = audio_of(session());
+    if (audio == nullptr) {
+        bllm_reply(request, failure_json("no audio encoder is loaded").c_str());
+        return;
+    }
+    using bllm::media::AudioError;
+    switch (audio->prepare({samples, count})) {
+        case AudioError::Ok: {
+            const bllm::media::AudioClip& c = audio->slot().clip;
+            bllm_reply(request, ("{\"ok\":true,\"frames\":" + std::to_string(c.frames) + ",\"rows\":" +
+                                 std::to_string(c.rows) + "}")
+                                    .c_str());
+            return;
+        }
+        case AudioError::TooShort:
+            bllm_reply(request, failure_json("the clip is shorter than 161 samples, about 10 ms").c_str());
+            return;
+        case AudioError::TooLong:
+            bllm_reply(request, failure_json("the clip is longer than " + std::to_string(audio->most_samples()) +
+                                             " samples")
+                                    .c_str());
+            return;
+        default: bllm_reply(request, failure_json("the clip cannot be prepared").c_str()); return;
+    }
 }
 
 #if BLLM_DIAGNOSTICS_ENABLED
