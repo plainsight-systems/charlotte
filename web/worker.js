@@ -71,6 +71,8 @@ const handlers = {
   },
   [Request.PREPARE_IMAGE]: (runtime, { image }) => runtime.prepareImage(image),
   [Request.PREPARE_AUDIO]: (runtime, { samples }) => runtime.prepareAudio(samples),
+  [Request.PLAN_VIDEO]: (runtime, { width, height, duration }) => runtime.planVideo(width, height, duration),
+  [Request.PREPARE_VIDEO]: (runtime, { width, height, frames }) => runtime.prepareVideo(width, height, frames),
   [Request.CANCEL]: (runtime, { target }) => {
     const load = loads.get(target);
     if (load === undefined) return runtime.cancel(target);

@@ -26,6 +26,12 @@
 // same for the same photo, so photos can be indexed and ranked beside
 // paragraphs. Never shown as a model's: the page's banner stays up.
 //
+// Its vision companion claims to read video: its load answers video true. A
+// video is planned as the module plans one at 1 frame a second, each frame
+// 120 tokens and 4 to a clip; a clip's frames are cut into bands as the real
+// runtime cuts them, and its vector is their colour histograms summed, as a
+// photo's — no model's, but the same for the same clip.
+//
 // It claims an audio companion the same way: its load answers the most
 // samples a clip holds at a context of 512, 325,280, and a clip's vector is
 // its loudness over time — the clip's samples cut into 768 equal spans,
@@ -50,6 +56,8 @@ const kBytesPerToken = 4;
 const kImageTokens = 280;
 // What it claims for a clip: the module's most samples at a context of 512.
 const kMostSamples = 325280;
+// What it claims for a video's frame: a 16:9 frame's tokens.
+const kFrameTokens = 120;
 
 export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake }) {
   const embeds = fake === 'embedder';
@@ -63,6 +71,7 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake })
   // until an embed takes it.
   let prepared = null;
   let clip = null;
+  let film = null;   // a video's clip, as its histogram
 
   return {
     preflight: async (bytes, totalSize, policy) => {
@@ -94,7 +103,22 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake })
       return { status: 'read', reached: 'run', fit: null, blockers: [] };
     },
     loadCompanion: async ({ kind }) => (kind === 'audio' ? { mostSamples: kMostSamples } :
-      { imageTokens: kImageTokens }),
+      { imageTokens: kImageTokens, video: true }),
+    planVideo: async (width, height, duration) => ({ frames: Math.max(1, Math.floor(duration)),
+      tokens: kFrameTokens, width, height, clipFrames: 4 }),
+    prepareVideo: async (width, height, frames) => {
+      const histogram = new Float32Array(kDimensions);
+      for (const bitmap of frames) {
+        for (const { pixels } of bands(bitmap)) {
+          for (let i = 0; i < pixels.length; i += 4) {
+            histogram[(pixels[i] >> 5) * 64 + (pixels[i + 1] >> 5) * 8 + (pixels[i + 2] >> 5)] += 1;
+          }
+        }
+      }
+      const norm = Math.hypot(...histogram) || 1;
+      film = { vector: histogram.map((v) => v / norm), frames: frames.length };
+      return { ready: true };
+    },
     prepareAudio: async (samples) => {
       clip = null;
       if (samples.length < 161) throw new Error('the clip is shorter than 161 samples, about 10 ms');
@@ -136,6 +160,12 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, fake })
         const { vector, rows } = clip;
         clip = null;
         return { vector, tokens: rows + 4 };
+      }
+      if (media === 'video') {
+        if (film === null) throw new Error('no video clip is prepared');
+        const { vector, frames } = film;
+        film = null;
+        return { vector, tokens: frames * (kFrameTokens + 2) + 2 };
       }
       const bytes = new TextEncoder().encode(text).length;
       const tokens = Math.ceil(bytes / kBytesPerToken);

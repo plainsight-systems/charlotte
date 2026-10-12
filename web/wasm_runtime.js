@@ -30,7 +30,8 @@
 // carrying the module's code — "text-too-long" with both counts. Load's
 // answer carries the embedding's length for such a model. With `media`
 // 'image', the module places the image its slot holds where the text writes
-// <|image|>; with 'audio', the clip its slot holds where it writes <|audio|>.
+// <|image|>; with 'audio', the clip its slot holds where it writes <|audio|>;
+// with 'video', the video's clip it holds where it writes <|video|>.
 //
 // A companion (companion.js) is judged and loaded as a model is, over the
 // ranges of its file the cache holds back to back: its ranges cross as
@@ -40,7 +41,10 @@
 // band of rows a call, each band copied into the module's memory and freed
 // once the call returns. prepareAudio copies a clip's samples into the
 // module's memory, one call, freed once the call returns: the module
-// computes its spectrogram into its slot (runtime/audio.h).
+// computes its spectrogram into its slot (runtime/audio.h). planVideo asks
+// the module what a video becomes, one call; prepareVideo begins a clip in
+// the module, then hands each frame's bitmap over a band of rows a call, as
+// a photo's, each bitmap closed once its last band is in (runtime/video.h).
 
 import createModule from './charlotte.mjs';
 import { decode, bands } from './image_input.js';
@@ -272,6 +276,42 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
       }
     },
 
+    // What a video of `width` × `height` and `duration` seconds becomes.
+    planVideo: async (width, height, duration) =>
+      settled(await callModule((call) => module._bllm_video_plan(call, width, height, duration))),
+
+    // Prepares a video's clip from its frames' bitmaps, in order: whether
+    // the clip is ready once the last band is in.
+    prepareVideo: async (width, height, frames) => {
+      try {
+        settled(await callModule((call) => module._bllm_video_begin(call, width, height, frames.length)));
+      } catch (error) {
+        for (const bitmap of frames) bitmap.close();
+        throw error;
+      }
+      let ready = false;
+      try {
+        for (let f = 0; f < frames.length; f++) {
+          for (const { first, pixels } of bands(frames[f])) {
+            const pointer = module._malloc(pixels.length);
+            if (pointer === 0) throw new Error(`could not allocate ${pixels.length} bytes in the module`);
+            try {
+              module.HEAPU8.set(pixels, pointer);
+              ready = settled(await callModule((call) =>
+                module._bllm_video_rows(call, f, first, pointer, pixels.length))).ready;
+            } finally {
+              module._free(pointer);
+            }
+          }
+        }
+      } finally {
+        // bands() closes each bitmap it reads; a refusal leaves the rest.
+        for (const bitmap of frames) bitmap.close();
+      }
+      if (!ready) throw new Error('the clip is not ready after its last frame');
+      return { ready };
+    },
+
     // The text's unit-length embedding, and the tokens it made; with
     // `media`, the prepared image or clip in the text's placeholder.
     embed: async (text, media = null) => {
@@ -284,7 +324,7 @@ export async function createRuntime({ onDevice, onDeviceEvent, runBench, profile
         module.HEAPU8.set(bytes, pointer);
         answered = callModule((c) => {
           call = c;
-          module._bllm_embed(c, pointer, bytes.length, media === null ? 0 : kindIndex(media) + 1);
+          module._bllm_embed(c, pointer, bytes.length, mediaIndex(media));
         });
       } finally {
         // The module encoded the text during the call.
@@ -416,6 +456,15 @@ function u32s(values) {
   const words = new DataView(new ArrayBuffer(Math.max(4, values.length * 4)));
   values.forEach((v, i) => words.setUint32(i * 4, v, true));
   return words.buffer;
+}
+
+// An embed's medium as the module reads it (src/wasm/bindings.cpp): 0 none,
+// 1 an image, 2 a clip of audio, 3 a video's clip.
+function mediaIndex(media) {
+  if (media === null) return 0;
+  const index = ['image', 'audio', 'video'].indexOf(media);
+  if (index === -1) throw new Error(`no medium "${media}"`);
+  return index + 1;
 }
 
 // A companion's kind as the module reads it (src/wasm/bindings.cpp).

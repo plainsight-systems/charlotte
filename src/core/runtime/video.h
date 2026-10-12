@@ -171,9 +171,10 @@ namespace bllm::runtime {
 //     cut to a few seconds and committed with its source
 //     (tests/fixtures/video/SOURCES.md); each frame decoded by the browser
 //     near, not equal to, the reference's ffmpeg decode; each video's query
-//     ranking its own video's clip first among the videos, recordings,
-//     photos and paragraphs; each score llama.cpp's on the ffmpeg frames to
-//     two places, the decoders' difference the third.
+//     ranking its own video's clips first among the videos, recordings,
+//     photos and paragraphs; each score within 0.005 of llama.cpp's on the
+//     ffmpeg frames (tests/fixtures/video/page_scores.json), the decoders'
+//     difference, beside llama.cpp's own 0.0025 between its backends.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines

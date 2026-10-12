@@ -20,3 +20,72 @@
 //     nothing.
 //   - The panel's drop target takes images to photos.js, audio to
 //     recordings.js and video to this file, each by its MIME type.
+
+import { h } from './dom.js';
+import { clock } from './recordings.js';
+import { open as openVideo } from './video_input.js';
+
+export function createVideos({ onChange, open = openVideo }) {
+  const videos = [];   // { file, url, width, height, duration }, in the order added
+  const list = h('ul', { className: 'recording-list' });
+  const refusals = h('p', { className: 'chat-error', 'aria-live': 'assertive' });
+  const input = h('input', { type: 'file', accept: 'video/*', multiple: true, hidden: true, 'aria-label': 'Videos' });
+  const button = h('button', { type: 'button', className: 'action', text: 'Add videos',
+    onclick: () => input.click() });
+
+  const render = () => list.replaceChildren(...videos.map((video) =>
+    h('li', {},
+      h('span', { text: `${video.file.name} · ${clock(video.duration)}` }),
+      h('button', { type: 'button', className: 'action', text: '×', 'aria-label': `Remove ${video.file.name}`,
+        onclick: () => remove(video) }))));
+
+  async function add(files) {
+    const refused = [];
+    for (const file of files) {
+      let opened;
+      try {
+        opened = await open(file);
+      } catch (error) {
+        refused.push(`${file.name}: ${error.message}`);
+        continue;
+      }
+      const { width, height, duration } = opened;
+      opened.release();
+      videos.push({ file, url: URL.createObjectURL(file), width, height, duration });
+    }
+    refusals.textContent = refused.join(' · ');
+    render();
+    if (refused.length < files.length) onChange?.();
+  }
+
+  function remove(video) {
+    videos.splice(videos.indexOf(video), 1);
+    URL.revokeObjectURL(video.url);
+    render();
+    onChange?.();
+  }
+
+  input.addEventListener('change', () => {
+    const files = [...input.files];
+    input.value = '';
+    add(files);
+  });
+
+  return {
+    element: h('div', { className: 'recordings' }, h('div', { className: 'composer-row' }, button, input), list,
+      refusals),
+    // The videos to index, in order: { file, url, width, height, duration }.
+    videos: () => [...videos],
+    dropOnto(target) {
+      target.addEventListener('dragover', (event) => event.preventDefault());
+      target.addEventListener('drop', (event) => {
+        event.preventDefault();
+        add([...event.dataTransfer.files].filter((file) => file.type.startsWith('video/')));
+      });
+    },
+    release() {
+      for (const video of videos) URL.revokeObjectURL(video.url);
+      videos.length = 0;
+    },
+  };
+}

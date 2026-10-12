@@ -11,7 +11,8 @@
 // to the worker with PREFLIGHT_COMPANION and LOAD_COMPANION's `kind`; the
 // page holds one a kind, loaded apart, released together with the model.
 // An audio companion's load answers { mostSamples }, the most a clip may
-// hold (runtime/audio.h), where an image's answers { imageTokens }; the
+// hold (runtime/audio.h), where an image's answers { imageTokens, video },
+// video whether its encoder reads a video's frames too (runtime/video.h); the
 // state's text names its encoder, "the image encoder" or "the audio
 // encoder". One companion loads at a time: the search panel asks for the
 // next kind's once the last's ensure has settled.
@@ -23,7 +24,7 @@
 // has it, whose memory budget the companion is judged and planned within:
 //   - ensure(model) with the loaded model's catalog entry, whose `vision`
 //     or `audio` names the companion (catalog.js). Resolves with the load's
-//     answer — { imageTokens } or { mostSamples } — once the companion is
+//     answer — { imageTokens, video } or { mostSamples } — once the companion is
 //     loaded; at once if it already is; with the same promise while it
 //     loads; rejects with what stopped it. Each step changes `state`, which
 //     onChange renders where the search panel shows it: { phase: 'checking'

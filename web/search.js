@@ -6,12 +6,14 @@
 // passages are ranked by their vectors' dot product with the query's, the
 // best five shown with their scores.
 //
-// createSearch(root, { embed, prepareImage, prepareAudio, companion,
-// audioCompanion, onSearch }) returns { open(model, loaded), close(),
-// showCompanion(state) }. `embed(text, media)` sends one EMBED, `media`
-// null, 'image' or 'audio', and returns its reply, { vector, tokens };
-// `prepareImage(file)` sends one PREPARE_IMAGE and `prepareAudio(samples)`
-// one PREPARE_AUDIO; `companion` and `audioCompanion` are companion.js's,
+// createSearch(root, { embed, prepareImage, prepareAudio, planVideo,
+// prepareVideo, companion, audioCompanion, onSearch }) returns { open(model,
+// loaded), close(), showCompanion(state) }. `embed(text, media)` sends one
+// EMBED, `media` null, 'image', 'audio' or 'video', and returns its reply,
+// { vector, tokens }; `prepareImage(file)` sends one PREPARE_IMAGE,
+// `prepareAudio(samples)` one PREPARE_AUDIO, `planVideo(width, height,
+// duration)` one PLAN_VIDEO and `prepareVideo(width, height, frames)` one
+// PREPARE_VIDEO; `companion` and `audioCompanion` are companion.js's,
 // for images and for audio, whose onChange the page points at
 // showCompanion; `loaded`
 // is the load's answer,
@@ -89,9 +91,11 @@
 //     is its loudness over time, binned (dev/fake_runtime.js), never shown
 //     as a model's.
 //   - Videos, for a model whose vision companion reads video
-//     (runtime/video.h), likewise: chosen or dropped beside the rest
-//     (videos.js), joining the index after the recordings, through the
-//     image companion — no download of their own. Each video is opened on
+//     (runtime/video.h; the catalog's vision.video), likewise: chosen or
+//     dropped beside the rest (videos.js), joining the index after the
+//     recordings, through the image companion — no download of their own;
+//     a companion whose load says it attached no video stage refuses the
+//     indexing by name. Each video is opened on
 //     the page, planned by the module, and cut into clips of k frames at 1
 //     a second, 4 for a 16:9 video (video_input.js); each clip is one
 //     entry, embedded alone as `<|video|>` with no prompt, as the card
@@ -193,8 +197,9 @@
 // each score llama.cpp's to three places; a 5 minute recording is indexed
 // as 15 clips, the one a query names ranked with its span. With the four
 // NASA videos of tests/fixtures/video/ added, each of their queries ranks
-// its own video's clip first among everything indexed, each score
-// llama.cpp's to two places. On a phone
+// its own video's clips first among everything indexed, each score within
+// 0.005 of llama.cpp's on FFmpeg's frames (tests/fixtures/video/
+// page_scores.json), the two decoders' difference. On a phone
 // screen, in iOS Safari under
 // ?fake-runtime=embedder (dev/fake_runtime.js), the panel with the
 // on-screen keyboard up.
@@ -207,6 +212,8 @@ import { createPhotos } from './photos.js';
 import { clock, createRecordings } from './recordings.js';
 import { createIndex } from './search_index.js';
 import { taskPrompt } from './task_prompt.js';
+import { clipsOf as videoClipsOf, frameAt, open as openVideo } from './video_input.js';
+import { createVideos } from './videos.js';
 
 const kResults = 5;
 // What a photo is embedded as: the image alone, with no task prompt, as the
@@ -214,13 +221,16 @@ const kResults = 5;
 const kPhotoText = '<|image|>';
 // And a clip: the clip alone.
 const kClipText = '<|audio|>';
+// And a video's clip.
+const kVideoText = '<|video|>';
 
 // Words joined as a list: "a", "a and b", "a, b and c", or with "or".
 function listed(words, conjunction = 'and') {
   return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} ${conjunction} ${words.at(-1)}`;
 }
 
-export function createSearch(root, { embed, prepareImage, prepareAudio, companion, audioCompanion, onSearch }) {
+export function createSearch(root,
+  { embed, prepareImage, prepareAudio, planVideo, prepareVideo, companion, audioCompanion, onSearch }) {
   let active = null;
 
   const close = () => {
@@ -238,17 +248,18 @@ export function createSearch(root, { embed, prepareImage, prepareAudio, companio
     close();
     active = { closed: false, release: () => {}, showCompanion: () => {} };
     root.replaceChildren(searchPanel(model, loaded, active,
-      { embed, prepareImage, prepareAudio, companion, audioCompanion, onSearch }));
+      { embed, prepareImage, prepareAudio, planVideo, prepareVideo, companion, audioCompanion, onSearch }));
   };
 
   return { open, close, showCompanion: (state) => active?.showCompanion(state) };
 }
 
 function searchPanel(model, { contextOffered, embeddingLength }, session,
-  { embed: request, prepareImage, prepareAudio, companion, audioCompanion, onSearch }) {
+  { embed: request, prepareImage, prepareAudio, planVideo, prepareVideo, companion, audioCompanion, onSearch }) {
   const prompts = model.prompts ?? null;
   const sees = model.vision !== undefined && companion !== undefined;
   const hears = model.audio !== undefined && audioCompanion !== undefined;
+  const watches = sees && model.vision.video === true && prepareVideo !== undefined;
   // Each EMBED waits for the one before to answer, even one whose run was
   // stopped: the embedder refuses a second while one runs.
   let previous = Promise.resolve();
@@ -265,10 +276,10 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
     previous = reply.catch(() => {});
     return { reply };
   };
-  // And a clip's.
-  const embedClip = async () => {
+  // And a clip's, of a recording or of a video.
+  const embedClip = async (text = kClipText, media = 'audio') => {
     await previous;
-    const reply = request(kClipText, 'audio');
+    const reply = request(text, media);
     previous = reply.catch(() => {});
     return { reply };
   };
@@ -283,8 +294,8 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const indexLabel = sees || hears ? 'Embed' : 'Embed passages';
   const indexButton = h('button', { type: 'submit', className: 'action primary', text: indexLabel });
   const queryInput = h('input', { type: 'search', 'aria-label': 'Query',
-    placeholder: `Search the ${listed(['passages', sees ? 'photos' : null, hears ? 'recordings' : null]
-      .filter(Boolean))}` });
+    placeholder: `Search the ${listed(['passages', sees ? 'photos' : null, hears ? 'recordings' : null,
+      watches ? 'videos' : null].filter(Boolean))}` });
   const queryButton = h('button', { type: 'submit', className: 'action primary', text: 'Search' });
   const error = h('p', { className: 'chat-error', 'aria-live': 'assertive' });
   const results = h('ol', { className: 'search-results', 'aria-live': 'polite' });
@@ -297,9 +308,13 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const recordings = hears ? createRecordings({ onChange: () => {
     if (indexing !== null || ready !== null) discard('Recordings changed: embed again.');
   } }) : null;
+  const videos = watches ? createVideos({ onChange: () => {
+    if (indexing !== null || ready !== null) discard('Videos changed: embed again.');
+  } }) : null;
   session.release = () => {
     photos?.release();
     recordings?.release();
+    videos?.release();
   };
 
   const settle = () => {
@@ -320,11 +335,12 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
     const passages = passagesOf(documentInput.value);
     const pictures = photos?.photos() ?? [];
     const sounds = recordings?.recordings() ?? [];
+    const films = videos?.videos() ?? [];
     error.textContent = '';
-    if (passages.length === 0 && pictures.length === 0 && sounds.length === 0) {
+    if (passages.length === 0 && pictures.length === 0 && sounds.length === 0 && films.length === 0) {
       error.textContent = sees || hears
-        ? `Add ${listed(['a document', sees ? 'photos' : null, hears ? 'recordings' : null].filter(Boolean), 'or')} ` +
-          'to embed.'
+        ? `Add ${listed(['a document', sees ? 'photos' : null, hears ? 'recordings' : null,
+          watches ? 'videos' : null].filter(Boolean), 'or')} to embed.`
         : 'The document has no paragraphs to embed.';
       return;
     }
@@ -333,9 +349,12 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
     ready = null;
     clearResults();
     // A recording's clips are counted once the audio encoder says how long a
-    // clip may be; until then, one each.
+    // clip may be, and a video's once the module plans it; until then, one
+    // each.
     let clipCount = sounds.length;
-    documentFacts.textContent = `0 of ${passages.length + pictures.length + clipCount} embedded`;
+    let videoClipCount = films.length;
+    const left = () => pictures.length + clipCount + videoClipCount;
+    documentFacts.textContent = `0 of ${passages.length + left()} embedded`;
     settle();
     const built = createIndex(embeddingLength);
     const queue = [...passages];
@@ -359,7 +378,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
         if (!current(run)) return;
         built.add(passage, reply.vector);
         tokens += reply.tokens;
-        const progress = `${built.size()} of ${built.size() + queue.length + pictures.length + clipCount}`;
+        const progress = `${built.size()} of ${built.size() + queue.length + left()}`;
         documentFacts.textContent = `${progress} embedded`;
         onSearch?.('progress', progress);
       }
@@ -379,7 +398,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
           if (!current(run)) return;
           built.add(pictures[i], vector);
           tokens += made;
-          const progress = `${built.size()} of ${kept + pictures.length + clipCount}`;
+          const progress = `${built.size()} of ${kept + left()}`;
           documentFacts.textContent = `${progress} embedded`;
           onSearch?.('progress', progress);
         }
@@ -416,18 +435,71 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
           if (!current(run)) return;
           built.add({ recording: clip.recording, start: clip.start, end: clip.end }, vector);
           tokens += made;
-          const progress = `${built.size()} of ${kept + pictures.length + clipCount}`;
+          const progress = `${built.size()} of ${kept + left()}`;
           documentFacts.textContent = `${progress} embedded`;
           onSearch?.('progress', progress);
+        }
+      }
+      if (films.length > 0) {
+        const { video: reads } = await companion.ensure(model);
+        if (!current(run)) return;
+        if (!reads) throw new Error('the image encoder loaded does not read video');
+        const plans = [];
+        for (const film of films) plans.push(await planVideo(film.width, film.height, film.duration));
+        if (!current(run)) return;
+        videoClipCount = plans.reduce((n, plan) => n + Math.ceil(plan.frames / plan.clipFrames), 0);
+        // The videos' clips in order, each video opened when its first clip
+        // is reached and released after its last, each clip's frames seeked
+        // as it is reached.
+        const clips = (async function* () {
+          for (let v = 0; v < films.length; v++) {
+            const opened = await openVideo(films[v].file);
+            try {
+              for (const clip of videoClipsOf(plans[v].frames, plans[v].clipFrames)) {
+                const frames = [];
+                for (let i = clip.first; i < clip.first + clip.count; i++) frames.push(await frameAt(opened.video, i));
+                yield { video: films[v], frames, start: clip.start, end: clip.end };
+              }
+            } finally {
+              opened.release();
+            }
+          }
+        })();
+        const prepare = (clip) => (clip === null ? null
+          : prepareVideo(clip.video.width, clip.video.height, clip.frames).then(() => clip));
+        const next = async () => {
+          const { value, done } = await clips.next();
+          return done ? null : value;
+        };
+        try {
+          // Each clip's frames go in while the one before is encoded.
+          let prepared = prepare(await next());
+          while (prepared !== null) {
+            const clip = await prepared;
+            if (!current(run)) return;
+            const { reply } = await embedClip(kVideoText, 'video');
+            prepared = prepare(await next());
+            prepared?.catch(() => {});   // its failure is met when it is awaited
+            const { vector, tokens: made } = await reply;
+            if (!current(run)) return;
+            built.add({ video: clip.video, start: clip.start, end: clip.end }, vector);
+            tokens += made;
+            const progress = `${built.size()} of ${kept + left()}`;
+            documentFacts.textContent = `${progress} embedded`;
+            onSearch?.('progress', progress);
+          }
+        } finally {
+          await clips.return();   // the video open, if the run ended within it, released
         }
       }
       ready = built;
       const seconds = (performance.now() - started) / 1000;
       const count = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
-      const onlyText = pictures.length === 0 && sounds.length === 0;
+      const onlyText = pictures.length === 0 && sounds.length === 0 && films.length === 0;
       const counted = listed([kept > 0 || onlyText ? count(kept, 'passage') : null,
         pictures.length > 0 ? count(pictures.length, 'photo') : null,
-        sounds.length > 0 ? count(clipCount, 'clip') : null].filter(Boolean));
+        sounds.length > 0 ? count(clipCount, 'clip') : null,
+        films.length > 0 ? count(videoClipCount, 'video clip') : null].filter(Boolean));
       documentFacts.textContent = `${counted} embedded · ${tokens} tokens · ${seconds.toFixed(2)} s`;
       onSearch?.('done');
     } catch (failure) {
@@ -507,17 +579,27 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const panel = h('div', { className: 'conversation search-panel' },
     h('p', { className: 'chat-heading', text: model.measured ? model.name : `${model.name} · unmeasured` }),
     h('p', { className: 'message-facts', text: about }),
-    documentForm, photos?.element, recordings?.element, companionFacts, queryForm, error, results, queryFacts);
+    documentForm, photos?.element, recordings?.element, videos?.element, companionFacts, queryForm, error, results,
+    queryFacts);
   photos?.dropOnto(panel);
   recordings?.dropOnto(panel);
+  videos?.dropOnto(panel);
   return panel;
 }
 
 // A result's entry: a passage's text; a photo's thumbnail; or a clip's
-// recording, its span and a player for that span.
+// recording or video, its span and a player for that span.
 function resultOf(entry) {
   if (typeof entry === 'string') return h('p', { text: entry });
   if (entry.file !== undefined) return h('img', { className: 'result-photo', src: entry.url, alt: entry.file.name });
+  if (entry.video !== undefined) {
+    const { video, start, end } = entry;
+    const span = `${clock(start)}–${clock(end)}`;
+    return h('div', { className: 'result-clip' },
+      h('p', { text: `${video.file.name} · ${span}` }),
+      h('video', { className: 'result-video', controls: true, muted: true, playsinline: true, preload: 'metadata',
+        src: `${video.url}#t=${start},${end}`, 'aria-label': `${video.file.name}, ${span}` }));
+  }
   const { recording, start, end } = entry;
   const span = `${clock(start)}–${clock(end)}`;
   return h('div', { className: 'result-clip' },

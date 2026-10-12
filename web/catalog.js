@@ -21,8 +21,10 @@
 // [begin, end) pairs in order, apart, the first from 0 holding its header
 // (residency/file_ranges.h); the SHA-256 of those ranges' bytes in order,
 // which the download checks in place of the whole file's; and the image
-// budget, { least, most } soft tokens, the card's (policy/policy.h). Pinned
-// by tools/pin_ranges.py from the published file. Each field is checked, as
+// budget, { least, most } soft tokens, the card's (policy/policy.h); and
+// `video`, true where its encoder reads a video's frames too (runtime/
+// video.h), which the search panel offers videos for. Pinned by
+// tools/pin_ranges.py from the published file. Each field is checked, as
 // the prompts are, and the entry refused naming the one at fault: ranges
 // that are not in order, or whose first does not begin at 0. A pasted URL's
 // model has none.
@@ -88,6 +90,7 @@ function checkCompanion(companion, field, position) {
   if (!isCount(least) || !isCount(most) || least < 1 || least > most) {
     refuse('tokens" as { least, most }, 1 ≤ least ≤ most');
   }
+  if (companion.video !== undefined && typeof companion.video !== 'boolean') refuse('video" as true or false');
 }
 
 // A model from a URL the user pasted. Accepts a Hugging Face page URL

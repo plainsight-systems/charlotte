@@ -49,5 +49,88 @@
 // Verification: tests/web/video_input.test.js — clipsOf at 1, 3, 4, 5 and
 // 300 frames with k of 3 and 4, covering every frame once, in order, each
 // clip at most k, its span its frames' seconds. In the app's Chromium, each
-// fixture video's frames (tests/fixtures/video/) within a few units a
-// channel of the reference's ffmpeg frames, and its clips the reference's.
+// fixture video's frames (tests/fixtures/video/) within half a unit a
+// channel of FFmpeg's on average, its seeks landing on the frames Google's
+// rule picks; in iOS Safari, which decodes no frame of an element it has
+// not played, the frames captured all the same.
+
+// The longest video a page indexes, in seconds.
+export const MOST_SECONDS = 600;
+
+export class VideoInputError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'VideoInputError';
+  }
+}
+
+// The frames in order, k to a clip, the last what remains: { first, count,
+// start, end }, the span in seconds at 1 frame a second.
+export function clipsOf(frames, k) {
+  if (!Number.isSafeInteger(frames) || frames < 1 || !Number.isSafeInteger(k) || k < 1) {
+    throw new RangeError('a clip needs at least one frame, and a video one');
+  }
+  const clips = [];
+  for (let first = 0; first < frames; first += k) {
+    const count = Math.min(k, frames - first);
+    clips.push({ first, count, start: first, end: first + count });
+  }
+  return clips;
+}
+
+// The video in `file`, opened on the page: { video, width, height,
+// duration, release() }, or a refusal, named.
+export async function open(file) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'auto';
+  const release = () => {
+    video.removeAttribute('src');
+    video.load();
+    URL.revokeObjectURL(url);
+  };
+  try {
+    await new Promise((resolve, reject) => {
+      video.addEventListener('loadedmetadata', resolve, { once: true });
+      video.addEventListener('error', () => reject(new VideoInputError('the browser cannot play this file')),
+        { once: true });
+      video.src = url;
+    });
+    const { videoWidth: width, videoHeight: height, duration } = video;
+    if (width === 0 || height === 0) throw new VideoInputError('the file has no picture');
+    if (!Number.isFinite(duration) || duration <= 0) throw new VideoInputError('the file has no length to read');
+    if (duration > MOST_SECONDS) throw new VideoInputError('the video is longer than 10 minutes');
+    // Safari decodes no frame of an element it has not played, whatever its
+    // preload: played muted and inline, which it allows, then paused.
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      await video.play().catch(() => {});
+      video.pause();
+    }
+    return { video, width, height, duration, release };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
+// The frame shown at `seconds`: the element seeked there, its frame's data
+// awaited where the seek left none yet, then its picture as a bitmap, with
+// no colour management.
+export async function frameAt(video, seconds) {
+  await new Promise((resolve, reject) => {
+    video.addEventListener('seeked', resolve, { once: true });
+    video.addEventListener('error', () => reject(new VideoInputError('the browser could not seek the video')),
+      { once: true });
+    video.currentTime = seconds;
+  });
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    await new Promise((resolve, reject) => {
+      video.addEventListener('loadeddata', resolve, { once: true });
+      video.addEventListener('error', () => reject(new VideoInputError('the browser could not decode the video')),
+        { once: true });
+    });
+  }
+  return createImageBitmap(video, { colorSpaceConversion: 'none' });
+}

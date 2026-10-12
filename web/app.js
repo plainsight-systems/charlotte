@@ -110,6 +110,9 @@ if (!('gpu' in navigator)) {
     embed: (text, media) => client.request(Request.EMBED, { text, media }),
     prepareImage: (image) => client.request(Request.PREPARE_IMAGE, { image }),
     prepareAudio: (samples) => client.request(Request.PREPARE_AUDIO, { samples }, { transfer: [samples.buffer] }),
+    planVideo: (width, height, duration) => client.request(Request.PLAN_VIDEO, { width, height, duration }),
+    prepareVideo: (width, height, frames) =>
+      client.request(Request.PREPARE_VIDEO, { width, height, frames }, { transfer: frames }),
     companion: companionOf('image'),
     audioCompanion: companionOf('audio'),
     onSearch: (step, detail) => recorder.search(step, detail),

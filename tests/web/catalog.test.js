@@ -61,6 +61,8 @@ test("a vision companion's fields are checked, the entry refused naming the one 
   refused({ ranges: [[0, 10], [40, 101]] }, 'ranges'); // past the file
   refused({ tokens: { least: 300, most: 280 } }, 'tokens');
   refused({ tokens: undefined }, 'tokens');
+  refused({ video: 'yes' }, 'video');
+  assert.equal(parseCatalog({ models: [{ ...entry, vision: { ...vision, video: true } }] })[0].vision.video, true);
 });
 
 test("an audio companion's fields are checked as a vision companion's, without a token budget", () => {

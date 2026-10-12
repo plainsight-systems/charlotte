@@ -25,8 +25,9 @@ export const Request = Object.freeze({
   GENERATE: 'generate',
   // Embed a text, for a model that encodes — { text, media }, the task's
   // prompt written around it; with `media` 'image', the image PREPARE_IMAGE
-  // prepared goes where the text writes <|image|>, and with 'audio', the clip
-  // PREPARE_AUDIO prepared where it writes <|audio|>. DONE carries { vector,
+  // prepared goes where the text writes <|image|>, with 'audio', the clip
+  // PREPARE_AUDIO prepared where it writes <|audio|>, and with 'video', the
+  // video's clip PREPARE_VIDEO prepared where it writes <|video|>. DONE carries { vector,
   // tokens }: the unit-length Float32Array and the tokens the text made, ends
   // included; FAILED's error carries code "text-too-long", with both counts,
   // when the text does not fit the context.
@@ -39,9 +40,10 @@ export const Request = Object.freeze({
   PREFLIGHT_COMPANION: 'preflight-companion',
   // Load a cached companion beside the loaded model, by its file's name —
   // { media, name, entry, memoryBudget, maxChunk }; progress comes back as
-  // PROGRESS replies. DONE carries, for an image companion, { imageTokens },
-  // the most an image becomes; for an audio companion, { mostSamples }, the
-  // most a clip holds.
+  // PROGRESS replies. DONE carries, for an image companion, { imageTokens,
+  // video }, the most an image becomes and whether its encoder reads a
+  // video's frames; for an audio companion, { mostSamples }, the most a clip
+  // holds.
   LOAD_COMPANION: 'load-companion',
   // Decode a photo in the worker and prepare it in the module's one image
   // slot — { image }, a Blob. DONE carries { tokens, width, height }: the
@@ -52,6 +54,15 @@ export const Request = Object.freeze({
   // transferred. DONE carries { frames, rows }: its spectrogram's frames and
   // the rows it becomes.
   PREPARE_AUDIO: 'prepare-audio',
+  // What a video becomes — { width, height, duration } — changing nothing.
+  // DONE carries { frames, tokens, width, height, clipFrames }: its frames
+  // at 1 a second, each frame's tokens and the size it is resampled to, and
+  // the frames a clip holds.
+  PLAN_VIDEO: 'plan-video',
+  // Prepare a video's clip in the module — { width, height, frames }, the
+  // clip's frames as ImageBitmaps of the video's size, in order, each
+  // transferred. DONE carries { ready }.
+  PREPARE_VIDEO: 'prepare-video',
   // Stop a load, a companion's load or a generation early; `target` is its
   // request id.
   CANCEL: 'cancel',
