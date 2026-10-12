@@ -15,6 +15,9 @@
 //     feed-forward falls outside on every image.
 //   - Each query ranks its own image first among the four scenes.
 //   - The same image embedded twice gives the same bits; refusals named.
+//   - An encode delivers only once every step has reported: the image's
+//     step held until after the text step has reported, then released Ok,
+//     gives the bits it gives unheld; released failed, no vector.
 
 #include <doctest/doctest.h>
 
@@ -171,6 +174,54 @@ bool within_spread(const VisionReference& r, std::span<const float> got) {
            dot(got, r.metal) >= dot(r.cpu, r.metal);
 }
 
+// Test-only: the real image stage behind the embedder's interface, its
+// step's report held until the test releases it — so the text step reports
+// first, the order two programs' reports may take on any queue.
+class HeldVision final : public runtime::MediaStage {
+public:
+    explicit HeldVision(std::unique_ptr<runtime::Vision> vision) : vision_(std::move(vision)) {}
+
+    runtime::Vision& vision() noexcept { return *vision_; }
+
+    [[nodiscard]] std::uint32_t ready_rows() const noexcept override { return vision_->ready_rows(); }
+
+    void run(kernels::StepCallback done, void* userdata) override {
+        done_ = done;
+        userdata_ = userdata;
+        reported_ = false;
+        vision_->run(on_vision, this);
+    }
+
+    [[nodiscard]] const kernels::ProgramLink& link() const noexcept override { return vision_->link(); }
+
+    // Whether the image's step has reported, held.
+    [[nodiscard]] const bool& reported() const noexcept { return reported_; }
+
+    // The held report passed on, or `failure` in its place.
+    void release(kernels::ProgramError failure = kernels::ProgramError::Ok) {
+        REQUIRE(reported_);
+        const kernels::ProgramError error = failure != kernels::ProgramError::Ok ? failure : error_;
+        done_(error, failure != kernels::ProgramError::Ok ? "held and failed" : std::string_view(message_), {},
+              userdata_);
+    }
+
+private:
+    static void on_vision(kernels::ProgramError error, std::string_view message, std::span<const std::byte>,
+                          void* userdata) {
+        auto& self = *static_cast<HeldVision*>(userdata);
+        self.error_ = error;
+        self.message_.assign(message);
+        self.reported_ = true;
+    }
+
+    std::unique_ptr<runtime::Vision> vision_;
+    kernels::StepCallback done_ = nullptr;
+    void* userdata_ = nullptr;
+    kernels::ProgramError error_ = kernels::ProgramError::Ok;
+    std::string message_;
+    bool reported_ = false;
+};
+
 }  // namespace
 
 TEST_CASE("each image and query is embedded within llama.cpp's own spread, its tokens and rows llama.cpp's") {
@@ -277,4 +328,52 @@ TEST_CASE("each query ranks its own image first; an image embedded twice gives t
     CHECK(embedder->start("<|image|> and <|image|>", kImage, on_embedded, &unused).error == EmbedError::Placeholder);
     CHECK(embedder->start("no placeholder", kImage, on_embedded, &unused).error == EmbedError::Placeholder);
     CHECK_FALSE(unused.done);
+}
+
+TEST_CASE("an encode delivers once every step has reported: the image's report held past the text step's") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const auto text = upload_text(instance.get(), *device);
+    const auto vision =
+        upload_vision(instance.get(), *device, model::FeedForwardActivation::GeluTanh, kBudget.most * 9);
+    const VisionReference& circle = kVisionReferences[0];
+    REQUIRE(!circle.scene.empty());
+    const std::vector<float> unheld = embed(instance.get(), *embedder_of(instance.get(), *text, *vision), circle).vector;
+
+    auto t = tokenizer_of(*text);
+    runtime::Ends ends;
+    REQUIRE(runtime::resolve_ends(text->index, t->vocabulary(), ends).error == runtime::EndsError::Ok);
+    const runtime::MediaTokens tokens = image_tokens_of(*t);
+    runtime::Embedder embedder(std::move(t), build_program(instance.get(), *text->upload, text->launches, text->embedding),
+                               ends, text->upload->plan().context_offered, 768);
+    auto owned = std::make_unique<HeldVision>(std::make_unique<runtime::Vision>(
+        build_program(instance.get(), *vision->upload, vision->launches), link_of(*text, *vision->upload, vision->soft_tokens),
+        binding_of(vision->pixels), kBudget, vision->description.vision->patch_size,
+        vision->description.vision->pooling));
+    HeldVision& held = *owned;
+    embedder.attach(arch::MediaKind::Image, std::move(owned), tokens, text->description.embedding_width);
+    // A step of the text model's own on a program of its own, submitted
+    // after the encode's: once it has reported, so has the encode's text step.
+    const auto probe = build_program(instance.get(), *text->upload, text->launches, text->embedding);
+
+    const std::string with = std::string(circle.before) + "<|image|>" + std::string(circle.after);
+    for (const kernels::ProgramError failure : {kernels::ProgramError::Ok, kernels::ProgramError::Step}) {
+        CAPTURE(static_cast<int>(failure));
+        prepare(held.vision(), scene_named(circle.scene));
+        Embedded e;
+        REQUIRE(embedder.start(with, std::optional{arch::MediaKind::Image}, on_embedded, &e).error == EmbedError::Ok);
+        pump_until(instance.get(), held.reported(), "the image's step");
+        run_step(instance.get(), *probe, 4);
+        CHECK_FALSE(e.done);   // the text step has reported; the image's is held
+        held.release(failure);
+        pump_until(instance.get(), e.done, "the encode");
+        if (failure == kernels::ProgramError::Ok) {
+            REQUIRE_MESSAGE(e.result->error == EmbedError::Ok, e.message);
+            CHECK(e.vector == unheld);
+        } else {
+            CHECK(e.result->error == EmbedError::Step);
+            CHECK(e.message == "held and failed");
+            CHECK(e.vector.empty());
+        }
+    }
 }

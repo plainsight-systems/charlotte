@@ -35,10 +35,13 @@ struct Embedder::State {
     std::array<std::unique_ptr<MediaStage>, kMediaKinds> stages;
     std::array<MediaTokens, kMediaKinds> media_tokens{};
     std::uint32_t width = 0;
-    // The running encode's media step, where it has one: its failure,
-    // reported in the text step's place.
-    kernels::ProgramError media_error = kernels::ProgramError::Ok;
-    std::string media_message;
+    // The running encode's steps not yet reported, and the first failure
+    // among those that have: delivered once the count reaches zero
+    // (runtime/media_stage.h), since two programs' reports are not ordered.
+    std::uint32_t outstanding = 0;
+    kernels::ProgramError failure = kernels::ProgramError::Ok;
+    std::string failure_message;
+    bool read_back = false;   // the text step's vector copied into `vector`
 
     // The running encode.
     EmbedCallback done = nullptr;
@@ -58,49 +61,56 @@ EmbedError error_of(kernels::ProgramError error) {
     }
 }
 
-// The step's report: the vector from its completed mapping, or what failed.
-void on_step(kernels::ProgramError error, std::string_view message, std::span<const std::byte> bytes,
-             void* userdata) {
-    Embedder::State& s = *static_cast<Embedder::State*>(userdata);
+// A report's failure, kept where it is the first.
+void keep_failure(Embedder::State& s, kernels::ProgramError error, std::string_view message) {
+    if (error == kernels::ProgramError::Ok || s.failure != kernels::ProgramError::Ok) return;
+    s.failure = error;
+    s.failure_message.assign(message);
+}
+
+// One step reported: once every step has, the encode's one callback — the
+// vector only if every report was Ok.
+void reported(Embedder::State& s) {
+    if (--s.outstanding > 0) return;
     const std::shared_ptr<Embedder::State> keep = std::move(s.in_flight);   // the callback may destroy the embedder
     EmbedResult result;
     result.tokens = s.encoded;
     result.context = s.context;
     std::span<const float> vector;
-    // The media step ran before this one and failed: its failure is the
-    // encode's.
-    if (s.media_error != kernels::ProgramError::Ok) {
-        error = s.media_error;
-        message = s.media_message;
-    }
-    if (error != kernels::ProgramError::Ok) {
-        if (error == kernels::ProgramError::DeviceLost) s.lost = true;
-        result.error = error_of(error);
-        result.message = message;
-    } else if (bytes.size() != std::size_t{s.dimensions} * sizeof(float)) {
+    if (s.failure != kernels::ProgramError::Ok) {
+        if (s.failure == kernels::ProgramError::DeviceLost) s.lost = true;
+        result.error = error_of(s.failure);
+        result.message = s.failure_message;
+    } else if (!s.read_back) {
         // A step that read nothing back cannot have its vector delivered.
         result.error = EmbedError::Step;
         result.message = "the step read back no embedding";
+    } else if (std::all_of(s.vector.begin(), s.vector.end(), [](float f) { return std::isfinite(f); })) {
+        vector = s.vector;
     } else {
-        std::memcpy(s.vector.data(), bytes.data(), bytes.size());
-        const bool finite = std::all_of(s.vector.begin(), s.vector.end(), [](float f) { return std::isfinite(f); });
-        if (finite) {
-            vector = s.vector;
-        } else {
-            result.error = EmbedError::NonFinite;
-        }
+        result.error = EmbedError::NonFinite;
     }
     s.done(result, vector, s.userdata);
 }
 
-// The media step's report: nothing to deliver, a failure kept for the text
-// step's report, which follows it in queue order.
+// The text step's report: its vector, from its completed mapping, copied
+// while the mapping is valid; delivered with the others' reports.
+void on_step(kernels::ProgramError error, std::string_view message, std::span<const std::byte> bytes,
+             void* userdata) {
+    Embedder::State& s = *static_cast<Embedder::State*>(userdata);
+    keep_failure(s, error, message);
+    if (error == kernels::ProgramError::Ok && bytes.size() == std::size_t{s.dimensions} * sizeof(float)) {
+        std::memcpy(s.vector.data(), bytes.data(), bytes.size());
+        s.read_back = true;
+    }
+    reported(s);
+}
+
+// The media step's report: nothing to deliver, a failure kept.
 void on_media(kernels::ProgramError error, std::string_view message, std::span<const std::byte>, void* userdata) {
     Embedder::State& s = *static_cast<Embedder::State*>(userdata);
-    if (error != kernels::ProgramError::Ok && s.media_error == kernels::ProgramError::Ok) {
-        s.media_error = error;
-        s.media_message.assign(message);
-    }
+    keep_failure(s, error, message);
+    reported(s);
 }
 
 }  // namespace
@@ -228,16 +238,19 @@ EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind
     s.userdata = userdata;
     s.encoded = s.tokens.size();
     s.in_flight = state_;
-    s.media_error = kernels::ProgramError::Ok;
-    s.media_message.clear();
+    s.failure = kernels::ProgramError::Ok;
+    s.failure_message.clear();
+    s.read_back = false;
     if (!media) {
+        s.outstanding = 1;
         s.program->run(s.step, on_step, &s);
         result.tokens = s.encoded;
         return result;
     }
     // The media step, then the text step with the medium's rows copied into
     // its hidden rows before its pass: two submits, in queue order, with no
-    // wait between them (GPU.6).
+    // wait between them (GPU.6), and two reports, in no order, awaited both.
+    s.outstanding = 2;
     s.step.media_first = static_cast<std::uint32_t>(placeholder + 1);
     s.step.media_rows = rows;
     stage->run(on_media, &s);
