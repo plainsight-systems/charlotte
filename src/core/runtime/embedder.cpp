@@ -208,11 +208,13 @@ EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind
         }
     }
     // Replaced by the kind's opening token, its rows and its closing token;
-    // a row's identifier is never read, the copy fills it (gather.h).
+    // the rows carry the placeholder, which gather skips, the copy filling
+    // them (gather.h).
+    const tokenizer::TokenId placeholder_id = media ? s.media_tokens[index_of(*media)].placeholder : tokenizer::TokenId{0};
     if (media) {
         const MediaTokens& tokens = s.media_tokens[index_of(*media)];
         s.tokens[placeholder] = tokens.begin;
-        s.tokens.insert(s.tokens.begin() + static_cast<std::ptrdiff_t>(placeholder) + 1, rows + 1, tokenizer::TokenId{0});
+        s.tokens.insert(s.tokens.begin() + static_cast<std::ptrdiff_t>(placeholder) + 1, rows + 1, placeholder_id);
         s.tokens[placeholder + 1 + rows] = tokens.end;
     }
     // The least count admission takes is a lower bound: counted again, ends
@@ -251,11 +253,11 @@ EmbedResult Embedder::start(std::string_view text, std::optional<arch::MediaKind
     // its hidden rows before its pass: two submits, in queue order, with no
     // wait between them (GPU.6), and two reports, in no order, awaited both.
     s.outstanding = 2;
-    s.step.media_first = static_cast<std::uint32_t>(placeholder + 1);
-    s.step.media_rows = rows;
+    s.step.media = 1;
+    s.step.media_token = static_cast<std::uint32_t>(placeholder_id);
     stage->run(on_media, &s);
     const std::uint64_t row_bytes = std::uint64_t{s.width} * sizeof(float);
-    const kernels::RunCopy copy{&stage->link(), 0, s.step.media_first * row_bytes, rows * row_bytes};
+    const kernels::RunCopy copy{&stage->link(), 0, (placeholder + 1) * row_bytes, rows * row_bytes};
     s.program->run(s.step, {}, std::span(&copy, 1), on_step, &s);
     result.tokens = s.encoded;
     return result;

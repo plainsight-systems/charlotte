@@ -17,8 +17,8 @@ struct Step {
     min_p: f32,
     log_min_p: f32,        // ln min_p, once a turn on the CPU
     columns: u32,          // a vision step's patch grid columns (graph/vision.h)
-    media_first: u32,      // a text step's first row an image's rows fill
-    media_rows: u32,       // and how many (runtime/vision.h)
+    media: u32,            // 1 when a text step carries a medium
+    media_token: u32,      // then its rows' identifier (runtime/media_stage.h)
     padding: vec2<u32>,
     ids: array<vec4<u32>, 128>,
 }

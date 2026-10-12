@@ -170,8 +170,8 @@ namespace bllm::graph {
 //     tokens / divisor. The step's tokens are a multiple of every divisor
 //     its launches carry, which a vision step's N = M k² is. And the step's
 //     head grows from 48 bytes
-//     to 64, its padding word becoming `columns`, followed by `media_first`
-//     and `media_rows` (runtime/vision.h) and two words of padding; a step's
+//     to 64, its padding word becoming `columns`, followed by `media` and
+//     `media_token` (kernels/interface.h) and two words of padding; a step's
 //     `tokens` may exceed kPrefillBlock where it writes no identifiers — a
 //     vision step's patches, up to its plan's rows — and identifiers stay
 //     at most kPrefillBlock. A decode step writes 64 bytes where it wrote

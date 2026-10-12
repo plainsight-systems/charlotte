@@ -305,27 +305,36 @@ TEST_CASE("destroying the program with a step in flight reports Cancelled, once"
     CHECK(ran.error == ProgramError::Cancelled);
 }
 
-TEST_CASE("a text step's image rows are left to the copy that fills them; every other row is gathered") {
+TEST_CASE("a text step's media rows, by their identifier, are left to the copy that fills them") {
+    // Rows 1, 2 and 4 carry token 5: with `media` 1 and `media_token` 5,
+    // every one is skipped, the runs apart as a video's frames are; with
+    // `media` 0, token 5 is a token like any other, token 0 among them.
     const gpu::Instance instance{wgpuCreateInstance(nullptr)};
     const auto device = acquire(instance.get());
     const Uploaded u = upload_table(instance.get(), *device, "embedding_f32", {7});
     const auto program = build(instance.get(), u, 1.0f);
-    const std::uint32_t ids[] = {3, 0, 0, 6, 1};
-    kernels::Step step{};
-    step.tokens = 5;
-    step.logits = 1;
-    step.media_first = 1;
-    step.media_rows = 2;
-    std::copy(std::begin(ids), std::end(ids), step.ids.begin());
-    const StepOutcome ran = try_step(instance.get(), *program, step);
-    REQUIRE_MESSAGE(ran.error == ProgramError::Ok, ran.message);
-    const auto got = read_hidden(instance.get(), *device, u, 5);
-    for (const std::size_t r : {std::size_t{1}, std::size_t{2}}) {
-        for (std::size_t i = 0; i < u.width; ++i) CHECK(got[r * u.width + i] == 0.0f);
-    }
-    for (const std::size_t r : {std::size_t{0}, std::size_t{3}, std::size_t{4}}) {
-        const Expected want = expected_row(u, ids[r], 1.0f);
-        for (std::size_t i = 0; i < u.width; ++i) CHECK(got[r * u.width + i] == want.primary[i]);
+    const std::uint32_t ids[] = {3, 5, 5, 0, 5, 1};
+    for (const std::uint32_t media : {1u, 0u}) {
+        CAPTURE(media);
+        kernels::Step step{};
+        step.tokens = 6;
+        step.logits = 1;
+        step.media = media;
+        step.media_token = 5;
+        std::copy(std::begin(ids), std::end(ids), step.ids.begin());
+        // Rows left unwritten read as the zeros written before the step.
+        const std::vector<float> zeros(std::size_t{6} * u.width, 0.0f);
+        wgpuQueueWriteBuffer(device->queue(), u.upload->buffer(u.hidden.buffer), u.hidden.offset, zeros.data(),
+                             zeros.size() * sizeof(float));
+        const StepOutcome ran = try_step(instance.get(), *program, step);
+        REQUIRE_MESSAGE(ran.error == ProgramError::Ok, ran.message);
+        const auto got = read_hidden(instance.get(), *device, u, 6);
+        for (std::size_t r = 0; r < 6; ++r) {
+            CAPTURE(r);
+            const bool skipped = media == 1 && ids[r] == 5;
+            const Expected want = expected_row(u, ids[r], 1.0f);
+            for (std::size_t i = 0; i < u.width; ++i) CHECK(got[r * u.width + i] == (skipped ? 0.0f : want.primary[i]));
+        }
     }
 }
 

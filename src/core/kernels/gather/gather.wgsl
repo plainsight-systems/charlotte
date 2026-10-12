@@ -27,11 +27,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (row >= step.tokens) {
         return;
     }
-    // An image's rows are copied in before the pass (runtime/vision.h); their
-    // identifiers are never read.
-    if (row >= step.media_first && row - step.media_first < step.media_rows) {
-        return;
-    }
     // A fed step's one token is the last step's draw, and its identifier is
     // never read (gather.h).
     var token: u32;
@@ -39,6 +34,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         token = sampled[0];
     } else {
         token = step.ids[row / 4u][row % 4u];
+        // A medium's rows are copied in by its encoder's steps
+        // (runtime/media_stage.h); they carry its placeholder.
+        if (step.media == 1u && token == step.media_token) {
+            return;
+        }
     }
     // A token in another piece of the table is that piece's launch's to write.
     if (token < gather.first_row || token - gather.first_row >= gather.row_count) {

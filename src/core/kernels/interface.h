@@ -184,8 +184,8 @@ struct Step {
     float min_p;
     float log_min_p;   // ln min_p, once a turn: the draw's min-p threshold
     std::uint32_t columns = 0;       // a vision step's patch grid columns
-    std::uint32_t media_first = 0;   // a text step's rows an image's rows fill
-    std::uint32_t media_rows = 0;
+    std::uint32_t media = 0;         // 1 when a text step carries a medium
+    std::uint32_t media_token = 0;   // then the identifier its media rows carry
     std::uint32_t padding1 = 0;
     std::uint32_t padding2 = 0;   // WGSL places `ids` at 64, a uniform array's 16-byte stride
     std::array<std::uint32_t, residency::kPrefillBlock> ids;
