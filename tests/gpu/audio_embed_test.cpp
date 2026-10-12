@@ -18,7 +18,9 @@
 //   - Each query ranks its own recording first among the four.
 //   - The same clip embedded twice gives the same bits, and the same when the
 //     next clip is prepared while it encodes; a text after a clip gives the
-//     bits a fresh embedder gives; refusals named.
+//     bits a fresh embedder gives; with both encoders attached, an image
+//     after a clip gives the image's bits, and a clip after an image the
+//     clip's; refusals named.
 
 #include <doctest/doctest.h>
 
@@ -38,8 +40,10 @@
 #include "core/runtime/audio.h"
 #include "core/runtime/embedder.h"
 #include "core/runtime/ends.h"
+#include "core/runtime/vision.h"
 #include "fixtures/audio/sounds.h"
 #include "fixtures/audio/wav.h"
+#include "fixtures/vision/scenes.h"
 #include "support/acquire.h"
 #include "support/companions.h"
 #include "support/program.h"
@@ -439,5 +443,61 @@ TEST_CASE("each query ranks its own recording first; a clip's bits repeat, prepa
     CHECK(embedder->start("a longer caption than the context leaves room for beside it <|audio|>", kAudio, on_embedded,
                           &unused)
               .error == EmbedError::TooManyTokens);
+    CHECK_FALSE(unused.done);
+}
+
+TEST_CASE("with both encoders attached, an image after a clip gives its own bits, and a clip after an image") {
+    const gpu::Instance instance{wgpuCreateInstance(nullptr)};
+    const auto device = acquire(instance.get());
+    const auto text = upload_text(instance.get(), *device);
+    const auto audio = upload_audio(instance.get(), *device, kMostRows);
+    constexpr media::ImageBudget kBudget{70, 280};
+    const auto vision =
+        upload_vision(instance.get(), *device, model::FeedForwardActivation::GeluTanh, kBudget.most * 9);
+    const auto embedder = embedder_of(instance.get(), *text, *audio);
+    embedder->attach(arch::MediaKind::Image,
+                     std::make_unique<runtime::Vision>(build_program(instance.get(), *vision->upload, vision->launches),
+                                                       link_of(*text, *vision->upload, vision->soft_tokens),
+                                                       binding_of(vision->pixels), kBudget,
+                                                       vision->description.vision->patch_size,
+                                                       vision->description.vision->pooling),
+                     media_tokens_of(*tokenizer_of(*text), arch::kGemma4Vision.tokens),
+                     text->description.embedding_width);
+    auto* image_stage = dynamic_cast<runtime::Vision*>(embedder->stage(arch::MediaKind::Image));
+    REQUIRE(image_stage != nullptr);
+
+    // The red circle, prepared whole in one band, and embedded alone.
+    const fixtures::vision::Scene& scene = fixtures::vision::kScenes[0];
+    const auto embed_image = [&] {
+        REQUIRE(image_stage->begin(scene.width, scene.height) == media::ImageError::Ok);
+        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(scene.width) * scene.height * 4, 255);
+        for (std::uint32_t y = 0; y < scene.height; ++y) {
+            for (std::uint32_t x = 0; x < scene.width; ++x) {
+                for (std::uint32_t c = 0; c < 3; ++c) {
+                    const std::size_t at = (static_cast<std::size_t>(y) * scene.width + x) * 4 + c;
+                    rgba[at] = fixtures::vision::pixel(scene, x, y, c);
+                }
+            }
+        }
+        REQUIRE(image_stage->rows(0, rgba) == media::ImageError::Ok);
+        Embedded e;
+        REQUIRE(embedder->start("<|image|>", std::optional{arch::MediaKind::Image}, on_embedded, &e).error ==
+                EmbedError::Ok);
+        return finish_encode(instance.get(), e).vector;
+    };
+    // The image first, alone; then a clip; then the image again.
+    const AudioReference& sputnik = reference_named("sputnik");
+    const auto image = embed_image();
+    const auto clip = embed(instance.get(), *embedder, sputnik).vector;
+    CHECK(embed_image() == image);
+    // The clip after an image: the bits an embedder with no image stage
+    // gives it.
+    const auto alone = embedder_of(instance.get(), *text, *audio);
+    CHECK(embed(instance.get(), *alone, sputnik).vector == clip);
+    // A text naming the other kind's placeholder is refused.
+    Embedded unused;
+    REQUIRE(audio_of(*embedder).prepare(samples_of("sputnik")) == media::AudioError::Ok);
+    CHECK(embedder->start("<|audio|> <|image|>", std::optional{arch::MediaKind::Audio}, on_embedded, &unused).error ==
+          EmbedError::Placeholder);
     CHECK_FALSE(unused.done);
 }
