@@ -48,9 +48,21 @@ namespace bllm::runtime {
 //     outstanding — a program's limit — the next as each completes; the
 //     text step is submitted once the last segment is, behind it on the
 //     queue, with no wait. One segment, as an image's or a clip's, is the
-//     two submits back to back of before. A failure of any segment's step
-//     is the encode's, reported in the text step's place, and no later
-//     segment is submitted.
+//     two submits back to back of before.
+//   - The encode's one callback waits for every step it submitted to
+//     report: the text step's and each segment's. Two programs' reports
+//     are not ordered with each other — a step reports once its work is
+//     done and its error scopes have settled, each program in its own order
+//     — so a text step's vector may be read back before the last segment's
+//     failure is known; delivered then, it would be a vector over rows that
+//     were never written. So the embedder counts the steps outstanding and
+//     delivers when the count reaches zero: the vector if every report was
+//     Ok, else the first failure reported, and the vector dropped. Once a
+//     segment's failure is reported, no further segment is submitted; one
+//     already submitted runs, and its report is awaited. This holds for one
+//     segment as for several: an image's or a clip's step and its text step
+//     are two reports, where the embedder before took the media step's to
+//     come first.
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -65,6 +77,9 @@ namespace bllm::runtime {
 //     WASM.4 Reduce indirect dispatch in hot paths — one call a segment.
 //     GPU.7  Pipeline CPU and GPU work — two segments in flight, and the
 //            text step behind the last with no wait.
+//     E.4    Design your error-handling strategy around invariants — no
+//            vector delivered while a step that made its rows may yet
+//            fail.
 
 // The text model's tokens a kind's rows stand among, resolved at load from
 // its vocabulary by text: the placeholder a text writes, and the tokens

@@ -38,9 +38,13 @@
 //
 // What it costs, for a video of n seconds: n seeks and n bitmaps, the
 // browser's decode of the frames around each seek; one message a clip; each
-// frame's bands, 4 W H bytes, 3.7 MB at 1,280 × 720, copied once into the
-// module's memory, a band a call (WASM.2). The page holds a clip's k bitmaps
-// at most, 15 MB at 1,280 × 720, between their decode and their transfer.
+// frame's bands, 4 W H bytes, 3.7 MB at 1,280 × 720, drawn, read back by
+// getImageData and copied once into the module's memory — three copies of
+// the frame — each band crossing as a photo's: _malloc, the copy, the rows
+// call and _free, three calls into the module and a reply (WASM.2). The
+// copies are the cost; the calls around them are microseconds. The page
+// holds a clip's k bitmaps at most, 15 MB at 1,280 × 720, between their
+// decode and their transfer.
 //
 // Verification: tests/web/video_input.test.js — clipsOf at 1, 3, 4, 5 and
 // 300 frames with k of 3 and 4, covering every frame once, in order, each

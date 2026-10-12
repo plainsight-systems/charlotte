@@ -137,16 +137,19 @@ inline constexpr std::uint32_t kFirstWeightBinding = 2;
 //
 //   struct Step { position: u32, tokens: u32, logits: u32, fed: u32,
 //                 seed: vec2<u32>, top_k: u32, temperature: f32, top_p: f32,
-//                 min_p: f32, log_min_p: f32, columns: u32, media_token: u32,
-//                 padding: vec3<u32>, ids: array<vec4<u32>, 128> }
+//                 min_p: f32, log_min_p: f32, columns: u32, media: u32,
+//                 media_token: u32, padding: vec2<u32>,
+//                 ids: array<vec4<u32>, 128> }
 //
 // A 64-byte head: WGSL places `ids` at 64, a uniform array's 16-byte stride.
 // `columns` is a vision step's patch grid columns, which rope's axial form
 // and gather's position form read (graph/vision.h), and an audio step's
-// spectrogram frames (graph/audio.h); `media_token` is the identifier a text
-// step's media rows carry — the medium's placeholder — which gather skips,
-// since a media encoder's step copies those rows in (runtime/media_stage.h);
-// each 0 where a step has none. A medium's rows may be several runs, a
+// spectrogram frames (graph/audio.h); `media` is 1 when a text step carries
+// a medium and 0 otherwise, and then `media_token` is the identifier its
+// media rows carry — the medium's placeholder — which gather skips, since a
+// media encoder's step copies those rows in (runtime/media_stage.h). Two
+// words, not a token of 0 for none: 0 is a token of the vocabulary,
+// EmbeddingGemma 2's `<pad>`. A medium's rows may be several runs, a
 // video's frames each between its own two tokens, so they are named by
 // their identifier, not by one range. sampler::apply writes the
 // seed and settings. `logits` is the program's,

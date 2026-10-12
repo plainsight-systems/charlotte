@@ -64,15 +64,17 @@ namespace bllm::runtime {
 //     clip of more frames than plan() allowed or none; BadBand.
 //
 // The stage's state:
-//   - Two sets of kClipFrames slots, each slot an ImageResampler and the
-//     patches of one frame, 1,260 × 3 P² floats, 3.9 MB: 8 slots, 31 MB of
-//     the module's heap, allocated at load (MEM.9). begin() fills the set
-//     the last encode did not use, so the page prepares clip c + 1 while
-//     clip c's frames are submitted one by one from the other set: a set
-//     is in use from the start() that takes it until that encode's last
-//     frame is submitted, and begin() refuses Busy for a set still in use,
-//     which the page's order — prepare, embed, prepare the next once the
-//     embed is sent — never meets.
+//   - Two clip sets, each kClipFrames slots — an ImageResampler and the
+//     patches of one frame, 1,260 × 3 P² floats, 3.9 MB — and the clip's
+//     own grid, frame count and segments: 8 slots, 31 MB of the module's
+//     heap, allocated at load (MEM.9). begin() fills the set the last
+//     encode did not use, so the page prepares clip c + 1 — of the same
+//     video or the next, whose grid may differ — while clip c's frames are
+//     submitted one by one from the other set, with that set's own grid
+//     and segments: a set is in use from the start() that takes it until
+//     that encode's last frame is submitted, and begin() refuses Busy for a
+//     set still in use, which the page's order — prepare, embed, prepare
+//     the next once the embed is sent — never meets.
 // Optimization (practice): staging double-buffered, so the CPU's resample
 // of the next clip overlaps the GPU's passes over this one, where one set
 // would make the page wait for an encode before preparing (GPU.7, MEM.4).
@@ -98,17 +100,32 @@ namespace bllm::runtime {
 //     1.4 × 10⁷ integer multiply-adds horizontally and 7.5 × 10⁶
 //     vertically, a few milliseconds; overlapping the last clip's GPU
 //     work.
-//   - Crossings: the frames' bands, 3.7 MB a 1,280 × 720 frame, one call a
-//     band; begin() once a clip; plan() once a video.
+//   - Crossings: each frame's bands, 3.7 MB a 1,280 × 720 frame, one band
+//     at 4 MiB, crossing as a photo's do: _malloc, the copy in, the rows
+//     call and _free, three calls into the module and a reply a band — 13
+//     calls and 5 replies for a clip of four such frames with begin(); one
+//     plan() a video. Each band's copy, 3.7 MB, is the cost; the calls
+//     around it are microseconds.
 //   - The vision steps: 4 × 1,080 patches, about 0.10 s each measured in the
 //     app's Chromium on the target through the image path, 0.40 s.
 //   - The copies: 4 × 120 × 512 × 4 bytes, 983 KB, after each pass.
 //   - The text step: 490 rows, about 45 ms (runtime/embedder.h).
 //   - About 0.45 s for 4 s of video: 75 clips, a 5 minute video, in about
-//     34 s.
+//     34 s — the GPU's and the text step's, with the page's seeks, decodes
+//     and the resamples assumed to overlap them; measured once the path
+//     runs (GPU.10).
 //   - Submissions: 5 an encode, against 2 for an image; each frame's
 //     completion is a callback that submits the next, a CPU round trip
-//     the second frame in flight hides.
+//     the second frame in flight hides. Dispatches: 133 a frame, 532 a
+//     clip, and the text step's 296.
+// Optimization not taken: a clip's frames batched into one vision step,
+// which would cut a 4-frame clip from 5 submissions and 828 dispatches to
+// 2 and 429. At about 1.5 µs a dispatch (kernels/interface.h) the saving
+// is about 0.6 ms of a 0.45 s clip: a frame of 1,080 patches is bound by
+// its arithmetic, which batching does not change, and its products already
+// run 34 tiles of 32 rows. It would need attention and pooling that keep
+// frames apart within one step, a change to the vision graph, for under
+// 0.2% (GPU.6's case is microsecond kernels; these are not).
 //
 // What it asks of the other contracts:
 //   - media/video.h: frame_count, frame_grid, frame_fit, frames_per_clip.
@@ -241,12 +258,18 @@ private:
     std::shared_ptr<kernels::Program> program_;
     std::unique_ptr<kernels::ProgramLink> link_;
     kernels::Binding pixels_;
-    std::array<std::array<FrameSlot, media::kClipFrames>, 2> sets_;
-    std::array<std::uint32_t, media::kClipFrames> segments_{};
-    media::ImageGrid grid_{};
-    std::uint32_t frames_ = 0;
-    std::uint32_t filling_ = 0;     // the set begin() filled last
-    std::array<bool, 2> in_use_{};
+    // One clip's staging: its frames' slots and what it is, kept with them
+    // so the clip still being submitted keeps its own grid while the next
+    // is prepared.
+    struct ClipSet {
+        std::array<FrameSlot, media::kClipFrames> slots;
+        std::array<std::uint32_t, media::kClipFrames> segments{};
+        media::ImageGrid grid{};
+        std::uint32_t frames = 0;
+        bool in_use = false;   // from the start() that takes it to its last frame's submission
+    };
+    std::array<ClipSet, 2> sets_;
+    std::uint32_t filling_ = 0;   // the set begin() filled last
     std::uint32_t patch_;
     std::uint32_t pooling_;
     std::uint32_t room_;

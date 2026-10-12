@@ -52,11 +52,13 @@ namespace bllm::kernels {
 //     step starts without the token having left the GPU. A drawn token is
 //     below the vocabulary by construction.
 //   - Workgroups of 64 invocations.
-//   - A text step's media rows carry the step's `media_token`, the medium's
-//     placeholder (kernels/interface.h): they are a media encoder's rows,
+//   - A text step that carries a medium, `media` 1, has its media rows carry
+//     the step's `media_token`, the medium's placeholder
+//     (kernels/interface.h): they are a media encoder's rows,
 //     copied into hidden by its steps, ahead of the text step on the queue
 //     (runtime/media_stage.h), so an invocation whose identifier is that
-//     token returns without writing.
+//     token returns without writing; a step with `media` 0 skips nothing,
+//     whatever its tokens, and a fed step's token is never compared.
 //     The placeholder is never a row's token otherwise: the embedder
 //     replaces it in every text. A video's frames are several runs of such
 //     rows, between `<|image>` and `<image|>` tokens gather does write.

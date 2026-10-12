@@ -194,8 +194,10 @@ namespace bllm::runtime {
 // An encode with a medium runs each segment's step with its copy out, then
 // the text step, in that order on the queue, two segments in flight at most
 // and the text step submitted behind the last with no wait; the media rows'
-// identifiers are the placeholder, the step's `media_token`
-// (kernels/interface.h).
+// identifiers are the placeholder, the step's `media_token`, with `media` 1
+// (kernels/interface.h). Its callback waits for every submitted step's
+// report and delivers the vector only if all were Ok
+// (runtime/media_stage.h).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines

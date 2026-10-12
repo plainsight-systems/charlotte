@@ -32,10 +32,12 @@ namespace bllm::media {
 //      kFrameTokens, 140, the card's default: at most 140 × 9 = 1,260
 //      patches; both sides scaled by √(1,260 × patch² / area), up or down,
 //      in f64 as Python computes it, then floored to a multiple of patch ×
-//      pooling, 48. A side floored to 0 takes 48 and the other ⌊its ratio⌋ ×
-//      48, at most the budget's side, as Google's edge case does; both
-//      floored to 0 is refused, Empty — a frame under 48 px both ways
-//      cannot be one. A 1,280 × 720 frame and a 640 × 360 one both become
+//      pooling, 48. The scale fills the budget's area, so both sides cannot
+//      floor to 0 and no size is refused: a 1 × 1 frame becomes 528 × 528.
+//      Past an aspect of about 140 to 1 the short side floors to 0; it then
+//      takes 48 and the long side ⌊its ratio⌋ × 48, at most the budget's
+//      side, 140 × 48 = 6,720, as Google's edge case does — 1,260 patches at
+//      most still. A 1,280 × 720 frame and a 640 × 360 one both become
 //      720 × 384, 45 × 24 patches, 120 tokens.
 //      This is not image_grid's rule (media/image.h), which sizes as
 //      llama.cpp does: the two agree when a frame is scaled down and differ
@@ -74,9 +76,10 @@ namespace bllm::media {
 // Verification the implementation is held to (tests/media_video_test.cpp):
 // frame_grid against Google's rule, computed in the test from its
 // definition, over 1,280 × 720, 640 × 360, 1,920 × 1,080, 720 × 1,280,
-// 1,024 × 1,024, 640 × 480, 3,840 × 2,160, 48 × 48, 47 × 47 (refused), and
-// 4,000 × 60 and 60 × 4,000 (an edge case each); every grid at most 1,260
-// patches; frame_fit filling its grid; frame_count over durations of 0,
+// 1,024 × 1,024, 640 × 480, 3,840 × 2,160, 48 × 48 and 1 × 1 (enlarged),
+// 4,000 × 60, and 16,384 × 60 and 60 × 16,384 (Google's edge case, a side
+// floored to 0); every grid at most 1,260 patches; frame_fit filling its
+// grid; frame_count over durations of 0,
 // 0.5, 1, 4.99, 5, 300; frames_per_clip at 120, 121, 130, 140 and 10 tokens
 // against a room of 510 (4, 4, 3, 3, 4).
 //
@@ -86,7 +89,6 @@ namespace bllm::media {
 //            parameters — the grid and the counts are returned.
 //     I.4    Make interfaces precisely and strongly typed — a grid, not four
 //            integers.
-//     E.27   Use error codes systematically — ImageError's Empty.
 //   C++ performance guidelines
 //     MEM.9  Allocate at init — kClipFrames bounds the slots made at load.
 
@@ -98,11 +100,10 @@ inline constexpr std::uint32_t kClipFrames = 4;
 // second; 0 for a duration that is not positive and finite.
 [[nodiscard]] std::uint32_t frame_count(double duration) noexcept;
 
-// A frame's grid by Google's rule (2 above), or ImageError::Empty for one
-// with no side at least patch × pooling once scaled. Preconditions: both
-// sides at least 1 and at most kMaxSide.
-[[nodiscard]] ImageError frame_grid(std::uint32_t width, std::uint32_t height, std::uint32_t patch,
-                                    std::uint32_t pooling, std::uint32_t tokens, ImageGrid& out) noexcept;
+// A frame's grid by Google's rule (2 above). Preconditions: both sides at
+// least 1 and at most kMaxSide; tokens at least 1.
+[[nodiscard]] ImageGrid frame_grid(std::uint32_t width, std::uint32_t height, std::uint32_t patch,
+                                   std::uint32_t pooling, std::uint32_t tokens) noexcept;
 
 // Where a frame lies in its grid: the whole grid, stretched (3 above).
 [[nodiscard]] ImageFit frame_fit(const ImageGrid& grid) noexcept;
