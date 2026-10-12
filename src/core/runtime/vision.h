@@ -46,18 +46,20 @@ namespace bllm::runtime {
 //      bytes before it returns, so the slot is free once start() has
 //      returned, and the page prepares the next image into it while this
 //      one's passes run.
-//   4. The text step, with its media rows: `media_first` the row after
-//      `<|image>`, `media_rows` M. Before its pass, one copy of rows 0 ..
-//      M − 1 of the vision program's `soft_tokens` into those rows of the
-//      text program's `hidden`, M × W × 4 bytes, 573 KB at 280 and W =
-//      512; gather writes every row of the step but those
-//      (kernels/gather/gather.h), whose identifiers are written 0 and never
-//      read. Then the text encoder's step exactly as for a text
+//   4. The image is one segment (runtime/media_stage.h): after the vision
+//      step's pass, in its command buffer, one copy of rows 0 .. M − 1 of
+//      the vision program's `soft_tokens` into the text program's `hidden`
+//      at the row after `<|image>`, M × W × 4 bytes, 573 KB at 280 and W =
+//      512 (kernels/program.h's copy after a pass).
+//   5. The text step, behind it on the queue: gather writes every row of
+//      the step but the image's, whose identifiers are `<|image|>`, the
+//      step's `media_token` (kernels/gather/gather.h). Then the text
+//      encoder's step exactly as for a text
 //      (graph/encoder.h): the per-layer inputs projected from every row,
 //      token or image alike, as llama.cpp's gemma-embedding2 graph does; no
 //      scale on the image's rows, which llama.cpp gives only token rows; the
 //      mean over every row.
-//   5. The vector read back, as embedder.h reads it: one callback, Ok and
+//   6. The vector read back, as embedder.h reads it: one callback, Ok and
 //      the vector, or the failure.
 //   - An image's rows are the vision step's alone and an image is one step:
 //     nothing of one image is kept for the next, as nothing of one text is.
@@ -89,6 +91,11 @@ namespace bllm::runtime {
 //     from its graph with no readback, and the link to the text program
 //     below. Released before the text model whenever the text model is,
 //     and with it: a link never outlives either program.
+//   - The program serves video's frames too: where the encoder names video
+//     tokens (arch/media_encoder.h), the load attaches a video stage
+//     beside the image stage (runtime/video.h), the two sharing the one
+//     program, std::shared_ptr, each with its own link and released
+//     together (F.27).
 //   - Text encodes are untouched by it: an encode without an image runs the
 //     text step alone, its media rows 0, as now.
 //
@@ -101,10 +108,10 @@ namespace bllm::runtime {
 //     target can encode one copy of a byte range between them before its
 //     pass. The program module keeps every GPU object; the embedder names
 //     purposes and rows.
-//   - kernels/interface.h: the step's `columns`, `media_first` and
-//     `media_rows` (graph/vision.h).
-//   - kernels/gather/gather.h: an invocation whose row lies in the step's
-//     media rows returns before reading its identifier: those rows are the
+//   - kernels/interface.h: the step's `columns` and `media_token`
+//     (graph/vision.h).
+//   - kernels/gather/gather.h: an invocation whose identifier is the
+//     step's `media_token` returns without writing: those rows are the
 //     copy's.
 //   - runtime/embedder.h: start(text, Image), the image the slot's, and
 //     optional; the text
@@ -142,7 +149,8 @@ namespace bllm::runtime {
 //   - The vision step: 133 launches, 5.4 × 10¹¹ multiply-adds, about 0.4 to
 //     0.5 s on the target by estimate (graph/vision.h); the patches' write,
 //     7.7 MB, one call.
-//   - The link's copy: 573 KB, under 2 µs at 400 GB/s; one command.
+//   - The link's copy: 573 KB, under 2 µs at 400 GB/s; one command, in the
+//     vision step's command buffer after its pass.
 //   - The text step: about 284 rows, 29 ms by the measured 26.0 at 254 and
 //     33.5 at 336 (docs/research/2026-10-11-chrome-encode-benchmark.md).
 //   - The readback: 3 KiB, about 0.5 ms, as for a text.
@@ -190,8 +198,9 @@ namespace bllm::runtime {
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
-//     I.11   Never transfer ownership by a raw pointer — the program and the
-//            slot owned, by unique_ptr and value.
+//     I.11   Never transfer ownership by a raw pointer — the program shared
+//            with the video stage, by shared_ptr; the slot owned by value.
+//     F.27   Use a shared_ptr<T> to share ownership — the program.
 //     E.27   Use error codes systematically — each refusal named.
 //     SL.io.2 When reading, always consider ill-formed input — the text's
 //            placeholders counted, the image's bands checked.
@@ -223,9 +232,10 @@ struct ImageSlot {
 class Vision final : public MediaStage {
 public:
     // Preconditions: `program` was built from the vision encoder's graph,
-    // with no readback; `link` copies its `soft_tokens` into the text
-    // program's `hidden`; `pixels` is its plan's `pixels`; `budget` the
-    // policy's; `patch` and `pooling` the encoder's (model_description.h).
+    // with no readback, and is shared with the video stage, if any; `link`
+    // copies its `soft_tokens` into the text program's `hidden`; `pixels`
+    // is its plan's `pixels`; `budget` the policy's; `patch` and `pooling`
+    // the encoder's (model_description.h).
     Vision(std::unique_ptr<kernels::Program> program, std::unique_ptr<kernels::ProgramLink> link,
            kernels::Binding pixels, media::ImageBudget budget, std::uint32_t patch, std::uint32_t pooling);
 

@@ -194,7 +194,27 @@
 //     Answers with its frames and rows, or its refusal, named — too short,
 //     too long, or no audio encoder loaded.
 //   bllm_embed's `image` becomes `media`: 0 none, 1 the image stage's, 2 the
-//   audio stage's.
+//   audio stage's, 3 the video stage's.
+//
+// Video, designed (runtime/video.h): no companion of its own. An image
+// companion whose encoder names video tokens (arch/media_encoder.h) attaches
+// a video stage beside its image stage at finish, the two sharing the
+// encoder's program; its finish answers as an image companion's does, and
+// whether video is attached. Then:
+//   bllm_video_plan(request, width, height, duration)
+//     What a video of that size and duration becomes, changing nothing:
+//     its frames at 1 a second, the grid each frame takes — its tokens and
+//     its size — and the frames a clip holds; or the refusal, named — a
+//     frame size the encoder cannot take, or no video stage attached.
+//   bllm_video_begin(request, width, height, frames)
+//     Starts a clip of `frames` frames in the video stage's free slot set,
+//     discarding what that set held; answers with its tokens a frame, or
+//     the refusal — too many frames or none, the set still in use, the
+//     size's.
+//   bllm_video_rows(request, frame, first_row, pixels, length)
+//     Frame `frame`'s next band, whole RGBA rows from `first_row`, which the
+//     page frees once the call returns; answers whether the clip is ready,
+//     as bllm_image_rows answers for an image, or the band's refusal.
 //
 // A diagnostic build adds the check of a finished load, the same three
 // crossings over the file streamed a second time (residency/upload_check.h);

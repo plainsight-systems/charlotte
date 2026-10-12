@@ -92,6 +92,9 @@ flowchart LR
     aud["Audio clip<br/>decoded, mono, 16 kHz,<br/>cut by the page"] --> mel["Prepare<br/>log-mel spectrogram"]
     mel --> aenc["Audio step<br/>every frame, once"]
     aenc --> soft
+    vid["Video<br/>a frame a second,<br/>cut into clips by the page"] --> fprep["Prepare<br/>each frame: size,<br/>resample, patches"]
+    fprep --> fvis["Vision step<br/>once a frame"]
+    fvis --> soft
     txt["Text<br/>with its placeholder"] --> tok["Tokenize<br/>and wrap"]
     tok --> place["Place<br/>rows where the<br/>placeholder stood"]
     soft --> place
@@ -101,7 +104,7 @@ flowchart LR
     classDef fork fill:#FAECE7,stroke:#D85A30,color:#993C1D
     classDef policy fill:#EEEDFE,stroke:#534AB7,color:#3C3489
     classDef regime fill:#E1F5EE,stroke:#0F6E56,color:#085041
-    class prep,vis,mel,aenc,tok fork
+    class prep,vis,mel,aenc,fprep,fvis,tok fork
     class soft policy
     class step regime
 ```
@@ -130,6 +133,16 @@ audio placeholder, and the encode is the text's. A recording is as many
 embeddings as it has clips, so a search finds where in it a query is
 answered. Its encoder is another companion, the same file's other range,
 loaded the first time a recording is indexed.
+
+**Encode a video's clip**, the image path once a frame. The page plays a
+video's frames, one a second, and cuts them into clips of as many frames as
+fit one step beside their tokens: four 16:9 frames at a context of 512, 4 s
+of video. Each frame is prepared as an image is, sized for the frame's own
+budget, and the vision encoder runs one step a frame; each frame's rows
+stand in the text step between its own two image tokens, frames back to
+back where the text writes the video placeholder, and the encode is the
+text's. A video is as many embeddings as it has clips. Its encoder is the
+image companion's: no other download.
 
 ```mermaid
 flowchart TD
@@ -401,7 +414,7 @@ and which principle handles it.
 | Per-layer inputs | Gemma 4's, or none | graph |
 | Layer output scale | present or absent | graph; applied in the next norm's add |
 | Pooling | mean, or another | file parameter, and a shared kernel (3, 6) |
-| Media input | text alone, or images or audio through encoders in a companion file | the encoder found by its kind and projector type (2); the image or the clip prepared on the CPU, as text is tokenized |
+| Media input | text alone, or images, audio or video through encoders in a companion file | the encoder found by its kind and projector type (2), a video's frames by the image encoder; the image, the clip or the frames prepared on the CPU, as text is tokenized |
 | Position in two dimensions | a learned table by column and row; rotary halves by column and row | a shared kernel's form and the encoder's convention (6) |
 | Grid pooling | k × k patches to a soft token | file parameter, and a shared kernel's form (3, 6) |
 | Feed-forward activation the file does not state | GELU's tanh form for Gemma 4's vision encoder, where llama.cpp's default differs | the encoder's convention, from its trained configuration (3) |

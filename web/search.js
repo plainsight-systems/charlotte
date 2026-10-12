@@ -88,6 +88,20 @@
 //     that span, and its score. Under ?fake-runtime=embedder a clip's vector
 //     is its loudness over time, binned (dev/fake_runtime.js), never shown
 //     as a model's.
+//   - Videos, for a model whose vision companion reads video
+//     (runtime/video.h), likewise: chosen or dropped beside the rest
+//     (videos.js), joining the index after the recordings, through the
+//     image companion — no download of their own. Each video is opened on
+//     the page, planned by the module, and cut into clips of k frames at 1
+//     a second, 4 for a 16:9 video (video_input.js); each clip is one
+//     entry, embedded alone as `<|video|>` with no prompt, as the card
+//     says. Indexing sends each clip's PREPARE_VIDEO and its EMBED, the
+//     next clip's frames seeked and sent once that EMBED is, as a photo's
+//     bands are; a clip's failure ends the indexing, whole or not at all.
+//     A clip's result is the video's name, its span — "0:04–0:08" — a
+//     player for that span, and its score. Under ?fake-runtime=embedder a
+//     clip's vector is its frames' colour histogram, summed
+//     (dev/fake_runtime.js), never shown as a model's.
 //   - Closing the panel, as choosing another model does, abandons an
 //     indexing in progress: no further passage is sent, and an answer still
 //     on its way is ignored. The companion is released with it. The next load cancels an encode still running
@@ -149,6 +163,11 @@
 // Measured in the app's Chromium on an Apple M3 Max: that recording's 15
 // clips indexed in about 2.0 s.
 //
+// A video, for EmbeddingGemma 2 on the target, by runtime/video.h's
+// estimates from a measured frame: a seek and a bitmap a second; a 4-frame
+// clip's four vision steps, about 0.40 s, and its text step, about 45 ms;
+// about 0.45 s for 4 s of video, a 5 minute video's 75 clips in about 34 s.
+//
 // A photo, for EmbeddingGemma 2 on the target, by runtime/vision.h's
 // estimates: decoding by the browser, its pixels a band a crossing — 4 MiB
 // bands, 12 for a 12-megapixel photo — the module's resample, 0.1 to 0.2 s,
@@ -172,7 +191,10 @@
 // recordings of tests/fixtures/audio/ added, each of their queries ranks its
 // own recording first among the recordings, the photos and the paragraphs,
 // each score llama.cpp's to three places; a 5 minute recording is indexed
-// as 15 clips, the one a query names ranked with its span. On a phone
+// as 15 clips, the one a query names ranked with its span. With the four
+// NASA videos of tests/fixtures/video/ added, each of their queries ranks
+// its own video's clip first among everything indexed, each score
+// llama.cpp's to two places. On a phone
 // screen, in iOS Safari under
 // ?fake-runtime=embedder (dev/fake_runtime.js), the panel with the
 // on-screen keyboard up.

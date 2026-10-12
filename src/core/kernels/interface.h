@@ -137,15 +137,18 @@ inline constexpr std::uint32_t kFirstWeightBinding = 2;
 //
 //   struct Step { position: u32, tokens: u32, logits: u32, fed: u32,
 //                 seed: vec2<u32>, top_k: u32, temperature: f32, top_p: f32,
-//                 min_p: f32, log_min_p: f32, columns: u32, media_first: u32,
-//                 media_rows: u32, padding: vec2<u32>,
-//                 ids: array<vec4<u32>, 128> }
+//                 min_p: f32, log_min_p: f32, columns: u32, media_token: u32,
+//                 padding: vec3<u32>, ids: array<vec4<u32>, 128> }
 //
 // A 64-byte head: WGSL places `ids` at 64, a uniform array's 16-byte stride.
 // `columns` is a vision step's patch grid columns, which rope's axial form
-// and gather's position form read (graph/vision.h); `media_first` and
-// `media_rows` are a text step's rows an image's rows fill, which gather
-// skips (runtime/vision.h); each 0 where a step has none. sampler::apply writes the
+// and gather's position form read (graph/vision.h), and an audio step's
+// spectrogram frames (graph/audio.h); `media_token` is the identifier a text
+// step's media rows carry — the medium's placeholder — which gather skips,
+// since a media encoder's step copies those rows in (runtime/media_stage.h);
+// each 0 where a step has none. A medium's rows may be several runs, a
+// video's frames each between its own two tokens, so they are named by
+// their identifier, not by one range. sampler::apply writes the
 // seed and settings. `logits` is the program's,
 // read by no kernel; `fed` is gather's; the seed and the settings are the
 // draw's (sampler/sampler.h), the turn's, written with every step. Token i's

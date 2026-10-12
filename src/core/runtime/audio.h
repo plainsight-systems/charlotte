@@ -40,11 +40,13 @@ namespace bllm::runtime {
 //      pass (graph/audio.h). The write copies the bytes before it returns,
 //      so the slot is free once run() has returned, and the next clip is
 //      prepared into it while this one's passes run.
-//   4. The text step, with its media rows: `media_first` the row after
-//      `<|audio>`, `media_rows` R; one copy of `soft_tokens` rows 0 .. R − 1
-//      into those rows of the text program's `hidden`, R × 512 × 4 bytes,
-//      1.0 MB at 508; then the text encoder's step as for an image's rows,
-//      unscaled.
+//   4. The clip is one segment (runtime/media_stage.h): after the audio
+//      step's pass, in its command buffer, one copy of `soft_tokens` rows
+//      0 .. R − 1 into the text program's `hidden` at the row after
+//      `<|audio>`, R × 512 × 4 bytes, 1.0 MB at 508; then the text step
+//      behind it on the queue, gather skipping the rows whose identifier is
+//      `<|audio|>`, the step's `media_token`, and the text encoder's step
+//      as for an image's rows, unscaled.
 //   5. The vector read back, as embedder.h reads it.
 //   - Refusals before the GPU runs, each named, start() returning at once:
 //     MediaNotReady, no clip prepared; Placeholder, as media_stage.h states;

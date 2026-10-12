@@ -46,12 +46,15 @@ namespace bllm::kernels {
 //     by their buffer use, so a launch sees what the one before it wrote.
 //   - Inputs and links: a run may write bytes into its own upload's
 //     working buffers before its pass — a vision step's patches, one
-//     wgpuQueueWriteBuffer — and encode copies before its pass from another
-//     program's working buffer through a ProgramLink made at load — a
-//     vision step's soft tokens into a text step's image rows
-//     (runtime/vision.h). Each program binds only its own upload's buffers;
-//     the link holds the two it copies between. Working buffers are created
-//     COPY_DST for them (residency/upload.h).
+//     wgpuQueueWriteBuffer — and encode copies through a ProgramLink made
+//     at load, before its pass from another program's working buffer, or
+//     after it into another's — a media encoder's rows into a text step's
+//     media rows (runtime/media_stage.h). Each program binds only its own
+//     upload's buffers; the link holds the two it copies between. Working
+//     buffers are created COPY_SRC and COPY_DST for them
+//     (residency/upload.h). The queue orders a run's input write after
+//     every submission before it, so a step's patches never overtake the
+//     last step's pass over the same buffer.
 //   - Read back: a step that asks for logits copies the readback range into
 //     one of the two slots, after its pass, in its own command buffer, and
 //     maps the slot once submitted; its callback carries the bytes. Steps
@@ -176,10 +179,14 @@ struct RunInput {
     std::span<const std::byte> bytes;
 };
 
-// A copy a run encodes before its pass, from another program's working
-// buffer into this one's, through a link made at load: a vision step's soft
-// tokens into a text step's image rows (runtime/vision.h). Offsets are
-// within the link's ranges; every value a multiple of 4.
+// When a run encodes a copy: before its pass, from another program's
+// working buffer into this one's — the link's target this program's upload
+// — or after it, from this program's working buffer into another's — the
+// link's source this program's upload. A media encoder's step copies its
+// rows out after its pass, into the text step's rows, so the next segment's
+// step may overwrite them (runtime/media_stage.h).
+// A copy a run encodes, through a link made at load. Offsets are within the
+// link's ranges; every value a multiple of 4.
 struct RunCopy {
     const ProgramLink* link;
     std::uint64_t from_offset;
@@ -294,10 +301,12 @@ public:
     // kPrefillBlock, every identifier below the vocabulary.
     void run(const Step& step, StepCallback done, void* userdata);
 
-    // Runs one step as run() does, first writing `inputs` into their buffers
-    // and encoding `copies` before the pass. An input or copy outside its
-    // range, or not of whole words, fails the step, Step, without running
-    // it. Preconditions: run()'s; every input's buffer is the program's
+    // Runs one step as run() does, first writing `inputs` into their buffers,
+    // then encoding each of `copies` before or after the pass as it says, in
+    // one command buffer with the pass. An input or copy outside its range,
+    // not of whole words, or whose link's end on this side is not this
+    // program's upload, fails the step, Step, without running it.
+    // Preconditions: run()'s; every input's buffer is the program's
     // upload's.
     void run(const Step& step, std::span<const RunInput> inputs, std::span<const RunCopy> copies, StepCallback done,
              void* userdata);

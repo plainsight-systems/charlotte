@@ -54,6 +54,8 @@ module's own header, and contract 11 in the two boundary files.
 | `web/image_input.js` | N | a photo decoded in the worker and handed to the module a band of rows at a time |
 | `web/recordings.js` | H | the recordings chosen for the search panel: added or dropped, each checked by decoding it, listed with its length |
 | `web/audio_input.js` | N | a recording decoded on the page, mixed to mono at 16 kHz and cut into clips of equal length |
+| `web/videos.js` | H | the videos chosen for the search panel: added or dropped, each checked by opening it, listed with its length |
+| `web/video_input.js` | N | a video opened on the page, a frame a second seeked and drawn, cut into clips, each clip's frames handed to the worker |
 | `web/fetch.js` | L | range and streaming fetch, with progress |
 | `web/preflight.js` | L | fetching the front of a file until the reader has its whole index |
 | `web/opfs.js` | L | the model file cache; a file is listed only once complete and verified |
@@ -75,7 +77,7 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/arch/architecture.h` | contract | what every architecture supplies, and which kind of graph: a generator's or an embedder's |
 | `src/core/arch/describe` | C | what describing shares: GGUF's `<arch>.<key>` and `blk.<layer>.<suffix>` naming, and the shape each role's weight has |
 | `src/core/arch/<arch>/` | A | reading its numbers into the model description, and its graph |
-| `src/core/arch/media_encoder.h` | contract | what every media encoder supplies, image or audio: its kind, describe, its graph and setup, and whether a text model reads its rows |
+| `src/core/arch/media_encoder.h` | contract | what every media encoder supplies, image or audio: its kind, describe, its graph and setup, whether a text model reads its rows, and an image encoder's video tokens |
 | `src/core/arch/<projector>/` | A | a media encoder: reading its numbers, its graph, the text models it pairs with |
 | `src/core/graph/graph` | A | the blocks a generator's graph composes — embed, attention against the cache, gated feed-forward, output — and the working buffers they bind |
 | `src/core/graph/encoder` | A | the blocks an embedder's graph composes — embed, per-layer inputs, attention both ways, gated feed-forward, per-layer block, pooled output — and the working buffers they bind |
@@ -83,6 +85,7 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/graph/audio` | A | the blocks an audio encoder's graph composes — subsampling, half-step feed-forwards, local attention, light convolution, output — its setup, and the working buffers they bind |
 | `src/core/media/image` | N | an image's preparation: its size for the budget, its resample, its patches |
 | `src/core/media/audio` | N | an audio clip's preparation: its frames and rows, its log-mel spectrogram |
+| `src/core/media/video` | N | a video's preparation: its frames at 1 a second, the grid each takes by Google's rule, how many a clip holds |
 | `src/core/formats/format.h` | contract | what every weight format supplies |
 | `src/core/formats/<format>/` | B | device layout, pack and unpack in WGSL |
 | `src/core/residency/plan` | D | the planner, pure: where the weights, a generator's cache and the working set a graph declares lie, and the context offered |
@@ -102,9 +105,10 @@ module's own header, and contract 11 in the two boundary files.
 | `src/core/sampler/` | F | sampling methods; settings and seed are passed in |
 | `src/core/runtime/runtime`, `generator`, `stops` | M (generate) | the turn loop: diff, prefill, decode, sample; and the tokens that stop it |
 | `src/core/runtime/embedder`, `ends` | M (encode) | the encode path: wrap a text in the file's ends, one step, read back a vector |
-| `src/core/runtime/media_stage.h` | contract | what the embedder asks of a media stage: rows ready, the step, the link |
+| `src/core/runtime/media_stage.h` | contract | what the embedder asks of a media stage: the segments ready, each segment's step with its rows copied out |
 | `src/core/runtime/vision` | M (encode) | an encode's image stage: the image's staging slot, the vision step, its rows placed in the text step |
 | `src/core/runtime/audio` | M (encode) | an encode's audio stage: the clip's staging slot, the setup once, the audio step, its rows placed in the text step |
+| `src/core/runtime/video` | M (encode) | an encode's video stage: a clip's frame slots, double-buffered, the image encoder's step once a frame, each frame's rows placed in the text step |
 
 Rows marked *contract* carry no axis. A contract header changes only
 when the contract itself changes, which is cross-cutting by definition: every
@@ -143,10 +147,13 @@ and production never materialises a dequantized weight.
 | **Image**, decoded | `web/photos.js` H · `web/image_input.js` N | no |
 | **Audio clip**, decoded, mono, cut | `web/recordings.js` H · `web/audio_input.js` N | no |
 | **Prepare** an audio clip | `core/media/audio` N | no |
+| **Video**, opened, a frame a second, cut | `web/videos.js` H · `web/video_input.js` N | no |
+| **Prepare** a video's frames | `core/media/video` N · `core/media/image` N | no |
+| **Frame steps** | `core/runtime/video` M · `core/arch/<projector>` A · `core/graph/vision` A · `core/kernels/*` E · `core/kernels/program` D, its copy out | yes |
 | **Audio step** | `core/runtime/audio` M · `core/arch/<projector>` A · `core/graph/audio` A · `core/kernels/*` E · `core/kernels/program` D | yes |
 | **Prepare** | `core/media` N | no |
 | **Vision step** | `core/runtime/vision` M · `core/arch/<projector>` A · `core/graph/vision` A · `core/kernels/*` E · `core/kernels/program` D | yes |
-| **Place** | `core/runtime/vision` M · `core/kernels/program` D, its link · `core/kernels/gather` E | yes |
+| **Place** | `core/runtime/<stage>` M · `core/kernels/program` D, its link's copy out · `core/kernels/gather` E, skipping rows by their identifier | yes |
 | **Companion load** | `web/companion.js` H · `web/download.js` L · `web/load.js` L · `core/residency/file_ranges` D · `core/residency/plan` D · `core/preflight` I · `core/capability` I | yes |
 
 ## Inside a pass, block to files

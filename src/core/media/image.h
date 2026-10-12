@@ -193,10 +193,13 @@ struct ImageFit {
 // One image, resampled band by band and cut into patches.
 class ImageResampler {
 public:
-    // Starts an image of `source_width` × `source_height` toward `grid`, a
-    // grid image_grid gave for it: computes both axes' taps and sizes the
-    // intermediate. Refuses Empty, TooLarge, and OverBudget for a grid of
-    // more tokens than `most`, before anything is allocated.
+    // Starts an image of `source_width` × `source_height` toward `grid`,
+    // placed in it at `fit`: image_grid's and image_fit's for an image, a
+    // video frame's frame_grid and frame_fit (media/video.h), which fills
+    // the grid. Computes both axes' taps and sizes the intermediate.
+    // Refuses Empty, TooLarge, and OverBudget for a grid of more tokens than
+    // `most`, before anything is allocated. Precondition: `fit` lies within
+    // `grid`.
     [[nodiscard]] ImageError begin(std::uint32_t source_width, std::uint32_t source_height, const ImageGrid& grid,
                                    std::uint32_t patch, std::uint32_t most);
 

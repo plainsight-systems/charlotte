@@ -49,7 +49,16 @@ namespace bllm::arch {
 // refused by name otherwise; and the three tokens of that model's
 // vocabulary its rows stand among, by text — the placeholder a text writes,
 // and the tokens llama.cpp's multimodal library puts around the rows for
-// this projector (runtime/media_stage.h).
+// this projector (runtime/media_stage.h). An image encoder that also reads
+// a video's frames names a second three, the video's: its placeholder and
+// the tokens around each frame's rows — `<|video|>`, `<|image>`, `<image|>`
+// for gemma4v, as EmbeddingGemma 2's processor writes a video
+// (runtime/video.h); empty for one that does not.
+//
+// Video is a kind of medium with no encoder and no companion of its own: a
+// video's frames are images, read by the image encoder its companion
+// already loads, so no projector key names it and find_media_encoder never
+// takes it; its stage is attached by the image companion's load.
 //
 // Function pointers in a static table, as Architecture's, and for the same
 // reasons: no state, chosen once at load, never called per step (WASM.4).
@@ -93,7 +102,8 @@ struct MediaEncoder {
     std::array<std::string_view, 3> tokens;
 };
 
-// The key whose value names a companion's encoder of `kind`.
+// The key whose value names a companion's encoder of `kind`, an image's or
+// an audio clip's. Precondition: kind is not Video, which has no companion.
 [[nodiscard]] constexpr std::string_view projector_key(MediaKind kind) noexcept {
     return kind == MediaKind::Image ? "clip.vision.projector_type" : "clip.audio.projector_type";
 }

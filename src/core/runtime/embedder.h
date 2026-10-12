@@ -176,12 +176,14 @@ namespace bllm::runtime {
 //     them, refused after its encode with the count it made. ends.h's
 //     refusals, on the CPU, over headers with each flag removed or retyped.
 //
-// Media (runtime/media_stage.h). An encode may carry one medium, an image
-// or an audio clip, whose rows stand where the text writes its kind's
-// placeholder. The embedder holds at most one stage a kind, attached once
-// that kind's companion has loaded and released with the embedder or by
-// attaching null; it knows each only through media_stage.h's interface and
-// its kind's three tokens:
+// Media (runtime/media_stage.h). An encode may carry one medium, an image,
+// an audio clip or a video's clip, whose rows stand where the text writes
+// its kind's placeholder, one run of rows a segment between the kind's two
+// tokens. The embedder holds at most one stage a kind, attached once that
+// kind's companion has loaded — the image companion attaches the image and
+// the video stages both (runtime/video.h) — and released with the embedder
+// or by attaching null; it knows each only through media_stage.h's
+// interface and its kind's three tokens:
 //   - attach(kind, stage, tokens, width) and stage(kind);
 //   - start(text, kind, done, userdata), the kind whose prepared medium the
 //     encode carries, or none;
@@ -189,8 +191,11 @@ namespace bllm::runtime {
 //     prepared;
 //   - Placeholder, as media_stage.h states: the encode's kind's placeholder
 //     other than once, or any other attached kind's at all.
-// An encode with a medium runs the stage's step, its link's copy and the
-// text step, in that order on the queue.
+// An encode with a medium runs each segment's step with its copy out, then
+// the text step, in that order on the queue, two segments in flight at most
+// and the text step submitted behind the last with no wait; the media rows'
+// identifiers are the placeholder, the step's `media_token`
+// (kernels/interface.h).
 //
 // Guidelines, by corpus:
 //   C++ Core Guidelines
@@ -268,16 +273,16 @@ public:
 
     // Starts an encode of `text` with the prepared medium of `media`'s
     // stage where `text` writes that kind's placeholder, once
-    // (runtime/media_stage.h): the stage's step and the text step submitted
-    // together, the medium's rows copied between them. Refuses, besides
-    // start()'s, MediaNotReady and Placeholder. With no kind, as
-    // start(text, …), Placeholder for any attached kind's placeholder.
+    // (runtime/media_stage.h): each segment's step, its rows copied out
+    // after its pass, then the text step. Refuses, besides start()'s,
+    // MediaNotReady and Placeholder. With no kind, as start(text, …),
+    // Placeholder for any attached kind's placeholder.
     [[nodiscard]] EmbedResult start(std::string_view text, std::optional<arch::MediaKind> media, EmbedCallback done,
                                     void* userdata);
 
     // A kind's stage, once its companion has loaded: its tokens in this
     // model's vocabulary and the hidden width its rows are. Released with
-    // the embedder, or by attaching null; the other kind's untouched.
+    // the embedder, or by attaching null; the other kinds' untouched.
     void attach(arch::MediaKind kind, std::unique_ptr<MediaStage> stage, MediaTokens tokens, std::uint32_t width);
 
     // The stage of `kind` attached, or null.
@@ -289,9 +294,12 @@ public:
     // The most tokens one encode holds, its ends included.
     [[nodiscard]] std::uint32_t context() const noexcept;
 
-    // The most rows one medium may make: the context less the file's ends
-    // and the medium's two tokens — 508 for EmbeddingGemma 2 — so a medium
-    // alone with its placeholder fits one encode.
+    // The most rows one medium of one segment may make: the context less
+    // the file's ends and the medium's two tokens — 508 for EmbeddingGemma
+    // 2 — so a medium alone with its placeholder fits one encode. A medium
+    // of several segments has two tokens a segment: the context less the
+    // ends, room(), is what a video's frames_per_clip divides
+    // (media/video.h).
     [[nodiscard]] std::uint32_t most_media_rows() const noexcept;
 
     // The embedding's length: embedding_length_out, 768 for EmbeddingGemma 2.

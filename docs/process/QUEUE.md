@@ -79,7 +79,18 @@ This file tracks active and accepted work.
   the fake runtime, the recordings list and a clip's player fit the phone
   with the on-screen keyboard up.
 
-  Next: video, its own design.
+- **Video, through EmbeddingGemma 2's vision encoder** — videos embedded
+  into the same space as text, photos and recordings, cut into clips of a
+  frame a second, four frames to a 16:9 clip, so a query finds where in a
+  video it is answered; frames read by the image companion's encoder, no
+  download of their own (`research/2026-10-11-embeddinggemma2-video.md`).
+  Designed in its file headers (`media/video.h`, `runtime/video.h`,
+  `runtime/media_stage.h`'s segments, the step's media rows by identifier
+  in `kernels/interface.h` and `kernels/gather`, `kernels/program.h`'s copy
+  after a pass, `arch/media_encoder.h`'s video kind, `web/video_input.js`,
+  `web/videos.js`). Frames follow EmbeddingGemma 2's own processor, not
+  llama.cpp's video helper; the oracle is llama.cpp's encoder per frame
+  over Google's token sequence.
 
 ## Accepted
 

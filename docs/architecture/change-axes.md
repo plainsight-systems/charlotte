@@ -24,7 +24,7 @@ files. It does not list the files; that is [`file-mapping.md`](file-mapping.md).
 | **K** | a new tokenization algorithm or pre-tokenizer | that algorithm, or that pre-tokenizer's split pattern |
 | **L** | a browser network or storage API, or how we download | fetch transport, OPFS model cache |
 | **M** | a new stage in a model's loop | the runtime that sequences it: diff, prefill, decode and sample for a generator; encode, one step and read back for an embedder |
-| **N** | a new kind of media input, or how one is prepared for its encoder | that preparation: an image's size, resample and patches in the module, its decode in the page; an audio clip's spectrogram in the module, its decode, mono mix and cutting into clips in the page |
+| **N** | a new kind of media input, or how one is prepared for its encoder | that preparation: an image's size, resample and patches in the module, its decode in the page; an audio clip's spectrogram in the module, its decode, mono mix and cutting into clips in the page; a video's frames sampled and sized in the module, its decode, a frame a second, and cutting into clips in the page |
 
 Every file maps to exactly one row. Two rows means it splits. Two files that
 always change together means they merge — unless they cannot, for a reason
@@ -149,6 +149,7 @@ an audio clip's spectrogram), and each kernel (E).
 | **Encode** | M, A, E, D | the embedder · the architecture's graph, composed from the encoder's blocks · the kernels · the program |
 | **Encode an image** | N, M, A, E, D | the image's preparation, in the page and the module · the vision stage, which places the image's rows in the text step · the vision encoder's graph, composed from the vision blocks · the kernels · the program and its link between two programs |
 | **Encode an audio clip** | N, M, A, E, D | the clip's preparation: decode, mono mix and clips in the page, the spectrogram in the module · the audio stage, which places the clip's rows in the text step · the audio encoder's graph and its setup, composed from the Conformer blocks · the kernels · the program, its setup step and its link |
+| **Encode a video's clip** | N, M, D | the clip's preparation: open, seek a frame a second and cut into clips in the page, each frame's plan, size and resample in the module · the video stage, which runs the image encoder once a frame and places each frame's rows in the text step · the program's copy out after a pass |
 
 **Diff and KV cache** is the split worth insisting on.
 `longest_common_prefix(old, new) → length` is a pure function over two integer
@@ -242,6 +243,16 @@ graph and pair with a text model; they differ in which key names them and
 what stage feeds them. One contract with a kind, MediaKind, found by kind
 and projector type: a second contract would duplicate the first, and a
 third kind, video's frames, needs no contract at all.
+
+**A video is segments of the image encoder, not a new encoder.** Its
+frames are images to the vision encoder, one step a frame, so video adds a
+stage (M) and a preparation (N), and no graph, kernel or companion. What it
+changes is how a medium's rows meet the text step: a frame's rows run
+between their own two tokens, so a clip's rows are several runs, not one.
+The text step names its media rows by their identifier, the placeholder,
+not by a range (contract), and each segment's step copies its rows out
+after its pass (D) before the next frame overwrites them. An image and an
+audio clip are one segment, unchanged in what they compute.
 
 **A clamp's bounds live in the weight's binding, not on the host.** They
 are numbers in the file, so they could be read at load and baked into each
