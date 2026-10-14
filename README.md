@@ -4,7 +4,7 @@
 
 # Charlotte
 
-**Try it: <https://plainsight-systems.github.io/charlotte/>**
+**Try it: <https://charlotte.plainsight-systems.com/>**
 
 Charlotte is an inference harness I wrote that runs open-weight language
 models entirely in your browser. It's C++ compiled to WebAssembly, and every
