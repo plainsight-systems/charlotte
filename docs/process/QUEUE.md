@@ -4,9 +4,13 @@ This file tracks active and accepted work.
 
 ## Active
 
-- **Embedding in the browser** — EmbeddingGemma 2's text encode path,
-  designed in its file headers (`runtime/embedder.h`, `graph/encoder.h`,
-  `arch/embedding_gemma2`).
+None.
+
+## Accepted
+
+- **Embedding in the browser** — accepted 2026-10-14. EmbeddingGemma 2's
+  text encode path, designed in its file headers (`runtime/embedder.h`,
+  `graph/encoder.h`, `arch/embedding_gemma2`).
 
   In: the module loads the model, encodes a text of up to 512 tokens with
   its ends as one step, and answers the worker's EMBED with the unit
@@ -29,14 +33,19 @@ This file tracks active and accepted work.
   on-screen keyboard up, its query scrolled into view above the keyboard
   once the panel's lists grow past it.
 
-- **Images, through EmbeddingGemma 2's vision encoder** — photos embedded
-  into the same space as text, so one query ranks paragraphs and photos
-  together; the companion file read in part, its vision span alone
-  (`research/2026-10-11-embeddinggemma2-vision.md`). Designed in its file
-  headers (`media/image.h`, `arch/gemma4v`, `graph/vision.h`,
-  `runtime/vision.h`, `residency/file_ranges.h`, block attention's
-  streaming form, `web/companion.js`, `web/image_input.js`). Audio and
-  video follow it, each its own design, before EmbeddingGemma 2 is
+  Reviewed once per design, not per commit as `workflow.md` asks: the encode
+  path (`d30dd71`), the search panel (`56ce6e2`) and the split along K
+  (`0c663ad`), their findings worked in `5381bcc`, `546666a` and
+  `d64751e`; the commits implementing them were not reviewed.
+
+- **Images, through EmbeddingGemma 2's vision encoder** — accepted
+  2026-10-14. Photos embedded into the same space as text, so one query
+  ranks paragraphs and photos together; the companion file read in part, its
+  vision span alone (`research/2026-10-11-embeddinggemma2-vision.md`).
+  Designed in its file headers (`media/image.h`, `arch/gemma4v`,
+  `graph/vision.h`, `runtime/vision.h`, `residency/file_ranges.h`, block
+  attention's streaming form, `web/companion.js`, `web/image_input.js`).
+  Audio and video follow it, each its own design, before EmbeddingGemma 2 is
   announced as multimodal.
 
   In: the module prepares an image byte for byte as llama.cpp does, and
@@ -51,10 +60,13 @@ This file tracks active and accepted work.
   runtime, photos come from the library and the ranged download is
   verified and cached.
 
-- **Audio, through EmbeddingGemma 2's audio encoder** — recordings embedded
-  into the same space as text and photos, cut into clips of up to 20 s, so
-  a query finds where in a recording it is answered; the companion file's
-  header and audio span, one 328.5 MB range
+  Reviewed once, as a design (`fff13c5`), its findings worked in
+  `00f76c5`; the commits implementing it were not reviewed.
+
+- **Audio, through EmbeddingGemma 2's audio encoder** — accepted 2026-10-14.
+  Recordings embedded into the same space as text and photos, cut into clips
+  of up to 20 s, so a query finds where in a recording it is answered; the
+  companion file's header and audio span, one 328.5 MB range
   (`research/2026-10-11-embeddinggemma2-audio.md`). Designed in its file
   headers (`media/audio.h`, `arch/media_encoder.h`, `arch/gemma4a`,
   `graph/audio.h`, `runtime/audio.h`, `runtime/media_stage.h`, the
@@ -81,18 +93,22 @@ This file tracks active and accepted work.
   the fake runtime, the recordings list and a clip's player fit the phone
   with the on-screen keyboard up.
 
-- **Video, through EmbeddingGemma 2's vision encoder** — videos embedded
-  into the same space as text, photos and recordings, cut into clips of a
-  frame a second, four frames to a 16:9 clip, so a query finds where in a
-  video it is answered; frames read by the image companion's encoder, no
-  download of their own (`research/2026-10-11-embeddinggemma2-video.md`).
-  Designed in its file headers (`media/video.h`, `runtime/video.h`,
-  `runtime/media_stage.h`'s segments, the step's media rows by identifier
-  in `kernels/interface.h` and `kernels/gather`, `kernels/program.h`'s copy
-  after a pass, `arch/media_encoder.h`'s video kind, `web/video_input.js`,
+  Reviewed once, as a design (`7a9775c`), its findings worked in
+  `aa122b9`; the commits implementing it were not reviewed.
+
+- **Video, through EmbeddingGemma 2's vision encoder** — accepted
+  2026-10-14. Videos embedded into the same space as text, photos and
+  recordings, cut into clips of a frame a second, four frames to a 16:9
+  clip, so a query finds where in a video it is answered; frames read by the
+  image companion's encoder, no download of their own
+  (`research/2026-10-11-embeddinggemma2-video.md`). Designed in its file
+  headers (`media/video.h`, `runtime/video.h`, `runtime/media_stage.h`'s
+  segments, the step's media rows by identifier in `kernels/interface.h` and
+  `kernels/gather`, `kernels/program.h`'s copy after a pass,
+  `arch/media_encoder.h`'s video kind, `web/video_input.js`,
   `web/videos.js`). Frames follow EmbeddingGemma 2's own processor, not
-  llama.cpp's video helper; the oracle is llama.cpp's encoder per frame
-  over Google's token sequence.
+  llama.cpp's video helper; the oracle is llama.cpp's encoder per frame over
+  Google's token sequence.
 
   In: each computed clip and query embeds within llama.cpp's own
   CPU-to-Metal spread of its Metal output, at about a tenth of it
@@ -113,7 +129,8 @@ This file tracks active and accepted work.
   0.45 s, and eight 720 × 384 photos in 1.00 s, as the image path measured
   before video.
 
-## Accepted
+  Reviewed once, as a design (`07c3369`), its findings worked in
+  `0aa0a5e`; the commits implementing it were not reviewed.
 
 - **Generation in the browser** — accepted 2026-10-07, designed in its file
   headers (`workflow.md`), so it has no packet.
