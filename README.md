@@ -12,9 +12,44 @@ step of the model runs on the GPU through WebGPU. Nothing runs on a server.
 The page downloads a model from Hugging Face once, caches it on your device,
 and everything after that happens locally.
 
-It runs Qwen3 0.6B, Llama 3.2 1B Instruct and Gemma 3 1B. You can also paste
-a link to any GGUF file, and the page reads only the file's header to tell
-you whether this build can run it and how much context fits on your device.
+It runs Qwen3 0.6B, Llama 3.2 1B Instruct and Gemma 3 1B for chat, and
+EmbeddingGemma 2 for search. You can also paste a link to any GGUF file, and
+the page reads only the file's header to tell you whether this build can run
+it and how much context fits on your device.
+
+## Search
+
+EmbeddingGemma 2 turns a passage, a photo, a recording or a video into the
+same kind of thing: 768 numbers, placed so that things that mean the same
+land close together, whatever they started as. That shared space is what its
+model card leads with, and I didn't think Charlotte really ran the model
+until it took all four, not just the text.
+
+So the page searches them together. Paste a document and add photos,
+recordings or videos, and a typed query ranks everything in one list. A
+recording is cut into clips of up to 20 seconds and a video into clips of
+four frames, a frame a second, so a result points at the part of the file
+that answers the query and plays from there.
+
+The image and audio encoders ship in a second file of 555 MB, and the page
+never downloads it whole. It reads the file's header, then fetches only the
+span the input needs, 226 MB for photos and video or 328 MB for audio, the
+first time you add one, and checks those bytes against a pinned SHA-256
+before caching them.
+
+Each kind of input is held to llama.cpp the way the chat models are: an
+embedding has to land within the spread between llama.cpp's own CPU and Metal
+backends. Getting there turned up places where llama.cpp and Google's own
+processor disagree. The spectrogram's log floor, the value quiet bins are
+clamped to, is one: llama.cpp's choice falls outside that spread on a test
+tone and a siren, so Charlotte follows Google's and checks against llama.cpp
+with that one line changed. A video frame's size is another: for 16:9 footage
+Google's processor picks 720 × 384 where llama.cpp's own size rule gives
+672 × 384, and Charlotte uses Google's.
+
+In Chromium on an Apple M3 Max, a 12-megapixel photo indexes in about half a
+second, a five-minute recording in about two seconds, and video at about half
+a second for every four seconds of footage.
 
 ## Why I built it
 
@@ -87,9 +122,9 @@ make test     # C++ and GPU tests, then the JavaScript tests
 make check    # structural rules, and tests proving each check fires
 ```
 
-The first `make test` fetches about 1.9 GB of test data (the three models
-and Unicode's normalization tests) and native Dawn, each verified against a
-pinned SHA-256, into `.cache/`.
+The first `make test` fetches about 2.8 GB of test data (the three chat
+models, EmbeddingGemma 2 and its encoders, and Unicode's normalization tests)
+and native Dawn, each verified against a pinned SHA-256, into `.cache/`.
 
 ## Find your way around
 
@@ -123,8 +158,9 @@ flowchart LR
   | `formats/`, `quant/` | each weight format's layout in the file and on the GPU, and its unpacking in WGSL |
   | `kernels/` | the WGSL kernels and the program that runs them, one compute pass a step |
   | `tokenizer/` | byte-level and SentencePiece BPE |
+  | `media/` | what tokenizing is to text, for the rest: a photo's patches, a recording's spectrogram, a video's frames |
   | `cache/` | the KV cache, and the prompt prefix a turn can reuse |
-  | `sampler/`, `runtime/` | drawing a token on the GPU, and the turn loop around it |
+  | `sampler/`, `runtime/` | drawing a token on the GPU, the turn loop around it, and an embedding's encode |
   | `gpu/` | the WebGPU device and its handles |
 
 Everything else:
