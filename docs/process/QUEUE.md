@@ -25,7 +25,9 @@ This file tracks active and accepted work.
   step's matrix products split along K; the worker's hops take under 0.1
   ms (`research/2026-10-11-chrome-encode-benchmark.md`).
 
-  Open: the panel with an iPhone's on-screen keyboard up.
+  In iOS Safari, under the fake runtime, the panel fits the phone with the
+  on-screen keyboard up, its query scrolled into view above the keyboard
+  once the panel's lists grow past it.
 
 - **Images, through EmbeddingGemma 2's vision encoder** — photos embedded
   into the same space as text, so one query ranks paragraphs and photos
