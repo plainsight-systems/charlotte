@@ -50,7 +50,10 @@ jobs:
         run: cmake --build --preset native-release
 
       - name: Test
-        run: ctest --preset native-release
+        run: ctest --preset native-release -E '^charlotte_gpu_tests$'
+
+      - name: GPU smoke
+        run: ./tools/gpu_smoke.sh native-release
 
       # Names the adapter the GPU tests ran on, so a green run shows it was a
       # real device (lavapipe here), not a pass with nothing behind it.
@@ -98,7 +101,10 @@ jobs:
         run: cmake --build --preset native-sanitize
 
       - name: Test
-        run: ctest --preset native-sanitize
+        run: ctest --preset native-sanitize -E '^charlotte_gpu_tests$'
+
+      - name: GPU smoke
+        run: ./tools/gpu_smoke.sh native-sanitize
 
       # Names the adapter the GPU tests ran on, so a green run shows it was a
       # real device (lavapipe here), not a pass with nothing behind it.
