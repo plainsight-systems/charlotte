@@ -86,7 +86,7 @@ std::vector<float> random(std::size_t count, std::uint64_t seed, float amplitude
     return out;
 }
 
-double gamma(std::uint64_t n) {
+double rounding_gamma(std::uint64_t n) {
     const double nu = static_cast<double>(n) * std::ldexp(1.0, -24);
     return nu / (1 - nu);
 }
@@ -123,13 +123,13 @@ std::vector<float> check(WGPUInstance instance, const gpu::Device& device, const
                 absolute += std::abs(term);
             }
             y[c] = sum;
-            dy[c] = gamma(kTaps) * absolute;
+            dy[c] = rounding_gamma(kTaps) * absolute;
             squares += sum * sum;
             carried += 2 * std::abs(sum) * dy[c];
         }
         const double mean = squares + kWidth * double{kEpsilon};
         const double rho = 1 / std::sqrt(squares / kWidth + kEpsilon);
-        const double drho = (carried + gamma(kWidth + 2) * squares) / (2 * mean) + 4 * u;
+        const double drho = (carried + rounding_gamma(kWidth + 2) * squares) / (2 * mean) + 4 * u;
         for (std::uint32_t c = 0; c < kWidth; ++c) {
             const double z = y[c] * rho * gain[c];
             const double want = z / (1 + std::exp(-z));

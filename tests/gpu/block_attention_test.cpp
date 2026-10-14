@@ -92,7 +92,7 @@ std::vector<float> run(WGPUInstance instance, const gpu::Device& device, const U
                        std::size_t{tokens} * s.query_heads * s.d);
 }
 
-double gamma(std::uint64_t n) {
+double rounding_gamma(std::uint64_t n) {
     const double nu = static_cast<double>(n) * std::ldexp(1.0, -24);
     return nu / (1 - nu);
 }
@@ -142,8 +142,8 @@ double check(const Shape& s, std::uint32_t window, std::uint32_t tokens, std::sp
             // The scores' rounding, through exp2, relatively: in log2 units,
             // a weight moves by ln 2 times its score's error; then the sums'
             // and exp2's own (block_attention.h).
-            const double bound = largest_v * (2 * gamma(s.d) * magnitude * log2e * std::numbers::ln2 +
-                                              2 * gamma(tokens + 1) + std::ldexp(1.0, -16));
+            const double bound = largest_v * (2 * rounding_gamma(s.d) * magnitude * log2e * std::numbers::ln2 +
+                                              2 * rounding_gamma(tokens + 1) + std::ldexp(1.0, -16));
             for (std::uint32_t c = 0; c < s.d; ++c) {
                 const double want = out[c] / sum;
                 const double error = std::abs(got[(std::size_t{i} * s.query_heads + h) * s.d + c] - want);
@@ -318,8 +318,8 @@ double check_rows(std::uint32_t window, std::uint32_t tokens, std::span<const st
                 sum += w;
                 for (std::uint32_t c = 0; c < s.d; ++c) out[c] += w * v[(std::size_t{j} * s.key_value_heads + h) * s.d + c];
             }
-            const double bound = largest_v * (2 * gamma(s.d) * magnitude * log2e * std::numbers::ln2 +
-                                              2 * gamma(tokens + 1) + std::ldexp(1.0, -16) + rescales);
+            const double bound = largest_v * (2 * rounding_gamma(s.d) * magnitude * log2e * std::numbers::ln2 +
+                                              2 * rounding_gamma(tokens + 1) + std::ldexp(1.0, -16) + rescales);
             for (std::uint32_t c = 0; c < s.d; ++c) {
                 const double want = out[c] / sum;
                 const double error = std::abs(got[(std::size_t{i} * s.query_heads + h) * s.d + c] - want);

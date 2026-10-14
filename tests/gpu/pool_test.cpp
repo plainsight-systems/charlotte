@@ -61,7 +61,7 @@ Uploaded upload_buffers(WGPUInstance instance, const gpu::Device& device) {
     return u;
 }
 
-double gamma(std::uint64_t n) {
+double rounding_gamma(std::uint64_t n) {
     const double nu = static_cast<double>(n) * std::ldexp(1.0, -24);
     return nu / (1 - nu);
 }
@@ -91,7 +91,7 @@ TEST_CASE("the mean of a step's rows is written at row N - 1 of pooled, and nowh
                 absolute += std::abs(normed[std::size_t{row} * kWidth + c]);
             }
             const double want = sum / tokens;
-            const double bound = gamma(tokens + 1) * absolute / tokens + std::ldexp(std::abs(want), -23);
+            const double bound = rounding_gamma(tokens + 1) * absolute / tokens + std::ldexp(std::abs(want), -23);
             CHECK(std::abs(pooled[std::size_t{tokens - 1} * kWidth + c] - want) <= bound);
         }
         std::size_t elsewhere = 0;
@@ -192,7 +192,7 @@ TEST_CASE("a vision step's patches pool k x k into soft tokens, each normalized 
                 // The norm's margin against the row's largest, and the mean's
                 // nine adds and division.
                 const double error = std::abs(got[std::size_t{r} * kWidth + i] - mean[i] * scale);
-                if (!(error <= largest * std::ldexp(1.0, -17) + std::abs(mean[i] * scale) * gamma(10))) {
+                if (!(error <= largest * std::ldexp(1.0, -17) + std::abs(mean[i] * scale) * rounding_gamma(10))) {
                     FAIL_CHECK("soft token " << r << " value " << i << " off by " << error);
                     break;
                 }

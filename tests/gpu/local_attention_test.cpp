@@ -102,7 +102,7 @@ std::vector<float> random(std::size_t count, std::uint64_t seed, float amplitude
     return out;
 }
 
-double gamma(std::uint64_t n) {
+double rounding_gamma(std::uint64_t n) {
     const double nu = static_cast<double>(n) * std::ldexp(1.0, -24);
     return nu / (1 - nu);
 }
@@ -176,7 +176,7 @@ Reference blocked(const Inputs& in, std::uint32_t n) {
                         ac_abs += std::abs(term);
                     }
                     const double x = (ac + shifted(bd, q, k)) / kSoftcap;
-                    const double dx = (gamma(kHeadDim) + 3 * u) * (ac_abs + shifted(bd_abs, q, k)) / kSoftcap;
+                    const double dx = (rounding_gamma(kHeadDim) + 3 * u) * (ac_abs + shifted(bd_abs, q, k)) / kSoftcap;
                     const double t = std::tanh(std::max(0.0, std::abs(x) - dx));
                     score[k] = std::tanh(x) * kSoftcap;
                     slope_error[k] = kSoftcap * (1 - t * t) * dx + std::ldexp(kSoftcap, -19);
@@ -207,7 +207,7 @@ Reference blocked(const Inputs& in, std::uint32_t n) {
                     }
                     const std::size_t at = static_cast<std::size_t>(gq) * kWidth + h * kHeadDim + i;
                     ref.out[at] = sum;
-                    ref.bound[at] = absolute * (weight_error + gamma(kWindow + 2));
+                    ref.bound[at] = absolute * (weight_error + rounding_gamma(kWindow + 2));
                 }
             }
         }

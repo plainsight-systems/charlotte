@@ -116,7 +116,7 @@ std::vector<float> read(WGPUInstance instance, const gpu::Device& device, const 
     return read_floats(instance, device, b.upload->buffer(r.buffer), r.offset, r.length / 4);
 }
 
-double gamma(std::uint64_t n) {
+double rounding_gamma(std::uint64_t n) {
     const double nu = static_cast<double>(n) * std::ldexp(1.0, -24);
     return nu / (1 - nu);
 }
@@ -157,7 +157,7 @@ void check_position(const Position& p, const std::vector<float>& gain, const flo
     }
     variance /= static_cast<double>(n);
     // The statistics' own f32 sums, n terms each.
-    error += gamma(n + 2) * largest;
+    error += rounding_gamma(n + 2) * largest;
     const double sigma = std::sqrt(variance + kEpsilon);
     for (std::size_t c = 0; c < n; ++c) {
         const double y = (p.sums[c] - mean) / sigma * gain[c];
@@ -189,7 +189,7 @@ Position first_position(const std::vector<float>& conv, const std::vector<float>
             }
         }
         p.sums[c] = sum;
-        p.bounds[c] = gamma(9) * absolute;
+        p.bounds[c] = rounding_gamma(9) * absolute;
     }
     return p;
 }
@@ -216,7 +216,7 @@ Position second_position(const std::vector<float>& conv, const std::vector<float
             }
         }
         p.sums[c] = sum;
-        p.bounds[c] = gamma(kChannels1 * 9) * absolute;
+        p.bounds[c] = rounding_gamma(kChannels1 * 9) * absolute;
     }
     return p;
 }

@@ -188,7 +188,7 @@ std::vector<float> source_rows(WGPUInstance instance, const gpu::Device& device,
 }
 
 // γ(n) = n u / (1 − n u), u = 2⁻²⁴ (matmul.h).
-double gamma(std::uint64_t n) {
+double rounding_gamma(std::uint64_t n) {
     const double nu = static_cast<double>(n) * std::ldexp(1.0, -24);
     return nu / (1 - nu);
 }
@@ -207,7 +207,7 @@ Want reference(std::span<const float> w, std::span<const float> source, std::uin
         sum += p;
         absolute += std::abs(p);
     }
-    return {sum, gamma(2 * std::uint64_t{columns}) * absolute};
+    return {sum, rounding_gamma(2 * std::uint64_t{columns}) * absolute};
 }
 
 kernels::MatmulLaunch single(const Uploaded& u, const residency::WeightView& w, kernels::Rows rows) {
