@@ -178,8 +178,18 @@ dominate, so halving the tokens saves under a third.
   makes it decode. It also, now and then, never fires `seeked` after a
   seek; the element's `seeking` flag still clears, so the page waits on
   either.
-- The cost per clip is still to be measured with the browser pane
-  visible; timed hidden, the pane is throttled, and the image path that
-  measured 0.13 s a frame-sized image took 0.41 s, on this build and the
-  one before alike.
+- A clip costs about what the estimate says. In the app's Chromium on the
+  target, in a visible pane, the four NASA videos (31 s, 8 clips) index in
+  3.83 to 3.86 s over four runs once the image encoder is loaded: about
+  0.48 s a clip, 0.124 s a second of video, against 0.45 s for a 4-frame
+  clip. Eight 720 × 384 photos index in 1.00 s on the same build, as they
+  did before video. The derived encode, 31 vision steps at about 0.10 s
+  and 8 text steps at about 45 ms, is about 3.5 s; the page's 31 seeks and
+  bitmaps take 0.59 s on their own and are meant to overlap it. The
+  remaining 0.4 s, a tenth of the run, was not profiled: either the seeks
+  overlap only in part or a frame's vision step runs past 0.10 s. A 5
+  minute video would index in about 37 s.
+- Timed with the pane hidden, the same runs were about three times as
+  slow, photos and clips alike, on this build and the one before video:
+  a hidden pane is throttled, and its timings measure nothing.
 

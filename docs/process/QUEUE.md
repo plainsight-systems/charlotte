@@ -108,10 +108,10 @@ This file tracks active and accepted work.
   the fake runtime, videos chosen from the photo library index and play
   from their span, and the query stays above the on-screen keyboard.
 
-  Open: the cost of a clip, measured in a visible pane. Timed with the
-  pane hidden, which throttles it, eight clips took 10 s and eight
-  frame-sized photos 3.3 s on this build and 3.5 s on the build before
-  video; not a measurement of either.
+  In the app's Chromium, in a visible pane, the four NASA videos' 31 s
+  index as 8 clips in 3.85 s, about 0.48 s a clip against an estimate of
+  0.45 s, and eight 720 × 384 photos in 1.00 s, as the image path measured
+  before video.
 
 ## Accepted
 

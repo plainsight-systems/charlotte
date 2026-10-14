@@ -171,6 +171,9 @@
 // estimates from a measured frame: a seek and a bitmap a second; a 4-frame
 // clip's four vision steps, about 0.40 s, and its text step, about 45 ms;
 // about 0.45 s for 4 s of video, a 5 minute video's 75 clips in about 34 s.
+// Measured in the app's Chromium on an Apple M3 Max: the four NASA videos,
+// 31 s in 8 clips, indexed in 3.85 s, about 0.48 s a clip; their 31 seeks
+// and bitmaps alone 0.59 s; 720 × 384 photos on the same build 0.125 s each.
 //
 // A photo, for EmbeddingGemma 2 on the target, by runtime/vision.h's
 // estimates: decoding by the browser, its pixels a band a crossing — 4 MiB
