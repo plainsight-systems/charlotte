@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 11.25 28 28">
+  <!-- The header's spider (web/index.html) without its thread, amber on the
+       page's dark background, its legs thickened to hold at 16 px. -->
+  <rect x="-2" y="11.25" width="28" height="28" rx="6" fill="#0f141d"/>
+  <g fill="none" stroke="#f0a94a" stroke-width="1.7" stroke-linecap="round">
+    <path d="M10.6 21.5 Q6.5 18 4.5 13.5"/><path d="M10.2 23.5 Q5.5 22.5 2.5 20"/>
+    <path d="M10.2 26 Q5.5 27.5 3 31.5"/><path d="M10.8 28.5 Q7.5 32.5 6 37"/>
+    <path d="M13.4 21.5 Q17.5 18 19.5 13.5"/><path d="M13.8 23.5 Q18.5 22.5 21.5 20"/>
+    <path d="M13.8 26 Q18.5 27.5 21 31.5"/><path d="M13.2 28.5 Q16.5 32.5 18 37"/>
+  </g>
+  <circle cx="12" cy="21" r="2.6" fill="#f0a94a"/>
+  <ellipse cx="12" cy="27.5" rx="4.1" ry="5.1" fill="#f0a94a"/>
+</svg>

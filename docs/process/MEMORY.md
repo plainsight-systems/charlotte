@@ -8,7 +8,7 @@ This file is the canonical entry point for durable project context.
 - **Operating brand:** None. Internal R&D under the parent entity.
 - **Parent entity:** Plainsight Systems LLC
 - **Repository:** <https://github.com/plainsight-systems/charlotte> (public).
-  Deployed: <https://plainsight-systems.github.io/charlotte/>
+  Deployed: <https://charlotte.plainsight-systems.com/>
 
 ## Purpose
 
