@@ -36,10 +36,14 @@
 //     ends the indexing and discards what was embedded: a ranking over part
 //     of a document would show the rest as not matching. Editing the
 //     document discards the index, and the results with it, since they rank
-//     a text no longer shown.
-//   - A query is embedded once the index is built, never while it builds,
-//     written into the model's query prompt. A query longer than the context
-//     is refused, by name, not cut: its pieces would be other questions.
+//     a text no longer shown, and the panel says to search again.
+//   - Search is the panel's one action. Pressed with no index current, it
+//     builds one first, its progress shown and the button turned to Stop,
+//     then embeds the query; pressed again with nothing changed, it embeds
+//     only the query. A press is never ignored: with no query, or nothing
+//     to search, the panel says what to add. The query is written into the
+//     model's query prompt. A query longer than the context is refused, by
+//     name, not cut: its pieces would be other questions.
 //   - Each result is a passage as it was embedded, a piece where one was
 //     cut, with its score to three places. Facts follow the results: the
 //     query's tokens, its round trip in milliseconds and the passages
@@ -294,8 +298,6 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const documentInput = h('textarea', { rows: 5, 'aria-label': 'Document',
     placeholder: 'Paste a document. Each paragraph, between blank lines, becomes a passage.' });
   const documentFacts = h('span', { className: 'message-facts' });
-  const indexLabel = sees || hears ? 'Embed' : 'Embed passages';
-  const indexButton = h('button', { type: 'submit', className: 'action primary', text: indexLabel });
   const queryInput = h('input', { type: 'search', 'aria-label': 'Query',
     placeholder: `Search the ${listed(['passages', sees ? 'photos' : null, hears ? 'recordings' : null,
       watches ? 'videos' : null].filter(Boolean))}` });
@@ -306,13 +308,13 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const companionFacts = h('p', { className: 'message-facts', 'aria-live': 'polite' });
   session.showCompanion = (state) => { companionFacts.textContent = describeCompanion(state); };
   const photos = sees ? createPhotos({ onChange: () => {
-    if (indexing !== null || ready !== null) discard('Photos changed: embed again.');
+    if (indexing !== null || ready !== null) discard('Changed: search again to include it.');
   } }) : null;
   const recordings = hears ? createRecordings({ onChange: () => {
-    if (indexing !== null || ready !== null) discard('Recordings changed: embed again.');
+    if (indexing !== null || ready !== null) discard('Changed: search again to include it.');
   } }) : null;
   const videos = watches ? createVideos({ onChange: () => {
-    if (indexing !== null || ready !== null) discard('Videos changed: embed again.');
+    if (indexing !== null || ready !== null) discard('Changed: search again to include it.');
   } }) : null;
   session.release = () => {
     photos?.release();
@@ -321,9 +323,8 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   };
 
   const settle = () => {
-    indexButton.textContent = indexing === null ? indexLabel : 'Stop';
-    indexButton.disabled = querying;
-    queryButton.disabled = ready === null || indexing !== null || querying;
+    queryButton.textContent = indexing === null ? 'Search' : 'Stop';
+    queryButton.disabled = querying;
   };
 
   const clearResults = () => {
@@ -343,8 +344,8 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
     if (passages.length === 0 && pictures.length === 0 && sounds.length === 0 && films.length === 0) {
       error.textContent = sees || hears
         ? `Add ${listed(['a document', sees ? 'photos' : null, hears ? 'recordings' : null,
-          watches ? 'videos' : null].filter(Boolean), 'or')} to embed.`
-        : 'The document has no paragraphs to embed.';
+          watches ? 'videos' : null].filter(Boolean), 'or')} to search.`
+        : 'Paste a document to search.';
       return;
     }
     const run = {};
@@ -529,7 +530,17 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
 
   const search = async () => {
     const text = queryInput.value.trim();
-    if (text === '' || ready === null || indexing !== null || querying) return;
+    if (querying) return;
+    if (text === '') {
+      error.textContent = 'Type a query to search.';
+      queryInput.focus();
+      return;
+    }
+    if (ready === null) {
+      clearResults();
+      await index();
+      if (session.closed || ready === null) return;
+    }
     const ranking = ready;
     querying = true;
     error.textContent = '';
@@ -543,6 +554,8 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
       results.replaceChildren(...ranking.rank(vector, kResults).map(({ passage, score }) =>
         h('li', {}, h('span', { className: 'score', text: score.toFixed(3) }), resultOf(passage))));
       queryFacts.textContent = `${tokens} tokens · ${milliseconds.toFixed(1)} ms · ${ranking.size()} ranked`;
+      // Answered where it can be seen: the results may sit below the fold.
+      results.firstElementChild?.scrollIntoView({ block: 'nearest' });
       onSearch?.('done');
     } catch (failure) {
       if (session.closed) return;
@@ -559,20 +572,18 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   };
 
   documentInput.addEventListener('input', () => {
-    if (indexing !== null || ready !== null) discard('Edited: embed the passages again.');
+    if (indexing !== null || ready !== null) discard('Changed: search again to include it.');
   });
 
-  const documentForm = h('form', { className: 'composer', onsubmit: (event) => {
-    event.preventDefault();
-    if (indexing !== null) discard('Stopped; nothing kept.');
-    else index();
-  } },
+  const documentBox = h('div', { className: 'composer' },
     documentInput,
-    h('div', { className: 'composer-row' }, documentFacts, indexButton));
+    h('div', { className: 'composer-row' }, documentFacts));
 
+  // Search is the panel's one action; while the index builds, it stops it.
   const queryForm = h('form', { className: 'composer search-query', onsubmit: (event) => {
     event.preventDefault();
-    search();
+    if (indexing !== null) discard('Stopped; nothing kept.');
+    else search();
   } },
     h('div', { className: 'composer-row' }, queryInput, queryButton));
 
@@ -582,7 +593,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const panel = h('div', { className: 'conversation search-panel' },
     h('p', { className: 'chat-heading', text: model.measured ? model.name : `${model.name} · unmeasured` }),
     h('p', { className: 'message-facts', text: about }),
-    documentForm, photos?.element, recordings?.element, videos?.element, companionFacts, queryForm, error, results,
+    documentBox, photos?.element, recordings?.element, videos?.element, companionFacts, queryForm, error, results,
     queryFacts);
   photos?.dropOnto(panel);
   recordings?.dropOnto(panel);
