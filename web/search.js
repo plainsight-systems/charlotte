@@ -1,10 +1,10 @@
 // Axis H: product and interface.
 //
 // The search panel, for a model that embeds (runtime/embedder.h), as the
-// chat is for one that generates. A document pasted in is cut into passages,
-// each embedded as a document; a query is embedded as a query; and the
-// passages are ranked by their vectors' dot product with the query's, the
-// best five shown with their scores.
+// chat is for one that generates. A document pasted in, and each text file
+// added, is cut into passages, each embedded as a document; a query is
+// embedded as a query; and the passages are ranked by their vectors' dot
+// product with the query's, the best five shown with their scores.
 //
 // createSearch(root, { embed, prepareImage, prepareAudio, planVideo,
 // prepareVideo, companion, audioCompanion, onSearch }) returns { open(model,
@@ -51,6 +51,12 @@
 //     indexing's time. The times are the page's round trips, the worker's
 //     hops included, under performance.now()'s 100 µs clamp: what a reader
 //     waited, not a measurement of the encode.
+//   - Documents: text and Markdown files added beside the pasted document
+//     (documents.js), each cut into passages as it is. Their passages follow
+//     the pasted document's, in the order the files were added, and are
+//     embedded and cut the same way; a result from a file names it above
+//     its passage. Adding or removing one discards the index, as an edit
+//     does.
 //   - A model with no task prompts, named by a pasted URL, has its texts
 //     embedded as written, and the panel says so beside the heading's
 //     "unmeasured", as the chat labels such a model.
@@ -215,6 +221,7 @@ import { clipsOf, decode as decodeAudio, mono } from './audio_input.js';
 import { describeCompanion } from './companion.js';
 import { h } from './dom.js';
 import { passagesOf, piecesOf } from './passages.js';
+import { createDocuments } from './documents.js';
 import { createPhotos } from './photos.js';
 import { clock, createRecordings } from './recordings.js';
 import { createIndex } from './search_index.js';
@@ -307,6 +314,9 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const queryFacts = h('p', { className: 'message-facts' });
   const companionFacts = h('p', { className: 'message-facts', 'aria-live': 'polite' });
   session.showCompanion = (state) => { companionFacts.textContent = describeCompanion(state); };
+  const documents = createDocuments({ onChange: () => {
+    if (indexing !== null || ready !== null) discard('Changed: search again to include it.');
+  } });
   const photos = sees ? createPhotos({ onChange: () => {
     if (indexing !== null || ready !== null) discard('Changed: search again to include it.');
   } }) : null;
@@ -317,6 +327,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
     if (indexing !== null || ready !== null) discard('Changed: search again to include it.');
   } }) : null;
   session.release = () => {
+    documents.release();
     photos?.release();
     recordings?.release();
     videos?.release();
@@ -336,7 +347,11 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const current = (run) => !session.closed && indexing === run;
 
   const index = async () => {
-    const passages = passagesOf(documentInput.value);
+    // The pasted document's passages, then each added file's, a file's
+    // passages naming it: { text, from }, from null for the pasted one.
+    const passages = [...passagesOf(documentInput.value).map((text) => ({ text, from: null })),
+      ...documents.documents().flatMap(({ file, passages: texts }) =>
+        texts.map((text) => ({ text, from: file.name })))];
     const pictures = photos?.photos() ?? [];
     const sounds = recordings?.recordings() ?? [];
     const films = videos?.videos() ?? [];
@@ -345,7 +360,7 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
       error.textContent = sees || hears
         ? `Add ${listed(['a document', sees ? 'photos' : null, hears ? 'recordings' : null,
           watches ? 'videos' : null].filter(Boolean), 'or')} to search.`
-        : 'Paste a document to search.';
+        : 'Paste or add a document to search.';
       return;
     }
     const run = {};
@@ -370,17 +385,17 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
         const passage = queue.shift();
         let reply;
         try {
-          reply = await embed(taskPrompt(prompts, 'document', passage));
+          reply = await embed(taskPrompt(prompts, 'document', passage.text));
         } catch (failure) {
           if (!current(run)) return;
           // Longer than the context: its pieces go in its place.
-          const pieces = failure.code === 'text-too-long' ? piecesOf(passage, failure.counts) : null;
+          const pieces = failure.code === 'text-too-long' ? piecesOf(passage.text, failure.counts) : null;
           if (pieces === null) throw failure;
-          queue.unshift(...pieces);
+          queue.unshift(...pieces.map((text) => ({ text, from: passage.from })));
           continue;
         }
         if (!current(run)) return;
-        built.add(passage, reply.vector);
+        built.add(passage.from === null ? passage.text : passage, reply.vector);
         tokens += reply.tokens;
         const progress = `${built.size()} of ${built.size() + queue.length + left()}`;
         documentFacts.textContent = `${progress} embedded`;
@@ -593,8 +608,9 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
   const panel = h('div', { className: 'conversation search-panel' },
     h('p', { className: 'chat-heading', text: model.measured ? model.name : `${model.name} · unmeasured` }),
     h('p', { className: 'message-facts', text: about }),
-    documentBox, photos?.element, recordings?.element, videos?.element, companionFacts, queryForm, error, results,
+    documentBox, documents.element, photos?.element, recordings?.element, videos?.element, companionFacts, queryForm, error, results,
     queryFacts);
+  documents.dropOnto(panel);
   photos?.dropOnto(panel);
   recordings?.dropOnto(panel);
   videos?.dropOnto(panel);
@@ -605,6 +621,9 @@ function searchPanel(model, { contextOffered, embeddingLength }, session,
 // recording or video, its span and a player for that span.
 function resultOf(entry) {
   if (typeof entry === 'string') return h('p', { text: entry });
+  if (entry.from !== undefined) {
+    return h('div', { className: 'result-clip' }, h('p', { text: entry.from }), h('p', { text: entry.text }));
+  }
   if (entry.file !== undefined) return h('img', { className: 'result-photo', src: entry.url, alt: entry.file.name });
   if (entry.video !== undefined) {
     const { video, start, end } = entry;
