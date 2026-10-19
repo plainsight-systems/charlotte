@@ -8,6 +8,11 @@ None.
 
 ## Accepted
 
+- **Project canonical URL** — accepted 2026-10-18. Added the canonical link
+  to `web/index.html`, matching its existing project-domain `og:url`.
+  Assembled site checks and HTML metadata assertions passed. Independent
+  review found no actionable issues; no runtime code changed.
+
 - **Embedding in the browser** — accepted 2026-10-14. EmbeddingGemma 2's
   text encode path, designed in its file headers (`runtime/embedder.h`,
   `graph/encoder.h`, `arch/embedding_gemma2`).

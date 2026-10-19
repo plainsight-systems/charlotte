@@ -38,6 +38,12 @@ inherited and both gates bind:
 
 ## Locked Decisions
 
+Decided 2026-10-18:
+
+- **The project site is canonical.** The page declares
+  `https://charlotte.plainsight-systems.com/` as its canonical URL, matching
+  `og:url`; syndicated writing does not make the personal blog the original.
+
 Decided 2026-08-31, on acceptance of BLLM-001:
 
 - **The GPU is reached through the `webgpu.h` C API**, not from JavaScript, so
